@@ -2,6 +2,7 @@ use uuid::Uuid;
 use sqlx::{SqlitePool, Row};
 use sync_core::protocol::ClientMessage;
 use crate::errors::ClientError;
+use crate::queries::Queries;
 
 pub struct OfflineQueue {
     pool: SqlitePool,
@@ -15,17 +16,12 @@ impl OfflineQueue {
     pub async fn enqueue(&self, message: ClientMessage) -> Result<(), ClientError> {
         let message_json = serde_json::to_string(&message)?;
         
-        sqlx::query(
-            r#"
-            INSERT INTO sync_queue (document_id, operation_type, patch)
-            VALUES (?1, ?2, ?3)
-            "#,
-        )
-        .bind(extract_document_id(&message).map(|id| id.to_string()))
-        .bind(operation_type(&message))
-        .bind(message_json)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(Queries::INSERT_SYNC_QUEUE)
+            .bind(extract_document_id(&message).map(|id| id.to_string()))
+            .bind(operation_type(&message))
+            .bind(message_json)
+            .execute(&self.pool)
+            .await?;
         
         Ok(())
     }
@@ -35,21 +31,14 @@ impl OfflineQueue {
         F: FnMut(ClientMessage) -> Fut,
         Fut: std::future::Future<Output = Result<(), ClientError>>,
     {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, patch, retry_count
-            FROM sync_queue
-            ORDER BY created_at ASC
-            LIMIT 100
-            "#
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query(Queries::GET_SYNC_QUEUE)
+            .fetch_all(&self.pool)
+            .await?;
         
         for row in rows {
             let id: i64 = row.get("id");
             let patch: Option<String> = row.get("patch");
-            let retry_count: i64 = row.get("retry_count");
+            let _retry_count: i64 = row.get("retry_count");
             
             let message: ClientMessage = serde_json::from_str(&patch.unwrap_or_default())?;
             
@@ -59,21 +48,17 @@ impl OfflineQueue {
             match result {
                 Ok(_) => {
                     // Remove from queue
-                    sqlx::query(
-                        "DELETE FROM sync_queue WHERE id = ?1",
-                    )
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
+                    sqlx::query(Queries::DELETE_FROM_QUEUE)
+                        .bind(id)
+                        .execute(&self.pool)
+                        .await?;
                 }
                 Err(_) => {
                     // Increment retry count
-                    sqlx::query(
-                        "UPDATE sync_queue SET retry_count = retry_count + 1 WHERE id = ?1",
-                    )
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
+                    sqlx::query(Queries::INCREMENT_RETRY_COUNT)
+                        .bind(id)
+                        .execute(&self.pool)
+                        .await?;
                 }
             }
         }

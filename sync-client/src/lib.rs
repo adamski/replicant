@@ -3,6 +3,7 @@ pub mod sync_engine;
 pub mod websocket;
 pub mod offline_queue;
 pub mod errors;
+pub mod queries;
 
 pub use database::ClientDatabase;
 pub use sync_engine::SyncEngine;

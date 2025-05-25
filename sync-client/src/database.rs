@@ -1,8 +1,8 @@
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 use sync_core::models::Document;
 use crate::errors::ClientError;
+use crate::queries::{Queries, DbHelpers};
 use json_patch;
 
 pub struct ClientDatabase {
@@ -27,123 +27,63 @@ impl ClientDatabase {
     }
     
     pub async fn get_user_id(&self) -> Result<Uuid, ClientError> {
-        let row = sqlx::query("SELECT user_id FROM user_config LIMIT 1")
+        let row = sqlx::query(Queries::GET_USER_ID)
             .fetch_one(&self.pool)
             .await?;
         
-        let user_id: String = row.get("user_id");
+        let user_id: String = row.try_get("user_id")?;
         Ok(Uuid::parse_str(&user_id)?)
     }
     
     pub async fn get_document(&self, id: &Uuid) -> Result<Document, ClientError> {
-        let row = sqlx::query(
-            r#"
-            SELECT id, user_id, title, content, revision_id, version,
-                   vector_clock, created_at, updated_at, deleted_at
-            FROM documents
-            WHERE id = ?1
-            "#,
-        )
-        .bind(id.to_string())
-        .fetch_one(&self.pool)
-        .await?;
+        let row = sqlx::query(Queries::GET_DOCUMENT)
+            .bind(id.to_string())
+            .fetch_one(&self.pool)
+            .await?;
         
-        let id: String = row.get("id");
-        let user_id: String = row.get("user_id");
-        let title: String = row.get("title");
-        let content: String = row.get("content");
-        let revision_id: String = row.get("revision_id");
-        let version: i64 = row.get("version");
-        let vector_clock: Option<String> = row.get("vector_clock");
-        let created_at: String = row.get("created_at");
-        let updated_at: String = row.get("updated_at");
-        let deleted_at: Option<String> = row.get("deleted_at");
-        
-        Ok(Document {
-            id: Uuid::parse_str(&id)?,
-            user_id: Uuid::parse_str(&user_id)?,
-            title,
-            content: serde_json::from_str(&content)?,
-            revision_id: Uuid::parse_str(&revision_id)?,
-            version,
-            vector_clock: serde_json::from_str(&vector_clock.unwrap_or_else(|| "{}".to_string()))?,
-            created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
-            updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
-            deleted_at: deleted_at.map(|dt| DateTime::parse_from_rfc3339(&dt).ok())
-                .flatten()
-                .map(|dt| dt.with_timezone(&Utc)),
-        })
+        DbHelpers::parse_document(&row)
     }
     
     pub async fn save_document(&self, doc: &Document) -> Result<(), ClientError> {
-        let content_json = serde_json::to_string(&doc.content)?;
-        let vector_clock_json = serde_json::to_string(&doc.vector_clock)?;
+        let params = DbHelpers::document_to_params(doc)?;
         
-        sqlx::query(
-            r#"
-            INSERT INTO documents (
-                id, user_id, title, content, revision_id, version,
-                vector_clock, created_at, updated_at, deleted_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ON CONFLICT(id) DO UPDATE SET
-                title = excluded.title,
-                content = excluded.content,
-                revision_id = excluded.revision_id,
-                version = excluded.version,
-                vector_clock = excluded.vector_clock,
-                updated_at = excluded.updated_at,
-                deleted_at = excluded.deleted_at
-            "#,
-        )
-        .bind(doc.id.to_string())
-        .bind(doc.user_id.to_string())
-        .bind(&doc.title)
-        .bind(content_json)
-        .bind(doc.revision_id.to_string())
-        .bind(doc.version as i64)
-        .bind(vector_clock_json)
-        .bind(doc.created_at.to_rfc3339())
-        .bind(doc.updated_at.to_rfc3339())
-        .bind(doc.deleted_at.map(|dt| dt.to_rfc3339()))
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(Queries::UPSERT_DOCUMENT)
+            .bind(params.0)  // id
+            .bind(params.1)  // user_id
+            .bind(params.2)  // title
+            .bind(params.3)  // content
+            .bind(params.4)  // revision_id
+            .bind(params.5)  // version
+            .bind(params.6)  // vector_clock
+            .bind(params.7)  // created_at
+            .bind(params.8)  // updated_at
+            .bind(params.9)  // deleted_at
+            .bind(params.10) // sync_status
+            .execute(&self.pool)
+            .await?;
         
         Ok(())
     }
     
     pub async fn get_pending_documents(&self) -> Result<Vec<Uuid>, ClientError> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id FROM documents
-            WHERE sync_status = 'pending'
-            ORDER BY updated_at ASC
-            "#
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query(Queries::GET_PENDING_DOCUMENTS)
+            .fetch_all(&self.pool)
+            .await?;
         
         rows.into_iter()
             .map(|row| {
-                let id: String = row.get("id");
-                Uuid::parse_str(&id)
+                let id: String = row.try_get("id")?;
+                Ok(Uuid::parse_str(&id)?)
             })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            .collect()
     }
     
     pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &Uuid) -> Result<(), ClientError> {
-        sqlx::query(
-            r#"
-            UPDATE documents
-            SET sync_status = 'synced',
-                last_synced_revision = ?2
-            WHERE id = ?1
-            "#,
-        )
-        .bind(document_id.to_string())
-        .bind(revision_id.to_string())
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
+            .bind(document_id.to_string())
+            .bind(revision_id.to_string())
+            .execute(&self.pool)
+            .await?;
         
         Ok(())
     }
@@ -156,17 +96,12 @@ impl ClientDatabase {
     ) -> Result<(), ClientError> {
         let patch_json = patch.map(|p| serde_json::to_string(p)).transpose()?;
         
-        sqlx::query(
-            r#"
-            INSERT INTO sync_queue (document_id, operation_type, patch)
-            VALUES (?1, ?2, ?3)
-            "#,
-        )
-        .bind(document_id.to_string())
-        .bind(operation_type)
-        .bind(patch_json)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(Queries::INSERT_SYNC_QUEUE)
+            .bind(document_id.to_string())
+            .bind(operation_type)
+            .bind(patch_json)
+            .execute(&self.pool)
+            .await?;
         
         Ok(())
     }

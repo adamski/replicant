@@ -12,6 +12,7 @@ pub mod websocket;
 pub mod auth;
 pub mod sync_handler;
 pub mod api;
+pub mod queries;
 
 // Re-export for library usage
 pub use database::ServerDatabase;

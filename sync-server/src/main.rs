@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Database connection
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://localhost/sync_db".to_string());
+        .unwrap_or_else(|_| "http://localhost:5432/sync_db".to_string());
     
     let db = Arc::new(ServerDatabase::new(&database_url).await?);
     db.run_migrations().await?;

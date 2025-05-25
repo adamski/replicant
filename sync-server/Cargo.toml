@@ -1,0 +1,32 @@
+[package]
+name = "sync-server"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sync_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sync-server"
+path = "src/main.rs"
+
+[dependencies]
+sync-core = { path = "../sync-core" }
+tokio = { workspace = true }
+tokio-tungstenite = "0.21"
+axum = { version = "0.7", features = ["ws"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "json", "uuid", "chrono"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+dashmap = "5.5"
+argon2 = "0.5"
+futures-util = "0.3"
+json-patch = "1.2"

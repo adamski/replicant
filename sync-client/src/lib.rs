@@ -1,0 +1,125 @@
+pub mod database;
+pub mod sync_engine;
+pub mod websocket;
+pub mod offline_queue;
+pub mod errors;
+
+pub use database::ClientDatabase;
+pub use sync_engine::SyncEngine;
+pub use websocket::WebSocketClient;
+pub use errors::ClientError;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+    use serde_json::json;
+    use sync_core::models::{Document, VectorClock};
+    
+    #[tokio::test]
+    async fn test_client_database_operations() {
+        // Create in-memory SQLite database
+        let db = ClientDatabase::new(":memory:").await.unwrap();
+        
+        // Create schema manually for in-memory database
+        sqlx::query(
+            r#"
+            CREATE TABLE user_config (
+                user_id TEXT PRIMARY KEY,
+                server_url TEXT NOT NULL,
+                last_sync_at TIMESTAMP,
+                auth_token TEXT
+            );
+            
+            CREATE TABLE documents (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content JSON NOT NULL,
+                revision_id TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                vector_clock JSON,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TIMESTAMP,
+                local_changes JSON,
+                sync_status TEXT DEFAULT 'synced',
+                last_synced_revision TEXT,
+                CHECK (sync_status IN ('synced', 'pending', 'conflict'))
+            );
+            "#
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        
+        // Insert test user
+        let user_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)"
+        )
+        .bind(user_id.to_string())
+        .bind("ws://localhost:8080/ws")
+        .bind("test-token")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        
+        // Test get_user_id
+        let retrieved_user_id = db.get_user_id().await.unwrap();
+        assert_eq!(retrieved_user_id, user_id);
+        
+        // Create a test document
+        let doc = Document {
+            id: Uuid::new_v4(),
+            user_id,
+            title: "Test Document".to_string(),
+            content: json!({
+                "text": "Hello, World!",
+                "tags": ["test"]
+            }),
+            revision_id: Uuid::new_v4(),
+            version: 1,
+            vector_clock: VectorClock::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+        
+        // Save document
+        db.save_document(&doc).await.unwrap();
+        
+        // Retrieve document
+        let loaded_doc = db.get_document(&doc.id).await.unwrap();
+        assert_eq!(loaded_doc.id, doc.id);
+        assert_eq!(loaded_doc.title, doc.title);
+        assert_eq!(loaded_doc.content, doc.content);
+    }
+    
+    #[test]
+    fn test_offline_queue_message_extraction() {
+        use sync_core::protocol::ClientMessage;
+        use crate::offline_queue::{extract_document_id, operation_type};
+        
+        let doc_id = Uuid::new_v4();
+        
+        // Test create message
+        let create_msg = ClientMessage::CreateDocument {
+            document: Document {
+                id: doc_id,
+                user_id: Uuid::new_v4(),
+                title: "Test".to_string(),
+                content: json!({}),
+                revision_id: Uuid::new_v4(),
+                version: 1,
+                vector_clock: VectorClock::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                deleted_at: None,
+            }
+        };
+        
+        assert_eq!(extract_document_id(&create_msg), Some(doc_id));
+        assert_eq!(operation_type(&create_msg), "create");
+    }
+}

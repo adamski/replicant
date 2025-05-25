@@ -2,7 +2,7 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Users table
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email TEXT UNIQUE NOT NULL,
     auth_token_hash TEXT NOT NULL,
@@ -11,7 +11,7 @@ CREATE TABLE users (
 );
 
 -- Documents table
-CREATE TABLE documents (
+CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL,
     title TEXT NOT NULL,
@@ -31,7 +31,7 @@ CREATE TABLE documents (
 );
 
 -- Revision history for conflict resolution
-CREATE TABLE document_revisions (
+CREATE TABLE IF NOT EXISTS document_revisions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID NOT NULL,
     revision_id UUID NOT NULL,
@@ -46,7 +46,7 @@ CREATE TABLE document_revisions (
 );
 
 -- Active connections for presence
-CREATE TABLE active_connections (
+CREATE TABLE IF NOT EXISTS active_connections (
     user_id UUID PRIMARY KEY,
     connection_id UUID NOT NULL,
     connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

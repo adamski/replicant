@@ -6,7 +6,7 @@ use crate::errors::ClientError;
 use json_patch;
 
 pub struct ClientDatabase {
-    pub(crate) pool: SqlitePool,
+    pub pool: SqlitePool,
 }
 
 impl ClientDatabase {

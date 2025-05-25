@@ -2,6 +2,9 @@
 
 A high-performance client-server synchronization system built in Rust, featuring real-time WebSocket communication, conflict resolution, and offline support.
 
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](BUILD_STATUS.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ## Architecture
 
 - **sync-core**: Shared library with data models and sync protocols

@@ -1,5 +1,5 @@
 -- User configuration (single row)
-CREATE TABLE user_config (
+CREATE TABLE IF NOT EXISTS user_config (
     user_id TEXT PRIMARY KEY,
     server_url TEXT NOT NULL,
     last_sync_at TIMESTAMP,
@@ -7,7 +7,7 @@ CREATE TABLE user_config (
 );
 
 -- Documents table
-CREATE TABLE documents (
+CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,                          -- UUID
     user_id TEXT NOT NULL,                        -- Owner UUID
     title TEXT NOT NULL,
@@ -28,14 +28,14 @@ CREATE TABLE documents (
 );
 
 -- Sync queue for offline changes
-CREATE TABLE sync_queue (
+CREATE TABLE IF NOT EXISTS sync_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id TEXT NOT NULL,
     operation_type TEXT NOT NULL,                 -- 'create', 'update', 'delete'
     patch JSON,                                   -- JSON patch for updates
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     retry_count INTEGER DEFAULT 0,
-    
+
     FOREIGN KEY (document_id) REFERENCES documents(id),
     CHECK (operation_type IN ('create', 'update', 'delete'))
 );

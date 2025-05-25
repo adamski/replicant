@@ -1,0 +1,51 @@
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+
+cache:
+  paths:
+    - .cargo/
+    - target/
+
+before_script:
+  - apt-get update -qq && apt-get install -y -qq build-essential
+  - curl https://sh.rustup.rs -sSf | sh -s -- -y
+  - source $HOME/.cargo/env
+  - rustc --version && cargo --version
+
+build:
+  stage: build
+  script:
+    - cargo build --workspace --release
+  artifacts:
+    paths:
+      - target/release/sync-server
+    expire_in: 1 week
+
+test:
+  stage: test
+  services:
+    - postgres:16
+  variables:
+    POSTGRES_DB: sync_test_db
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    TEST_DATABASE_URL: "postgres://postgres:postgres@postgres/sync_test_db"
+  script:
+    - cargo test --workspace -- --nocapture
+    - cargo clippy --workspace -- -D warnings
+    - cargo fmt --all -- --check
+
+docker:
+  stage: deploy
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t sync-server .
+  only:
+    - main

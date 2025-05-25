@@ -260,7 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Database connection
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/sync_db".to_string());
+        .unwrap_or_else(|_| "http://localhost:5432/sync_db".to_string());
     
     println!("📊 Connecting to database: {}", database_url.blue());
     

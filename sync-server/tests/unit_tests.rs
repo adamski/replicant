@@ -34,3 +34,61 @@ fn test_invalid_hash_verification() {
     let hash = AuthState::hash_token(token).unwrap();
     assert!(!AuthState::verify_token_hash("wrong-token", &hash).unwrap());
 }
+
+#[cfg(test)]
+mod database_tests {
+    use sync_server::database::ServerDatabase;
+    use uuid::Uuid;
+    use sync_core::models::{Document, VectorClock};
+    use serde_json::json;
+
+    async fn setup_test_db() -> ServerDatabase {
+        // Use in-memory database for tests
+        let db = ServerDatabase::new("postgres://test_user:test_pass@localhost:5432/test_db")
+            .await
+            .expect("Failed to create test database");
+        
+        // Run migrations
+        db.run_migrations().await.expect("Failed to run migrations");
+        
+        db
+    }
+
+    #[tokio::test]
+    async fn test_document_delete() {
+        let db = setup_test_db().await;
+        
+        // Create a test user
+        let user_id = db.create_user("test@example.com", "hashed_token")
+            .await
+            .expect("Failed to create user");
+        
+        // Create a test document
+        let doc = Document {
+            id: Uuid::new_v4(),
+            user_id,
+            title: "Test Document".to_string(),
+            content: json!({
+                "text": "Hello, World!"
+            }),
+            revision_id: Uuid::new_v4(),
+            version: 1,
+            vector_clock: VectorClock::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+        
+        // Save document
+        db.create_document(&doc).await.expect("Failed to create document");
+        
+        // Delete document
+        db.delete_document(&doc.id, &user_id).await.expect("Failed to delete document");
+        
+        // Try to retrieve document - it should exist but with deleted_at set
+        let loaded_doc = db.get_document(&doc.id).await.expect("Failed to get document");
+        
+        // The deleted_at field should be set
+        assert!(loaded_doc.deleted_at.is_some());
+    }
+}

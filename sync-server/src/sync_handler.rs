@@ -119,7 +119,7 @@ impl SyncHandler {
             }
             
             ClientMessage::DeleteDocument { document_id, revision_id } => {
-                let mut doc = self.db.get_document(&document_id).await?;
+                let doc = self.db.get_document(&document_id).await?;
                 
                 if doc.user_id != user_id {
                     self.send_error(ErrorCode::InvalidAuth, "Cannot delete another user's document").await?;
@@ -127,15 +127,22 @@ impl SyncHandler {
                 }
                 
                 // Soft delete
-                doc.deleted_at = Some(chrono::Utc::now());
-                doc.revision_id = revision_id;
-                self.db.update_document(&doc).await?;
+                self.db.delete_document(&document_id, &user_id).await?;
+                
+                // Create revision for the delete operation
+                let mut deleted_doc = doc.clone();
+                deleted_doc.deleted_at = Some(chrono::Utc::now());
+                deleted_doc.revision_id = revision_id;
+                self.db.create_revision(&deleted_doc, None).await?;
                 
                 // Broadcast deletion
                 self.broadcast_to_user(
                     user_id,
                     ServerMessage::DocumentDeleted { document_id, revision_id }
                 ).await?;
+                
+                // Confirm to sender
+                self.tx.send(ServerMessage::DocumentDeleted { document_id, revision_id }).await?;
             }
             
             ClientMessage::RequestSync { document_ids } => {

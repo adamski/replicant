@@ -32,7 +32,7 @@ impl SyncEngine {
         let user_id = db.get_user_id().await?;
         let node_id = format!("client_{}", user_id);
         
-        let (ws_client, mut ws_receiver) = WebSocketClient::connect(server_url, user_id, auth_token).await?;
+        let (ws_client, ws_receiver) = WebSocketClient::connect(server_url, user_id, auth_token).await?;
         
         // Create a channel for messages
         let (tx, rx) = mpsc::channel(100);
@@ -139,6 +139,25 @@ impl SyncEngine {
         Ok(())
     }
     
+    pub async fn delete_document(&self, id: Uuid) -> Result<(), ClientError> {
+        let doc = self.db.get_document(&id).await?;
+        
+        // Send delete to server
+        self.ws_client.send(ClientMessage::DeleteDocument {
+            document_id: id,
+            revision_id: doc.revision_id,
+        }).await?;
+        
+        // Mark as deleted locally
+        self.db.delete_document(&id).await?;
+        
+        Ok(())
+    }
+    
+    pub async fn get_all_documents(&self) -> Result<Vec<Document>, ClientError> {
+        self.db.get_all_documents().await
+    }
+    
     async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>) -> Result<(), ClientError> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
@@ -164,6 +183,10 @@ impl SyncEngine {
                 // New document from server
                 db.save_document(&document).await?;
                 db.mark_synced(&document.id, &document.revision_id).await?;
+            }
+            ServerMessage::DocumentDeleted { document_id, .. } => {
+                // Document deleted from server
+                db.delete_document(&document_id).await?;
             }
             ServerMessage::ConflictDetected { document_id, .. } => {
                 tracing::warn!("Conflict detected for document {}", document_id);

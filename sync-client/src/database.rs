@@ -88,6 +88,25 @@ impl ClientDatabase {
         Ok(())
     }
     
+    pub async fn delete_document(&self, document_id: &Uuid) -> Result<(), ClientError> {
+        sqlx::query("UPDATE documents SET deleted_at = datetime('now'), sync_status = 'pending' WHERE id = ?")
+            .bind(document_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        
+        Ok(())
+    }
+    
+    pub async fn get_all_documents(&self) -> Result<Vec<Document>, ClientError> {
+        let rows = sqlx::query("SELECT * FROM documents WHERE deleted_at IS NULL")
+            .fetch_all(&self.pool)
+            .await?;
+        
+        rows.into_iter()
+            .map(|row| DbHelpers::parse_document(&row))
+            .collect()
+    }
+    
     pub async fn queue_sync_operation(
         &self,
         document_id: &Uuid,

@@ -400,11 +400,65 @@ async fn view_document(
 }
 
 async fn delete_document(
-    _db: &ClientDatabase,
-    _sync_engine: &Option<SyncEngine>,
-    _user_id: Uuid,
+    db: &ClientDatabase,
+    sync_engine: &Option<SyncEngine>,
+    user_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🗑️  Delete functionality not implemented in this example");
+    // List documents for selection
+    let rows = sqlx::query(
+        r#"
+        SELECT id, title 
+        FROM documents 
+        WHERE user_id = ?1 AND deleted_at IS NULL
+        ORDER BY updated_at DESC
+        "#,
+    )
+    .bind(user_id.to_string())
+    .fetch_all(&db.pool)
+    .await?;
+
+    if rows.is_empty() {
+        println!("📭 No documents to delete.");
+        return Ok(());
+    }
+
+    let mut doc_info = Vec::new();
+    let mut choices = Vec::new();
+    
+    for row in rows {
+        let id = row.try_get::<String, _>("id")?;
+        let title = row.try_get::<String, _>("title")?;
+        doc_info.push((id.clone(), title.clone()));
+        choices.push(format!("{} - {}", id, title));
+    }
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select document to delete")
+        .items(&choices)
+        .interact()?;
+
+    let doc_id = Uuid::parse_str(&doc_info[selection].0)?;
+    let doc_title = &doc_info[selection].1;
+
+    // Confirm deletion
+    if !Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt(&format!("Are you sure you want to delete '{}'?", doc_title))
+        .default(false)
+        .interact()?
+    {
+        println!("❌ Deletion cancelled.");
+        return Ok(());
+    }
+
+    if let Some(engine) = sync_engine {
+        engine.delete_document(doc_id).await?;
+        println!("✅ Document deleted and synced!");
+    } else {
+        // Offline delete - just mark as deleted locally
+        db.delete_document(&doc_id).await?;
+        println!("✅ Document deleted (offline)");
+    }
+
     Ok(())
 }
 

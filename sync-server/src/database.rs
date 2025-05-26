@@ -97,6 +97,16 @@ impl ServerDatabase {
         Ok(())
     }
     
+    pub async fn delete_document(&self, document_id: &Uuid, user_id: &Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE documents SET deleted_at = NOW() WHERE id = $1 AND user_id = $2")
+            .bind(document_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        
+        Ok(())
+    }
+    
     pub async fn get_user_documents(&self, user_id: &Uuid) -> Result<Vec<Document>, sqlx::Error> {
         let rows = sqlx::query(Queries::GET_USER_DOCUMENTS)
             .bind(user_id)

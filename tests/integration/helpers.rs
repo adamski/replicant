@@ -1,12 +1,43 @@
 use std::time::Duration;
 use tokio::time::timeout;
 use uuid::Uuid;
-use sync_client::SyncClient;
+use sync_client::SyncEngine as SyncClient;
 use sync_core::models::Document;
 use serde_json::json;
 use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream};
 use futures_util::{StreamExt, SinkExt};
 use tungstenite::Message;
+use std::sync::Arc;
+
+pub struct TestClient {
+    engine: Arc<SyncClient>,
+}
+
+impl TestClient {
+    pub async fn create_document(&self, doc: Document) -> Result<(), Box<dyn std::error::Error>> {
+        self.engine.create_document(doc.title, doc.content).await?;
+        Ok(())
+    }
+    
+    pub async fn update_document(&self, doc: &Document) -> Result<(), Box<dyn std::error::Error>> {
+        self.engine.update_document(doc.id, doc.content.clone()).await?;
+        Ok(())
+    }
+    
+    pub async fn delete_document(&self, id: &Uuid) -> Result<(), Box<dyn std::error::Error>> {
+        self.engine.delete_document(*id).await?;
+        Ok(())
+    }
+    
+    pub async fn get_all_documents(&self) -> Result<Vec<Document>, Box<dyn std::error::Error>> {
+        Ok(self.engine.get_all_documents().await?)
+    }
+    
+    pub async fn sync(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Sync is handled automatically by SyncEngine
+        Ok(())
+    }
+}
 
 pub struct TestContext {
     pub server_url: String,
@@ -23,15 +54,17 @@ impl TestContext {
         }
     }
     
-    pub async fn create_test_client(&self, user_id: Uuid, token: &str) -> SyncClient {
-        let client = SyncClient::new(
+    pub async fn create_test_client(&self, user_id: Uuid, token: &str) -> TestClient {
+        let db_path = format!(":memory:{}:{}", user_id, Uuid::new_v4());
+        let mut engine = SyncClient::new(
+            &db_path,
             &self.server_url,
-            user_id,
-            token,
-            ":memory:"
-        ).await.expect("Failed to create test client");
+            token
+        ).await.expect("Failed to create sync engine");
         
-        client
+        engine.start().await.expect("Failed to start sync engine");
+        
+        TestClient { engine: std::sync::Arc::new(engine) }
     }
     
     pub async fn create_authenticated_websocket(&self, user_id: Uuid, token: &str) -> WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>> {

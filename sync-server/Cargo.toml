@@ -16,7 +16,7 @@ sync-core = { path = "../sync-core" }
 tokio = { workspace = true }
 tokio-tungstenite = "0.21"
 axum = { version = "0.7", features = ["ws"] }
-sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "json", "uuid", "chrono"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "json", "uuid", "chrono", "migrate"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -30,6 +30,7 @@ dashmap = "5.5"
 argon2 = "0.5"
 futures-util = "0.3"
 json-patch = "1.2"
+clap = { version = "4.4", features = ["derive"] }
 
 [dev-dependencies]
 colored = "2.1"

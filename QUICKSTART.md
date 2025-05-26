@@ -44,6 +44,21 @@ sqlx migrate run
 cargo run --bin sync-server
 ```
 
+## Demo Mode
+
+For testing, you can use the auth token `demo-token` with any user ID. The server will automatically create a user account if it doesn't exist.
+
+Run the interactive client in demo mode:
+```bash
+# Uses demo-token by default, generates a random user ID
+cargo run --example interactive_client
+
+# Or specify your own user ID
+cargo run --example interactive_client -- --token demo-token --user-id 550e8400-e29b-41d4-a716-446655440000
+```
+
+The server will automatically create users authenticated with `demo-token`, making it easy to test without manual user creation.
+
 ## Client Integration
 
 ### Rust Client

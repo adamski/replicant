@@ -1,14 +1,17 @@
-use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream, MaybeTlsStream};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio::net::TcpStream;
 use uuid::Uuid;
 use sync_core::protocol::{ClientMessage, ServerMessage};
 use crate::errors::ClientError;
 
+#[derive(Clone)]
 pub struct WebSocketClient {
-    ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
-    server_url: String,
+    tx: mpsc::Sender<ClientMessage>,
+}
+
+pub struct WebSocketReceiver {
+    rx: mpsc::Receiver<ServerMessage>,
 }
 
 impl WebSocketClient {
@@ -16,14 +19,52 @@ impl WebSocketClient {
         server_url: &str,
         user_id: Uuid,
         auth_token: &str,
-    ) -> Result<Self, ClientError> {
+    ) -> Result<(Self, WebSocketReceiver), ClientError> {
         let (ws_stream, _) = connect_async(server_url)
             .await
             .map_err(|e| ClientError::WebSocket(e.to_string()))?;
         
-        let mut client = Self {
-            ws_stream,
-            server_url: server_url.to_string(),
+        let (write, read) = ws_stream.split();
+        
+        // Create channels for communication
+        let (tx_send, mut rx_send) = mpsc::channel::<ClientMessage>(100);
+        let (tx_recv, rx_recv) = mpsc::channel::<ServerMessage>(100);
+        
+        // Spawn writer task
+        tokio::spawn(async move {
+            let mut write = write;
+            while let Some(msg) = rx_send.recv().await {
+                let json = serde_json::to_string(&msg).unwrap();
+                if write.send(Message::Text(json)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        
+        // Spawn reader task
+        tokio::spawn(async move {
+            let mut read = read;
+            while let Some(msg) = read.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(server_msg) = serde_json::from_str::<ServerMessage>(&text) {
+                            if tx_recv.send(server_msg).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Message::Close(_)) => break,
+                    _ => {}
+                }
+            }
+        });
+        
+        let client = Self {
+            tx: tx_send.clone(),
+        };
+        
+        let receiver = WebSocketReceiver {
+            rx: rx_recv,
         };
         
         // Send authentication
@@ -32,38 +73,24 @@ impl WebSocketClient {
             auth_token: auth_token.to_string(),
         }).await?;
         
-        Ok(client)
+        Ok((client, receiver))
     }
     
-    pub async fn send(&mut self, message: ClientMessage) -> Result<(), ClientError> {
-        let json = serde_json::to_string(&message)?;
-        self.ws_stream
-            .send(Message::Text(json))
+    pub async fn send(&self, message: ClientMessage) -> Result<(), ClientError> {
+        self.tx
+            .send(message)
             .await
-            .map_err(|e| ClientError::WebSocket(e.to_string()))?;
+            .map_err(|_| ClientError::WebSocket("Failed to send message".to_string()))?;
         Ok(())
     }
-    
+}
+
+impl WebSocketReceiver {
     pub async fn receive(&mut self) -> Result<Option<ServerMessage>, ClientError> {
-        if let Some(msg) = self.ws_stream.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    let server_msg = serde_json::from_str(&text)?;
-                    Ok(Some(server_msg))
-                }
-                Ok(Message::Close(_)) => Ok(None),
-                Ok(_) => Ok(None), // Ignore other message types
-                Err(e) => Err(ClientError::WebSocket(e.to_string())),
-            }
-        } else {
-            Ok(None)
-        }
+        Ok(self.rx.recv().await)
     }
     
-    pub async fn start_reading(
-        &mut self,
-        tx: mpsc::Sender<ServerMessage>,
-    ) -> Result<(), ClientError> {
+    pub async fn forward_to(mut self, tx: mpsc::Sender<ServerMessage>) -> Result<(), ClientError> {
         while let Some(msg) = self.receive().await? {
             if tx.send(msg).await.is_err() {
                 break;
@@ -72,31 +99,4 @@ impl WebSocketClient {
         Ok(())
     }
     
-    pub async fn close(mut self) -> Result<(), ClientError> {
-        self.ws_stream
-            .close(None)
-            .await
-            .map_err(|e| ClientError::WebSocket(e.to_string()))?;
-        Ok(())
-    }
-    
-    pub async fn reconnect(&mut self, user_id: Uuid, auth_token: &str) -> Result<(), ClientError> {
-        // Close existing connection
-        let _ = self.ws_stream.close(None).await;
-        
-        // Reconnect
-        let (ws_stream, _) = connect_async(&self.server_url)
-            .await
-            .map_err(|e| ClientError::WebSocket(e.to_string()))?;
-        
-        self.ws_stream = ws_stream;
-        
-        // Re-authenticate
-        self.send(ClientMessage::Authenticate {
-            user_id,
-            auth_token: auth_token.to_string(),
-        }).await?;
-        
-        Ok(())
-    }
 }

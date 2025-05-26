@@ -68,9 +68,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Try to connect to server
     let sync_engine = match SyncEngine::new(&cli.database, &cli.server, &cli.token).await {
-        Ok(engine) => {
+        Ok(mut engine) => {
             println!("✅ Connected to sync server!");
-            Some(engine)
+            
+            // Start the sync engine
+            if let Err(e) = engine.start().await {
+                println!("⚠️  Failed to start sync engine: {}", e.to_string().yellow());
+                None
+            } else {
+                Some(engine)
+            }
         }
         Err(e) => {
             println!("⚠️  Offline mode: {}", e.to_string().yellow());
@@ -253,7 +260,7 @@ async fn create_document(
             vector_clock: sync_core::models::VectorClock::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
-            deleted_at: None,
+            deleted_at: None
         };
         
         db.save_document(&doc).await?;

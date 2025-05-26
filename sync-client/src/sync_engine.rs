@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 use sync_core::{
     models::{Document, DocumentPatch, VectorClock},
@@ -14,9 +14,10 @@ use crate::{
 
 pub struct SyncEngine {
     db: Arc<ClientDatabase>,
-    ws_client: Arc<Mutex<WebSocketClient>>,
+    ws_client: Arc<WebSocketClient>,
     user_id: Uuid,
     node_id: String,
+    message_rx: Option<mpsc::Receiver<ServerMessage>>,
 }
 
 impl SyncEngine {
@@ -31,35 +32,45 @@ impl SyncEngine {
         let user_id = db.get_user_id().await?;
         let node_id = format!("client_{}", user_id);
         
-        let ws_client = WebSocketClient::connect(server_url, user_id, auth_token).await?;
+        let (ws_client, mut ws_receiver) = WebSocketClient::connect(server_url, user_id, auth_token).await?;
         
-        Ok(Self {
+        // Create a channel for messages
+        let (tx, rx) = mpsc::channel(100);
+        
+        // Start forwarding WebSocket messages to our channel
+        tokio::spawn(async move {
+            if let Err(e) = ws_receiver.forward_to(tx).await {
+                tracing::error!("WebSocket receiver error: {}", e);
+            }
+        });
+        
+        let engine = Self {
             db,
-            ws_client: Arc::new(Mutex::new(ws_client)),
+            ws_client: Arc::new(ws_client),
             user_id,
             node_id,
-        })
+            message_rx: Some(rx),
+        };
+        
+        Ok(engine)
     }
     
-    pub async fn start(&self) -> Result<(), ClientError> {
-        // Start WebSocket message handler
-        let (tx, mut rx) = mpsc::channel::<ServerMessage>(100);
+    pub async fn start(&mut self) -> Result<(), ClientError> {
+        // Take the receiver - can only start once
+        let rx = self.message_rx.take()
+            .ok_or_else(|| ClientError::WebSocket("SyncEngine already started".to_string()))?;
         
-        let _ws_client = self.ws_client.clone();
         let db = self.db.clone();
         
         // Spawn message handler
         tokio::spawn(async move {
+            let mut rx = rx;
             while let Some(msg) = rx.recv().await {
                 if let Err(e) = Self::handle_server_message(msg, &db).await {
                     tracing::error!("Error handling server message: {}", e);
                 }
             }
         });
-        
-        // Start WebSocket reader
-        let mut ws = self.ws_client.lock().await;
-        ws.start_reading(tx).await?;
         
         // Initial sync
         self.sync_all().await?;
@@ -89,8 +100,7 @@ impl SyncEngine {
         self.db.save_document(&doc).await?;
         
         // Send to server
-        let mut ws = self.ws_client.lock().await;
-        ws.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
+        self.ws_client.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
         
         Ok(doc)
     }
@@ -122,8 +132,9 @@ impl SyncEngine {
         };
         
         // Send to server
-        let mut ws = self.ws_client.lock().await;
-        ws.send(ClientMessage::UpdateDocument { patch: patch_msg }).await?;
+        tracing::debug!("Sending update to server");
+        self.ws_client.send(ClientMessage::UpdateDocument { patch: patch_msg }).await?;
+        tracing::debug!("Update sent successfully");
         
         Ok(())
     }
@@ -167,8 +178,7 @@ impl SyncEngine {
     async fn sync_all(&self) -> Result<(), ClientError> {
         let pending = self.db.get_pending_documents().await?;
         
-        let mut ws = self.ws_client.lock().await;
-        ws.send(ClientMessage::RequestSync { document_ids: pending }).await?;
+        self.ws_client.send(ClientMessage::RequestSync { document_ids: pending }).await?;
         
         Ok(())
     }

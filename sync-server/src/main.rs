@@ -36,8 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Application state
     let app_state = Arc::new(AppState {
-        db,
-        auth: AuthState::new(),
+        db: db.clone(),
+        auth: AuthState::new(db),
     });
     
     // Build router

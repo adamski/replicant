@@ -5,20 +5,22 @@ use sync_core::{
     protocol::{ClientMessage, ServerMessage, ConflictResolution, ErrorCode},
     patches::{apply_patch, calculate_checksum},
 };
-use crate::database::ServerDatabase;
+use crate::{database::ServerDatabase, monitoring::MonitoringLayer};
 
 pub struct SyncHandler {
     db: Arc<ServerDatabase>,
     tx: mpsc::Sender<ServerMessage>,
     user_id: Option<Uuid>,
+    monitoring: Option<MonitoringLayer>,
 }
 
 impl SyncHandler {
-    pub fn new(db: Arc<ServerDatabase>, tx: mpsc::Sender<ServerMessage>) -> Self {
+    pub fn new(db: Arc<ServerDatabase>, tx: mpsc::Sender<ServerMessage>, monitoring: Option<MonitoringLayer>) -> Self {
         Self {
             db,
             tx,
             user_id: None,
+            monitoring,
         }
     }
     
@@ -62,6 +64,11 @@ impl SyncHandler {
                 
                 // Check for conflicts
                 if doc.vector_clock.is_concurrent(&patch.vector_clock) {
+                    // Log conflict if monitoring is enabled
+                    if let Some(ref monitoring) = self.monitoring {
+                        monitoring.log_conflict_detected(&doc.id.to_string()).await;
+                    }
+                    
                     // Conflict detected
                     self.tx.send(ServerMessage::ConflictDetected {
                         document_id: patch.document_id,
@@ -77,6 +84,12 @@ impl SyncHandler {
                 
                 // Apply patch
                 apply_patch(&mut doc.content, &patch.patch)?;
+                
+                // Log patch applied if monitoring is enabled
+                if let Some(ref monitoring) = self.monitoring {
+                    let patch_json = serde_json::to_value(&patch.patch).unwrap_or_default();
+                    monitoring.log_patch_applied(&doc.id.to_string(), &patch_json).await;
+                }
                 
                 // Verify checksum
                 let calculated_checksum = calculate_checksum(&doc.content);

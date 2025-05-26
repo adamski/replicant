@@ -6,26 +6,32 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-
-pub mod database;
-pub mod websocket;
-pub mod auth;
-pub mod sync_handler;
-pub mod api;
-pub mod queries;
-
-// Re-export for library usage
-pub use database::ServerDatabase;
-pub use auth::AuthState;
-
-use websocket::handle_websocket;
+use sync_server::{
+    database::ServerDatabase,
+    auth::AuthState,
+    monitoring::{self, MonitoringLayer},
+    websocket::handle_websocket,
+    api,
+    AppState,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Check if monitoring mode is enabled
+    let monitoring_enabled = std::env::var("MONITORING").unwrap_or_default() == "true";
+    
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter("sync_server=debug,tower_http=debug")
         .init();
+    
+    // Print startup banner if monitoring is enabled
+    if monitoring_enabled {
+        use colored::*;
+        println!("{}", "🚀 Sync Server with Monitoring".bold().cyan());
+        println!("{}", "==============================".cyan());
+        println!();
+    }
     
     // Database connection
     let database_url = std::env::var("DATABASE_URL")
@@ -34,10 +40,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Arc::new(ServerDatabase::new(&database_url).await?);
     db.run_migrations().await?;
     
+    // Set up monitoring if enabled
+    let monitoring_layer = if monitoring_enabled {
+        let (tx, rx) = tokio::sync::mpsc::channel(1000);
+        monitoring::spawn_monitoring_display(rx).await;
+        Some(MonitoringLayer::new(tx))
+    } else {
+        None
+    };
+    
     // Application state
     let app_state = Arc::new(AppState {
         db: db.clone(),
         auth: AuthState::new(db),
+        monitoring: monitoring_layer,
     });
     
     // Build router
@@ -66,11 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[derive(Clone)]
-struct AppState {
-    db: Arc<ServerDatabase>,
-    auth: AuthState,
-}
+// AppState is now defined in lib.rs
 
 async fn websocket_handler(
     ws: WebSocketUpgrade,

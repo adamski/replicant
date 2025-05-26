@@ -20,6 +20,7 @@ A high-performance client-server synchronization system built in Rust, featuring
 - Offline queue with retry logic
 - C FFI exports for C++ integration
 - Docker deployment ready
+- Built-in monitoring mode for debugging and observability
 
 ## Getting Started
 
@@ -148,6 +149,54 @@ cargo test --test sync_integration -- --test-threads=1
 - WebSocket compression enabled
 - Document caching in memory
 - Rate limiting per user
+
+## Monitoring Mode
+
+The server includes a built-in monitoring mode that provides real-time visibility into sync operations. This is useful for debugging, development, and understanding system behavior.
+
+### Enabling Monitoring
+
+Set the `MONITORING` environment variable to `true` when starting the server:
+
+```bash
+MONITORING=true cargo run --bin sync-server
+```
+
+Or with Docker:
+```bash
+docker run -e MONITORING=true sync-server
+```
+
+### Monitoring Features
+
+When monitoring is enabled, you'll see:
+- Real-time client connections and disconnections
+- All WebSocket messages sent and received
+- JSON patch operations with full content
+- Conflict detection events
+- Error messages and stack traces
+- Colorized output for easy reading
+
+### Example Output
+
+```
+🚀 Sync Server with Monitoring
+==============================
+
+📋 Activity Log:
+────────────────────────────────────────────────────────────────────────────────
+14:32:15.123 → Client connected: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+14:32:15.456 ↓ Authenticate from a1b2c3d4-e5f6-7890-abcd-ef1234567890
+14:32:15.789 ↑ AuthSuccess to a1b2c3d4-e5f6-7890-abcd-ef1234567890
+14:32:16.012 ↓ UpdateDocument from a1b2c3d4-e5f6-7890-abcd-ef1234567890
+14:32:16.034 🔧 Patch applied to document 123e4567-e89b-12d3-a456-426614174000:
+     {
+       "op": "replace",
+       "path": "/title",
+       "value": "Updated Title"
+     }
+14:32:16.056 ↑ DocumentUpdated to a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
 
 ## Security
 

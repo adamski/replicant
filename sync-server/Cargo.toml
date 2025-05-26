@@ -31,7 +31,7 @@ argon2 = "0.5"
 futures-util = "0.3"
 json-patch = "1.2"
 clap = { version = "4.4", features = ["derive"] }
+colored = "2.1"
 
 [dev-dependencies]
-colored = "2.1"
 indicatif = "0.17"

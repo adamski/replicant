@@ -4,6 +4,7 @@ pub mod auth;
 pub mod sync_handler;
 pub mod api;
 pub mod queries;
+pub mod monitoring;
 
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub db: Arc<database::ServerDatabase>,
     pub auth: auth::AuthState,
+    pub monitoring: Option<monitoring::MonitoringLayer>,
 }
 
 #[cfg(test)]

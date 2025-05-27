@@ -5,22 +5,24 @@ use sync_core::{
     protocol::{ClientMessage, ServerMessage, ConflictResolution, ErrorCode},
     patches::{apply_patch, calculate_checksum},
 };
-use crate::{database::ServerDatabase, monitoring::MonitoringLayer};
+use crate::{database::ServerDatabase, monitoring::MonitoringLayer, AppState};
 
 pub struct SyncHandler {
     db: Arc<ServerDatabase>,
     tx: mpsc::Sender<ServerMessage>,
     user_id: Option<Uuid>,
     monitoring: Option<MonitoringLayer>,
+    app_state: Arc<AppState>,
 }
 
 impl SyncHandler {
-    pub fn new(db: Arc<ServerDatabase>, tx: mpsc::Sender<ServerMessage>, monitoring: Option<MonitoringLayer>) -> Self {
+    pub fn new(db: Arc<ServerDatabase>, tx: mpsc::Sender<ServerMessage>, monitoring: Option<MonitoringLayer>, app_state: Arc<AppState>) -> Self {
         Self {
             db,
             tx,
             user_id: None,
             monitoring,
+            app_state,
         }
     }
     
@@ -33,6 +35,7 @@ impl SyncHandler {
         
         match msg {
             ClientMessage::CreateDocument { document } => {
+                tracing::debug!("Received CreateDocument from user {} for doc {}", user_id, document.id);
                 // Validate ownership
                 if document.user_id != user_id {
                     self.send_error(ErrorCode::InvalidAuth, "Cannot create document for another user").await?;
@@ -42,14 +45,12 @@ impl SyncHandler {
                 // Save to database
                 self.db.create_document(&document).await?;
                 
-                // Broadcast to other connected clients
+                // Broadcast to all connected clients (including sender)
+                tracing::debug!("Broadcasting DocumentCreated to all clients of user {}", user_id);
                 self.broadcast_to_user(
                     user_id,
-                    ServerMessage::DocumentCreated { document: document.clone() }
+                    ServerMessage::DocumentCreated { document }
                 ).await?;
-                
-                // Confirm to sender
-                self.tx.send(ServerMessage::DocumentCreated { document }).await?;
             }
             
             ClientMessage::UpdateDocument { patch } => {
@@ -108,14 +109,11 @@ impl SyncHandler {
                 self.db.update_document(&doc).await?;
                 self.db.create_revision(&doc, Some(&patch.patch)).await?;
                 
-                // Broadcast to other clients
+                // Broadcast to all connected clients (including sender)
                 self.broadcast_to_user(
                     user_id,
-                    ServerMessage::DocumentUpdated { patch: patch.clone() }
+                    ServerMessage::DocumentUpdated { patch }
                 ).await?;
-                
-                // Confirm to sender
-                self.tx.send(ServerMessage::DocumentUpdated { patch }).await?;
             }
             
             ClientMessage::DeleteDocument { document_id, revision_id } => {
@@ -135,14 +133,11 @@ impl SyncHandler {
                 deleted_doc.revision_id = revision_id;
                 self.db.create_revision(&deleted_doc, None).await?;
                 
-                // Broadcast deletion
+                // Broadcast deletion to all connected clients (including sender)
                 self.broadcast_to_user(
                     user_id,
                     ServerMessage::DocumentDeleted { document_id, revision_id }
                 ).await?;
-                
-                // Confirm to sender
-                self.tx.send(ServerMessage::DocumentDeleted { document_id, revision_id }).await?;
             }
             
             ClientMessage::RequestSync { document_ids } => {
@@ -159,9 +154,12 @@ impl SyncHandler {
             }
             
             ClientMessage::RequestFullSync => {
+                tracing::debug!("Received RequestFullSync from user {}", user_id);
                 let documents = self.db.get_user_documents(&user_id).await?;
+                tracing::debug!("Found {} documents for user {}", documents.len(), user_id);
                 
                 for doc in &documents {
+                    tracing::debug!("Sending SyncDocument for doc {}", doc.id);
                     self.tx.send(ServerMessage::SyncDocument { document: doc.clone() }).await?;
                 }
                 
@@ -191,11 +189,41 @@ impl SyncHandler {
     
     async fn broadcast_to_user(
         &self,
-        _user_id: Uuid,
-        _message: ServerMessage,
+        user_id: Uuid,
+        message: ServerMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // In a real implementation, you'd maintain a registry of connected clients
-        // and broadcast to all connections for this user except the sender
+        // Get all connected clients for this user
+        if let Some(clients) = self.app_state.clients.get(&user_id) {
+            tracing::debug!("Broadcasting to {} clients for user {}", clients.len(), user_id);
+            let mut dead_clients = Vec::new();
+            
+            // Send message to all clients for this user
+            for (index, client_tx) in clients.iter().enumerate() {
+                if client_tx.send(message.clone()).await.is_err() {
+                    // Client disconnected, mark for removal
+                    dead_clients.push(index);
+                }
+            }
+            
+            // Remove dead clients (in reverse order to maintain indices)
+            if !dead_clients.is_empty() {
+                drop(clients); // Release the read lock
+                if let Some(mut clients_mut) = self.app_state.clients.get_mut(&user_id) {
+                    for &index in dead_clients.iter().rev() {
+                        if index < clients_mut.len() {
+                            clients_mut.remove(index);
+                        }
+                    }
+                    
+                    // Remove user entry if no clients left
+                    if clients_mut.is_empty() {
+                        drop(clients_mut);
+                        self.app_state.clients.remove(&user_id);
+                    }
+                }
+            }
+        }
+        
         Ok(())
     }
 }

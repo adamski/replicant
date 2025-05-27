@@ -6,6 +6,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use dashmap::DashMap;
 use sync_server::{
     database::ServerDatabase,
     auth::AuthState,
@@ -54,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db: db.clone(),
         auth: AuthState::new(db),
         monitoring: monitoring_layer,
+        clients: Arc::new(DashMap::new()),
     });
     
     // Build router

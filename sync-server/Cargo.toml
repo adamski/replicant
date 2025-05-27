@@ -35,3 +35,11 @@ colored = "2.1"
 
 [dev-dependencies]
 indicatif = "0.17"
+sync-client = { path = "../sync-client" }
+tokio-tungstenite = "0.24"
+tungstenite = "0.24"
+reqwest = { version = "0.12", features = ["json"] }
+
+[[test]]
+name = "integration"
+path = "tests_integration/tests.rs"

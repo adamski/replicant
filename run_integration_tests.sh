@@ -33,9 +33,9 @@ sleep 5
 echo "🧪 Running integration tests..."
 export RUN_INTEGRATION_TESTS=1
 export TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5433/sync_test_db"
-export SYNC_SERVER_URL="ws://localhost:8081"
+export SYNC_SERVER_URL="ws://localhost:8082"
 
-cargo test integration --no-fail-fast -- --nocapture
+cargo test -p sync-server --test integration --no-fail-fast -- --nocapture
 
 TEST_EXIT_CODE=$?
 

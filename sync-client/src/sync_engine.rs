@@ -100,6 +100,7 @@ impl SyncEngine {
         self.db.save_document(&doc).await?;
         
         // Send to server
+        tracing::debug!("Sending CreateDocument to server: {}", doc.id);
         self.ws_client.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
         
         Ok(doc)
@@ -181,6 +182,7 @@ impl SyncEngine {
             }
             ServerMessage::DocumentCreated { document } => {
                 // New document from server
+                tracing::debug!("Received DocumentCreated from server: {}", document.id);
                 db.save_document(&document).await?;
                 db.mark_synced(&document.id, &document.revision_id).await?;
             }
@@ -192,6 +194,15 @@ impl SyncEngine {
                 tracing::warn!("Conflict detected for document {}", document_id);
                 // Implement conflict resolution UI callback
             }
+            ServerMessage::SyncDocument { document } => {
+                // Document from full sync
+                tracing::debug!("Received SyncDocument from full sync: {}", document.id);
+                db.save_document(&document).await?;
+                db.mark_synced(&document.id, &document.revision_id).await?;
+            }
+            ServerMessage::SyncComplete { synced_count } => {
+                tracing::debug!("Sync complete, received {} documents", synced_count);
+            }
             _ => {}
         }
         
@@ -199,9 +210,9 @@ impl SyncEngine {
     }
     
     async fn sync_all(&self) -> Result<(), ClientError> {
-        let pending = self.db.get_pending_documents().await?;
-        
-        self.ws_client.send(ClientMessage::RequestSync { document_ids: pending }).await?;
+        // Request full sync on startup to get all documents
+        tracing::debug!("Requesting full sync from server");
+        self.ws_client.send(ClientMessage::RequestFullSync).await?;
         
         Ok(())
     }

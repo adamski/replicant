@@ -7,12 +7,19 @@ pub mod queries;
 pub mod monitoring;
 
 use std::sync::Arc;
+use dashmap::DashMap;
+use uuid::Uuid;
+use sync_core::protocol::ServerMessage;
+
+// Registry of connected clients: user_id -> list of client message senders
+pub type ClientRegistry = Arc<DashMap<Uuid, Vec<tokio::sync::mpsc::Sender<ServerMessage>>>>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<database::ServerDatabase>,
     pub auth: auth::AuthState,
     pub monitoring: Option<monitoring::MonitoringLayer>,
+    pub clients: ClientRegistry,
 }
 
 #[cfg(test)]

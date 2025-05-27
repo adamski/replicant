@@ -22,7 +22,7 @@ services:
   sync-server-test:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     depends_on:
       postgres-test:
         condition: service_healthy
@@ -30,42 +30,24 @@ services:
       DATABASE_URL: postgres://postgres:postgres@postgres-test:5432/sync_test_db
       RUST_LOG: debug,sqlx=warn
       PORT: 8080
+      CARGO_HOME: /workspace/.cargo
+      CARGO_TARGET_DIR: /workspace/target-docker
     ports:
       - "8082:8080"
     networks:
       - test-network
     volumes:
-      - ./target:/app/target
-      - ./Cargo.lock:/app/Cargo.lock
+      # Mount source code for hot-reload
+      - ./:/workspace:cached
+      # Use named volumes for cargo and target to speed up builds
+      - cargo-cache:/workspace/.cargo
+      - target-cache:/workspace/target-docker
+    working_dir: /workspace
     command: >
       sh -c "
         cd sync-server &&
         sqlx migrate run &&
         cargo run
-      "
-
-  test-runner:
-    build:
-      context: .
-      dockerfile: Dockerfile.test
-    depends_on:
-      postgres-test:
-        condition: service_healthy
-    environment:
-      TEST_DATABASE_URL: postgres://postgres:postgres@postgres-test:5432/sync_test_db
-      SYNC_SERVER_URL: ws://sync-server-test:8080
-      RUST_LOG: debug
-      RUST_BACKTRACE: 1
-    volumes:
-      - ./:/workspace
-      - cargo-cache:/usr/local/cargo
-      - target-cache:/workspace/target
-    networks:
-      - test-network
-    command: >
-      sh -c "
-        cd /workspace &&
-        cargo test integration --no-fail-fast -- --nocapture
       "
 
 networks:

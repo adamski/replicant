@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 use sync_core::protocol::{ClientMessage, ServerMessage};
 use crate::errors::ClientError;
+use backoff::{future::retry, ExponentialBackoff};
 
 #[derive(Clone)]
 pub struct WebSocketClient {
@@ -20,9 +21,7 @@ impl WebSocketClient {
         user_id: Uuid,
         auth_token: &str,
     ) -> Result<(Self, WebSocketReceiver), ClientError> {
-        let (ws_stream, _) = connect_async(server_url)
-            .await
-            .map_err(|e| ClientError::WebSocket(e.to_string()))?;
+        let ws_stream = Self::connect_with_retry(server_url, 3).await?;
         
         let (write, read) = ws_stream.split();
         
@@ -74,6 +73,34 @@ impl WebSocketClient {
         }).await?;
         
         Ok((client, receiver))
+    }
+    
+    async fn connect_with_retry(
+        server_url: &str, 
+        max_retries: u32
+    ) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, ClientError> {
+        let backoff = ExponentialBackoff {
+            initial_interval: std::time::Duration::from_millis(100),
+            max_interval: std::time::Duration::from_millis(2000),
+            max_elapsed_time: Some(std::time::Duration::from_secs(10)),
+            randomization_factor: 0.1, // Add 10% jitter
+            ..Default::default()
+        };
+        
+        let server_url = server_url.to_string();
+        let operation = || async {
+            match connect_async(&server_url).await {
+                Ok((ws_stream, _)) => Ok(ws_stream),
+                Err(e) => {
+                    tracing::warn!("WebSocket connection failed, will retry: {}", e);
+                    Err(backoff::Error::transient(e))
+                }
+            }
+        };
+        
+        retry(backoff, operation)
+            .await
+            .map_err(|e| ClientError::WebSocket(e.to_string()))
     }
     
     pub async fn send(&self, message: ClientMessage) -> Result<(), ClientError> {

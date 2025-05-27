@@ -16,6 +16,7 @@ mod tests {
     use uuid::Uuid;
     use serde_json::json;
     use sync_core::models::{Document, VectorClock};
+    use sqlx::Row;
     
     #[tokio::test]
     async fn test_client_database_operations() {

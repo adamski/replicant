@@ -162,6 +162,23 @@ impl TestContext {
         }
     }
     
+    pub async fn reset_server_state(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Reset server in-memory state via API (much faster than restart)
+        let client = reqwest::Client::new();
+        let server_base = self.server_url.replace("ws://", "http://").replace("wss://", "https://");
+        
+        let response = client
+            .post(&format!("{}/test/reset", server_base))
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            return Err(format!("Failed to reset server state: {}", response.status()).into());
+        }
+        
+        Ok(())
+    }
+    
     pub async fn cleanup_database(&self) {
         // Connect to database and clean up test data
         let pool = sqlx::postgres::PgPool::connect(&self.db_url)
@@ -226,6 +243,9 @@ macro_rules! integration_test {
             let ctx = crate::integration::helpers::TestContext::new();
             ctx.wait_for_server().await.expect("Server not ready");
             
+            // Reset server in-memory state (much faster than restart)
+            ctx.reset_server_state().await.expect("Failed to reset server state");
+            
             // Clean database before each test to ensure isolation
             ctx.cleanup_database().await;
             
@@ -233,7 +253,7 @@ macro_rules! integration_test {
             let test_fn = $body;
             test_fn(ctx.clone()).await;
             
-            // Clean up after test as well
+            // Clean up after test as well  
             ctx.cleanup_database().await;
         }
     };

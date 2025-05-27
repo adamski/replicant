@@ -69,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/documents/:id", get(api::get_document))
         // Health check
         .route("/health", get(|| async { "OK" }))
+        .route("/test/reset", post(reset_server_state))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(app_state);
@@ -91,4 +92,16 @@ async fn websocket_handler(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     ws.on_upgrade(move |socket| handle_websocket(socket, state))
+}
+
+async fn reset_server_state(State(state): State<Arc<AppState>>) -> &'static str {
+    // Clear all in-memory state for testing
+    tracing::info!("Resetting server state for testing");
+    
+    // Clear the client registry
+    state.clients.clear();
+    
+    // TODO: Could also reset other in-memory state here
+    
+    "Server state reset"
 }

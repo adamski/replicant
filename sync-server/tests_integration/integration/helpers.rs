@@ -30,9 +30,12 @@ impl TestContext {
     pub fn new() -> Self {
         Self {
             server_url: std::env::var("SYNC_SERVER_URL")
-                .unwrap_or_else(|_| "ws://localhost:8082".to_string()),
+                .unwrap_or_else(|_| "ws://localhost:8080".to_string()),
             db_url: std::env::var("TEST_DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5433/sync_test_db".to_string()),
+                .unwrap_or_else(|_| {
+                    let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
+                    format!("postgres://{}@localhost:5432/sync_test_db_local", user)
+                }),
         }
     }
     
@@ -227,6 +230,76 @@ where
     }
     
     panic!("Assertion did not become true within {} seconds", timeout_secs);
+}
+
+/// Test helper for verifying eventual convergence in distributed systems
+pub async fn assert_all_clients_converge<F, Fut>(
+    clients: &[&sync_client::SyncEngine],
+    expected_count: usize,
+    timeout_secs: u64,
+    check_fn: F,
+) where
+    F: Fn(&sync_core::models::Document) -> Fut + Clone,
+    Fut: std::future::Future<Output = bool>,
+{
+    let start = tokio::time::Instant::now();
+    let timeout = tokio::time::Duration::from_secs(timeout_secs);
+    
+    loop {
+        let mut all_converged = true;
+        let mut client_states = Vec::new();
+        
+        // Check each client's state
+        for (i, client) in clients.iter().enumerate() {
+            let docs = client.get_all_documents().await
+                .expect("Failed to get documents");
+            
+            client_states.push((i, docs.len()));
+            
+            // Check document count
+            if docs.len() != expected_count {
+                all_converged = false;
+                continue;
+            }
+            
+            // Apply custom check function to each document
+            for doc in &docs {
+                if !check_fn(doc).await {
+                    all_converged = false;
+                    break;
+                }
+            }
+        }
+        
+        if all_converged {
+            // Success! All clients have converged
+            tracing::info!("All {} clients converged to {} documents in {:?}", 
+                         clients.len(), expected_count, start.elapsed());
+            return;
+        }
+        
+        if start.elapsed() > timeout {
+            // Log detailed state for debugging
+            eprintln!("\n=== Convergence Timeout After {} seconds ===", timeout_secs);
+            eprintln!("Expected: {} documents across {} clients", expected_count, clients.len());
+            eprintln!("\nActual client states:");
+            
+            for (i, count) in &client_states {
+                eprintln!("\nClient {}: {} documents", i, count);
+                if let Ok(docs) = clients[*i].get_all_documents().await {
+                    for doc in &docs {
+                        eprintln!("  - {} | {} | rev: {}", 
+                                 doc.id, doc.title, doc.revision_id);
+                    }
+                }
+            }
+            
+            panic!("Clients did not converge within {} seconds", timeout_secs);
+        }
+        
+        // Check every 100ms
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[macro_export]

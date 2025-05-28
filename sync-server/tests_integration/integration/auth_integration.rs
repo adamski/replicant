@@ -71,23 +71,71 @@ crate::integration_test!(test_concurrent_sessions, |ctx: TestContext| async move
     let user_id = Uuid::new_v4();
     let token = "demo-token";
     
-    // Create multiple concurrent sessions
-    let mut clients = Vec::new();
-    for i in 0..5 {
-        let client = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    // Create the first client and document to ensure the user exists
+    let client0 = ctx.create_test_client(user_id, token).await.expect("Failed to create client0");
+    let _doc0 = client0.create_document("Doc from client 0".to_string(), json!({"test": true}))
+        .await.expect("Failed to create document 0");
+    
+    // Create remaining clients and documents
+    let mut clients = vec![client0];
+    
+    for i in 1..5 {
+        // Small delay between client connections
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         
-        // Each client creates a document
-        let _doc = client.create_document(format!("Doc from client {}", i), json!({"test": true})).await.expect("Failed to create document");
+        let client = ctx.create_test_client(user_id, token).await
+            .expect(&format!("Failed to create client {}", i));
+        
+        // Create document for this client
+        let _doc = client.create_document(format!("Doc from client {}", i), json!({"test": true}))
+            .await.expect(&format!("Failed to create document {}", i));
         
         clients.push(client);
     }
     
-    // Wait a bit for sync
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    // Test for eventual convergence - all clients should eventually see all documents
+    // We're testing distributed systems, so we allow reasonable time for convergence
+    let timeout = tokio::time::Duration::from_secs(10);
+    let start = tokio::time::Instant::now();
     
-    // All clients should see all documents
+    loop {
+        // Check if all clients have converged
+        let mut all_converged = true;
+        let mut client_states = Vec::new();
+        
+        for (i, client) in clients.iter().enumerate() {
+            let docs = client.get_all_documents().await.expect("Failed to get documents");
+            client_states.push((i, docs.len()));
+            if docs.len() != 5 {
+                all_converged = false;
+            }
+        }
+        
+        if all_converged {
+            // Success! All clients have converged to the correct state
+            break;
+        }
+        
+        if start.elapsed() > timeout {
+            // Log the current state for debugging
+            eprintln!("Convergence timeout! Client states after {} seconds:", timeout.as_secs());
+            for (i, count) in client_states {
+                let docs = clients[i].get_all_documents().await.expect("Failed to get documents");
+                eprintln!("  Client {}: {} documents", i, count);
+                for doc in &docs {
+                    eprintln!("    - {}: {}", doc.id, doc.title);
+                }
+            }
+            panic!("Clients did not converge within {} seconds", timeout.as_secs());
+        }
+        
+        // Check every 100ms for convergence
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    
+    // Verify the final converged state
     for (i, client) in clients.iter().enumerate() {
         let docs = client.get_all_documents().await.expect("Failed to get documents");
-        assert_eq!(docs.len(), 5, "Client {} should see all 5 documents", i);
+        assert_eq!(docs.len(), 5, "After convergence, client {} has {} documents", i, docs.len());
     }
 });

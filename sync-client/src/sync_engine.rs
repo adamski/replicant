@@ -65,11 +65,16 @@ impl SyncEngine {
         // Spawn message handler
         tokio::spawn(async move {
             let mut rx = rx;
+            tracing::info!("CLIENT: Message handler started");
             while let Some(msg) = rx.recv().await {
+                tracing::info!("CLIENT: Processing server message: {:?}", std::mem::discriminant(&msg));
                 if let Err(e) = Self::handle_server_message(msg, &db).await {
-                    tracing::error!("Error handling server message: {}", e);
+                    tracing::error!("CLIENT: Error handling server message: {}", e);
+                } else {
+                    tracing::info!("CLIENT: Successfully processed server message");
                 }
             }
+            tracing::warn!("CLIENT: Message handler terminated");
         });
         
         // Initial sync
@@ -82,7 +87,7 @@ impl SyncEngine {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id: self.user_id,
-            title,
+            title: title.clone(),
             content,
             revision_id: Uuid::new_v4(),
             version: 1,
@@ -96,12 +101,14 @@ impl SyncEngine {
             deleted_at: None,
         };
         
-        // Save locally
+        // Save locally first
+        tracing::info!("CLIENT: Creating document locally: {} ({})", doc.id, title);
         self.db.save_document(&doc).await?;
         
         // Send to server
-        tracing::debug!("Sending CreateDocument to server: {}", doc.id);
+        tracing::info!("CLIENT: Sending CreateDocument to server: {} ({})", doc.id, title);
         self.ws_client.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
+        tracing::info!("CLIENT: Successfully sent CreateDocument to server: {} ({})", doc.id, title);
         
         Ok(doc)
     }
@@ -156,7 +163,12 @@ impl SyncEngine {
     }
     
     pub async fn get_all_documents(&self) -> Result<Vec<Document>, ClientError> {
-        self.db.get_all_documents().await
+        let docs = self.db.get_all_documents().await?;
+        tracing::info!("CLIENT: get_all_documents() returning {} documents", docs.len());
+        for doc in &docs {
+            tracing::info!("CLIENT:   - Document: {} ({})", doc.id, doc.title);
+        }
+        Ok(docs)
     }
     
     async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>) -> Result<(), ClientError> {
@@ -182,9 +194,10 @@ impl SyncEngine {
             }
             ServerMessage::DocumentCreated { document } => {
                 // New document from server
-                tracing::debug!("Received DocumentCreated from server: {}", document.id);
+                tracing::info!("CLIENT: Received DocumentCreated from server: {} ({})", document.id, document.title);
                 db.save_document(&document).await?;
                 db.mark_synced(&document.id, &document.revision_id).await?;
+                tracing::info!("CLIENT: Saved document {} to local database", document.id);
             }
             ServerMessage::DocumentDeleted { document_id, .. } => {
                 // Document deleted from server
@@ -196,7 +209,7 @@ impl SyncEngine {
             }
             ServerMessage::SyncDocument { document } => {
                 // Document from full sync
-                tracing::debug!("Received SyncDocument from full sync: {}", document.id);
+                tracing::info!("CLIENT: Received SyncDocument from full sync: {} ({})", document.id, document.title);
                 db.save_document(&document).await?;
                 db.mark_synced(&document.id, &document.revision_id).await?;
             }
@@ -209,7 +222,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    async fn sync_all(&self) -> Result<(), ClientError> {
+    pub async fn sync_all(&self) -> Result<(), ClientError> {
         // Request full sync on startup to get all documents
         tracing::debug!("Requesting full sync from server");
         self.ws_client.send(ClientMessage::RequestFullSync).await?;

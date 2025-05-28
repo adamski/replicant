@@ -46,7 +46,15 @@ impl SyncHandler {
                 self.db.create_document(&document).await?;
                 
                 // Broadcast to all connected clients (including sender)
-                tracing::debug!("Broadcasting DocumentCreated to all clients of user {}", user_id);
+                tracing::info!("Broadcasting DocumentCreated for doc {} to all clients of user {}", document.id, user_id);
+                
+                // Log current client count
+                if let Some(clients) = self.app_state.clients.get(&user_id) {
+                    tracing::info!("User {} has {} connected clients", user_id, clients.len());
+                } else {
+                    tracing::warn!("User {} has no registered clients!", user_id);
+                }
+                
                 self.broadcast_to_user(
                     user_id,
                     ServerMessage::DocumentCreated { document }
@@ -194,16 +202,22 @@ impl SyncHandler {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Get all connected clients for this user
         if let Some(clients) = self.app_state.clients.get(&user_id) {
-            tracing::debug!("Broadcasting to {} clients for user {}", clients.len(), user_id);
+            tracing::info!("Broadcasting message to {} clients for user {}", clients.len(), user_id);
             let mut dead_clients = Vec::new();
+            let mut successful_sends = 0;
             
             // Send message to all clients for this user
             for (index, client_tx) in clients.iter().enumerate() {
                 if client_tx.send(message.clone()).await.is_err() {
                     // Client disconnected, mark for removal
                     dead_clients.push(index);
+                    tracing::warn!("Failed to send to client {} for user {}", index, user_id);
+                } else {
+                    successful_sends += 1;
                 }
             }
+            
+            tracing::info!("Successfully sent to {}/{} clients for user {}", successful_sends, clients.len(), user_id);
             
             // Remove dead clients (in reverse order to maintain indices)
             if !dead_clients.is_empty() {

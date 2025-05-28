@@ -118,11 +118,17 @@ impl WebSocketReceiver {
     }
     
     pub async fn forward_to(mut self, tx: mpsc::Sender<ServerMessage>) -> Result<(), ClientError> {
+        tracing::info!("CLIENT: WebSocket receiver forwarder started");
         while let Some(msg) = self.receive().await? {
+            tracing::info!("CLIENT: Received WebSocket message: {:?}", std::mem::discriminant(&msg));
             if tx.send(msg).await.is_err() {
+                tracing::error!("CLIENT: Failed to forward message to handler");
                 break;
+            } else {
+                tracing::info!("CLIENT: Successfully forwarded message to handler");
             }
         }
+        tracing::warn!("CLIENT: WebSocket receiver forwarder terminated");
         Ok(())
     }
     

@@ -20,17 +20,23 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
     let monitoring_clone = state.monitoring.clone();
     let client_id_clone = client_id.clone();
     tokio::spawn(async move {
+        tracing::info!("SERVER: WebSocket sender task started for client {}", client_id_clone);
         while let Some(msg) = rx.recv().await {
             // Log outgoing message if monitoring is enabled
             if let Some(ref monitoring) = monitoring_clone {
                 monitoring.log_message_sent(&client_id_clone, msg.clone()).await;
             }
             
+            tracing::info!("SERVER: Sending message to client {}: {:?}", client_id_clone, std::mem::discriminant(&msg));
             let json = serde_json::to_string(&msg).unwrap();
             if sender.send(Message::Text(json)).await.is_err() {
+                tracing::error!("SERVER: Failed to send WebSocket message to client {}", client_id_clone);
                 break;
+            } else {
+                tracing::info!("SERVER: Successfully sent WebSocket message to client {}", client_id_clone);
             }
         }
+        tracing::warn!("SERVER: WebSocket sender task terminated for client {}", client_id_clone);
     });
     
     let mut handler = SyncHandler::new(state.db.clone(), tx.clone(), state.monitoring.clone(), state.clone());
@@ -57,12 +63,16 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                                     state.clients.entry(user_id)
                                         .and_modify(|clients| {
                                             clients.push(tx.clone());
-                                            tracing::debug!("Added client to existing list, now {} clients for user {}", clients.len(), user_id);
+                                            tracing::info!("Added client to existing list, now {} clients for user {}", clients.len(), user_id);
                                         })
                                         .or_insert_with(|| {
-                                            tracing::debug!("First client for user {}", user_id);
+                                            tracing::info!("First client for user {}", user_id);
                                             vec![tx.clone()]
                                         });
+                                    
+                                    // Log total client count
+                                    let client_count = state.clients.get(&user_id).map(|c| c.len()).unwrap_or(0);
+                                    tracing::info!("User {} now has {} total connected clients", user_id, client_count);
                                     
                                     let _ = tx.send(ServerMessage::AuthSuccess {
                                         session_id: Uuid::new_v4(),

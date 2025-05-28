@@ -156,3 +156,117 @@ crate::integration_test!(test_large_document_sync, |ctx: TestContext| async move
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 });
+
+crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestContext| async move {
+    let user_id = Uuid::new_v4();
+    let token = "demo-token";
+    
+    // Phase 1: All clients online and synced
+    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client1");
+    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client2");
+    let client3 = ctx.create_test_client(user_id, token).await.expect("Failed to create client3");
+    
+    // Create initial shared document
+    let shared_doc = client1.create_document(
+        "Shared Document".to_string(), 
+        json!({"content": "initial content", "version": 0})
+    ).await.expect("Failed to create shared document");
+    
+    // Wait for initial sync
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    
+    // Verify all clients have the document (with debugging)
+    let docs1 = client1.get_all_documents().await.unwrap();
+    let docs2 = client2.get_all_documents().await.unwrap();
+    let docs3 = client3.get_all_documents().await.unwrap();
+    
+    // Initial sync successful
+    
+    assert_eq!(docs1.len(), 1, "Client1 should have 1 document after initial sync");
+    assert_eq!(docs2.len(), 1, "Client2 should have 1 document after initial sync");
+    assert_eq!(docs3.len(), 1, "Client3 should have 1 document after initial sync");
+    
+    // Phase 2: Simulate simultaneous internet outage
+    // All clients go offline (we simulate this by dropping their connections)
+    drop(client1);
+    drop(client2);
+    drop(client3);
+    
+    // Wait for server to detect disconnections
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    
+    // Phase 3: Clients work offline and make conflicting changes
+    // Each client reconnects as new instance (simulating restart after outage)
+    // and makes different changes to the same document
+    
+    // Client 1 comes back and updates the document
+    println!("🔌 Client1 reconnecting after outage...");
+    let client1_back = ctx.create_test_client(user_id, token).await.expect("Failed to reconnect client1");
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await; // Let it sync existing state
+    
+    let docs_before_update = client1_back.get_all_documents().await.unwrap();
+    println!("📊 Client1 after reconnect: {} docs", docs_before_update.len());
+    
+    client1_back.update_document(
+        shared_doc.id, 
+        json!({"content": "updated by client 1 after outage", "version": 1, "editor": "client1"})
+    ).await.expect("Failed to update from client1");
+    
+    println!("✏️ Client1 made update after outage");
+    
+    // Client 2 comes back and makes conflicting update
+    let client2_back = ctx.create_test_client(user_id, token).await.expect("Failed to reconnect client2");
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // Let it sync existing state
+    
+    client2_back.update_document(
+        shared_doc.id, 
+        json!({"content": "updated by client 2 after outage", "version": 2, "editor": "client2"})
+    ).await.expect("Failed to update from client2");
+    
+    // Client 3 comes back and also makes conflicting update
+    let client3_back = ctx.create_test_client(user_id, token).await.expect("Failed to reconnect client3");
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // Let it sync existing state
+    
+    client3_back.update_document(
+        shared_doc.id, 
+        json!({"content": "updated by client 3 after outage", "version": 3, "editor": "client3"})
+    ).await.expect("Failed to update from client3");
+    
+    // Phase 4: All clients come back online simultaneously (internet restored)
+    // Wait for conflict resolution and convergence
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    
+    // Phase 5: Verify eventual consistency
+    let docs1 = client1_back.get_all_documents().await.expect("Failed to get documents from client1");
+    let docs2 = client2_back.get_all_documents().await.expect("Failed to get documents from client2");
+    let docs3 = client3_back.get_all_documents().await.expect("Failed to get documents from client3");
+    
+    // All clients should have the same number of documents
+    assert_eq!(docs1.len(), 1, "Client1 should have 1 document");
+    assert_eq!(docs2.len(), 1, "Client2 should have 1 document");
+    assert_eq!(docs3.len(), 1, "Client3 should have 1 document");
+    
+    // All clients should converge to the same final state
+    // (The exact winner depends on conflict resolution algorithm - last write wins, vector clock, etc.)
+    let final_content1 = &docs1[0].content;
+    let final_content2 = &docs2[0].content;
+    let final_content3 = &docs3[0].content;
+    
+    assert_eq!(final_content1, final_content2, "Client1 and Client2 should have same final content");
+    assert_eq!(final_content2, final_content3, "Client2 and Client3 should have same final content");
+    
+    // Verify the document has been properly updated (not stuck at initial state)
+    assert_ne!(final_content1["content"], "initial content", "Document should not be stuck at initial content");
+    
+    // Verify one of the clients won the conflict resolution
+    let final_editor = final_content1["editor"].as_str().unwrap();
+    assert!(
+        ["client1", "client2", "client3"].contains(&final_editor),
+        "Final editor should be one of the clients: {}", final_editor
+    );
+    
+    println!("✅ Simultaneous outage test passed - final state: {:?}", final_content1);
+    
+    // Keep clients alive briefly to avoid disconnect race
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+});

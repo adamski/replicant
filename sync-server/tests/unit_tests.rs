@@ -71,7 +71,9 @@ mod database_tests {
             content: json!({
                 "text": "Hello, World!"
             }),
-            revision_id: Uuid::new_v4(),
+            revision_id: Document::initial_revision(&json!({
+                "text": "Hello, World!"
+            })),
             version: 1,
             vector_clock: VectorClock::new(),
             created_at: chrono::Utc::now(),

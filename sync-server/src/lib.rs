@@ -56,7 +56,10 @@ mod tests {
                 "text": "Test content",
                 "number": 42
             }),
-            revision_id: Uuid::new_v4(),
+            revision_id: Document::initial_revision(&json!({
+                "text": "Test content",
+                "number": 42
+            })),
             version: 1,
             vector_clock: VectorClock::new(),
             created_at: chrono::Utc::now(),

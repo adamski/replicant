@@ -56,8 +56,8 @@ impl ConflictResolver {
         let merged_content = merge_json_values(&local.content, &remote.content)?;
         
         let mut merged_doc = local.clone();
+        merged_doc.revision_id = merged_doc.next_revision(&merged_content);
         merged_doc.content = merged_content;
-        merged_doc.revision_id = uuid::Uuid::new_v4();
         merged_doc.version = local.version.max(remote.version) + 1;
         
         // Merge vector clocks

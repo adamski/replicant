@@ -136,7 +136,10 @@ impl TestContext {
                 "text": format!("Content for {}", title),
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
-            revision_id: Uuid::new_v4(),
+            revision_id: Document::initial_revision(&json!({
+                "text": format!("Content for {}", title),
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            })),
             version: 1,
             vector_clock: sync_core::models::VectorClock::new(),
             created_at: chrono::Utc::now(),

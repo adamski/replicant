@@ -78,10 +78,10 @@ impl ClientDatabase {
             .collect()
     }
     
-    pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &Uuid) -> Result<(), ClientError> {
+    pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &str) -> Result<(), ClientError> {
         sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
             .bind(document_id.to_string())
-            .bind(revision_id.to_string())
+            .bind(revision_id)
             .execute(&self.pool)
             .await?;
         

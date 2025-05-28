@@ -80,7 +80,9 @@ mod tests {
                 "text": "Hello, World!",
                 "tags": ["test"]
             }),
-            revision_id: Uuid::new_v4(),
+            revision_id: Document::initial_revision(&json!({
+                "text": "Hello, World!"
+            })),
             version: 1,
             vector_clock: VectorClock::new(),
             created_at: chrono::Utc::now(),
@@ -112,7 +114,7 @@ mod tests {
                 user_id: Uuid::new_v4(),
                 title: "Test".to_string(),
                 content: json!({}),
-                revision_id: Uuid::new_v4(),
+                revision_id: Document::initial_revision(&json!({})),
                 version: 1,
                 vector_clock: VectorClock::new(),
                 created_at: chrono::Utc::now(),
@@ -127,7 +129,7 @@ mod tests {
         // Test delete message
         let delete_msg = ClientMessage::DeleteDocument {
             document_id: doc_id,
-            revision_id: Uuid::new_v4(),
+            revision_id: "1-test".to_string(),
         };
         
         assert_eq!(extract_document_id(&delete_msg), Some(doc_id));
@@ -191,7 +193,9 @@ mod tests {
             content: json!({
                 "text": "Hello, World!"
             }),
-            revision_id: Uuid::new_v4(),
+            revision_id: Document::initial_revision(&json!({
+                "text": "Hello, World!"
+            })),
             version: 1,
             vector_clock: VectorClock::new(),
             created_at: chrono::Utc::now(),

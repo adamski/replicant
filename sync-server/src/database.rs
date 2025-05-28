@@ -127,7 +127,7 @@ impl ServerDatabase {
         
         sqlx::query(Queries::CREATE_REVISION)
             .bind(doc.id)
-            .bind(doc.revision_id)
+            .bind(&doc.revision_id)
             .bind(serde_json::to_value(&doc.content).unwrap())
             .bind(patch_json)
             .bind(doc.version as i64)

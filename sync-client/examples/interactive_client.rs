@@ -254,8 +254,8 @@ async fn create_document(
             id: Uuid::new_v4(),
             user_id,
             title,
+            revision_id: Document::initial_revision(&content),
             content,
-            revision_id: Uuid::new_v4(),
             version: 1,
             vector_clock: sync_core::models::VectorClock::new(),
             created_at: chrono::Utc::now(),
@@ -327,8 +327,8 @@ async fn edit_document(
     } else {
         // Offline update
         let mut updated_doc = doc;
+        updated_doc.revision_id = updated_doc.next_revision(&new_content);
         updated_doc.content = new_content;
-        updated_doc.revision_id = Uuid::new_v4();
         updated_doc.version += 1;
         updated_doc.updated_at = chrono::Utc::now();
         

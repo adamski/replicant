@@ -88,8 +88,8 @@ impl SyncEngine {
             id: Uuid::new_v4(),
             user_id: self.user_id,
             title: title.clone(),
+            revision_id: Document::initial_revision(&content),
             content,
-            revision_id: Uuid::new_v4(),
             version: 1,
             vector_clock: {
                 let mut vc = VectorClock::new();
@@ -121,8 +121,8 @@ impl SyncEngine {
         let patch = create_patch(&old_content, &new_content)?;
         
         // Update document
+        doc.revision_id = doc.next_revision(&new_content);
         doc.content = new_content;
-        doc.revision_id = Uuid::new_v4();
         doc.version += 1;
         doc.vector_clock.increment(&self.node_id);
         doc.updated_at = chrono::Utc::now();

@@ -100,7 +100,7 @@ crate::integration_test!(test_message_exchange, |ctx: TestContext| async move {
         user_id,
         title: "Test Doc".to_string(),
         content: json!({"text": "Hello World"}),
-        revision_id: Uuid::new_v4(),
+        revision_id: Document::initial_revision(&json!({"text": "Hello World"})),
         version: 1,
         vector_clock: VectorClock::new(),
         created_at: Utc::now(),

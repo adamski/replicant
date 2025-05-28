@@ -137,7 +137,7 @@ impl DbHelpers {
         Uuid,                    // user_id
         String,                  // title
         serde_json::Value,       // content
-        Uuid,                    // revision_id
+        String,                  // revision_id
         i64,                     // version
         serde_json::Value,       // vector_clock
         chrono::DateTime<chrono::Utc>, // created_at
@@ -155,7 +155,7 @@ impl DbHelpers {
             doc.user_id,
             doc.title.clone(),
             doc.content.clone(),
-            doc.revision_id,
+            doc.revision_id.clone(),
             doc.version,
             serde_json::to_value(&doc.vector_clock).unwrap_or(serde_json::json!({})),
             doc.created_at,

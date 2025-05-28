@@ -20,7 +20,7 @@ pub enum ClientMessage {
     },
     DeleteDocument {
         document_id: Uuid,
-        revision_id: Uuid,
+        revision_id: String,  // CouchDB-style
     },
     
     // Sync operations
@@ -28,6 +28,15 @@ pub enum ClientMessage {
         document_ids: Vec<Uuid>,
     },
     RequestFullSync,
+    
+    // New sequence-based sync operations
+    GetChangesSince {
+        last_sequence: u64,
+        limit: Option<u32>,  // Optional pagination
+    },
+    AckChanges {
+        up_to_sequence: u64,  // Client confirms it processed up to this sequence
+    },
     
     // Heartbeat
     Ping,
@@ -53,7 +62,7 @@ pub enum ServerMessage {
     },
     DocumentDeleted {
         document_id: Uuid,
-        revision_id: Uuid,
+        revision_id: String,  // CouchDB-style
     },
     
     // Sync responses
@@ -67,9 +76,19 @@ pub enum ServerMessage {
     // Conflict notification
     ConflictDetected {
         document_id: Uuid,
-        local_revision: Uuid,
-        server_revision: Uuid,
+        local_revision: String,  // CouchDB-style
+        server_revision: String,  // CouchDB-style
         resolution_strategy: ConflictResolution,
+    },
+    
+    // New sequence-based sync responses
+    Changes {
+        events: Vec<ChangeEvent>,
+        latest_sequence: u64,
+        has_more: bool,  // True if there are more changes beyond the limit
+    },
+    ChangesAcknowledged {
+        sequence: u64,
     },
     
     // Errors
@@ -102,4 +121,24 @@ pub enum ErrorCode {
     VersionMismatch,
     ServerError,
     RateLimitExceeded,
+}
+
+// New types for sequence-based sync
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeEvent {
+    pub sequence: u64,
+    pub document_id: Uuid,
+    pub user_id: Uuid,
+    pub event_type: ChangeEventType,
+    pub revision_id: String,  // CouchDB-style
+    pub json_patch: Option<serde_json::Value>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeEventType {
+    Create,
+    Update,
+    Delete,
 }

@@ -81,8 +81,8 @@ impl SyncHandler {
                     // Conflict detected
                     self.tx.send(ServerMessage::ConflictDetected {
                         document_id: patch.document_id,
-                        local_revision: patch.revision_id,
-                        server_revision: doc.revision_id,
+                        local_revision: patch.revision_id.clone(),
+                        server_revision: doc.revision_id.clone(),
                         resolution_strategy: ConflictResolution::Manual {
                             server_document: doc.clone(),
                             client_patch: patch.clone(),
@@ -108,7 +108,7 @@ impl SyncHandler {
                 }
                 
                 // Update metadata
-                doc.revision_id = patch.revision_id;
+                doc.revision_id = patch.revision_id.clone();
                 doc.version += 1;
                 doc.vector_clock.merge(&patch.vector_clock);
                 doc.updated_at = chrono::Utc::now();
@@ -138,7 +138,7 @@ impl SyncHandler {
                 // Create revision for the delete operation
                 let mut deleted_doc = doc.clone();
                 deleted_doc.deleted_at = Some(chrono::Utc::now());
-                deleted_doc.revision_id = revision_id;
+                deleted_doc.revision_id = revision_id.clone();
                 self.db.create_revision(&deleted_doc, None).await?;
                 
                 // Broadcast deletion to all connected clients (including sender)
@@ -181,6 +181,16 @@ impl SyncHandler {
             ClientMessage::Authenticate { .. } => {
                 // Authentication is handled in the websocket handler
                 self.send_error(ErrorCode::InvalidAuth, "Authentication should be handled before this point").await?;
+            }
+            
+            ClientMessage::GetChangesSince { .. } => {
+                // TODO: Implement sequence-based sync
+                self.send_error(ErrorCode::ServerError, "Sequence-based sync not yet implemented").await?;
+            }
+            
+            ClientMessage::AckChanges { .. } => {
+                // TODO: Implement change acknowledgment
+                self.send_error(ErrorCode::ServerError, "Change acknowledgment not yet implemented").await?;
             }
         }
         

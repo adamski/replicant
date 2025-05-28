@@ -104,6 +104,8 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                         ClientMessage::RequestSync { .. } => "RequestSync",
                         ClientMessage::RequestFullSync => "RequestFullSync",
                         ClientMessage::Ping => "Ping",
+                        ClientMessage::GetChangesSince { .. } => "GetChangesSince",
+                        ClientMessage::AckChanges { .. } => "AckChanges",
                     };
                     println!(
                         "{} {} {} from {}",
@@ -125,6 +127,8 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                         ServerMessage::ConflictDetected { .. } => "ConflictDetected",
                         ServerMessage::Error { .. } => "Error",
                         ServerMessage::Pong => "Pong",
+                        ServerMessage::Changes { .. } => "Changes",
+                        ServerMessage::ChangesAcknowledged { .. } => "ChangesAcknowledged",
                     };
                     println!(
                         "{} {} {} to {}",

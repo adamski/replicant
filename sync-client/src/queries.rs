@@ -159,7 +159,7 @@ impl DbHelpers {
             user_id: Uuid::parse_str(&user_id)?,
             title,
             content: serde_json::from_str(&content)?,
-            revision_id: Uuid::parse_str(&revision_id)?,
+            revision_id,
             version,
             vector_clock: serde_json::from_str(&vector_clock.unwrap_or_else(|| "{}".to_string()))?,
             created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),

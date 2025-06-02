@@ -270,3 +270,74 @@ crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestCo
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 });
+
+crate::integration_test!(test_array_duplication_bug, |ctx: TestContext| async move {
+    let user_id = Uuid::new_v4();
+    let token = "demo-token";
+    
+    // Create two clients
+    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client1");
+    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client2");
+    
+    // Client 1 creates a document with an array
+    let doc = client1.create_document(
+        "Array Test Doc".to_string(), 
+        json!({
+            "title": "Test Document",
+            "tags": ["existing"]
+        })
+    ).await.expect("Failed to create document");
+    
+    // Wait for sync to client2
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    
+    // Verify client2 has the document
+    let docs2 = client2.get_all_documents().await.expect("Failed to get documents");
+    assert_eq!(docs2.len(), 1);
+    assert_eq!(docs2[0].content["tags"].as_array().unwrap().len(), 1);
+    assert_eq!(docs2[0].content["tags"][0], "existing");
+    
+    // Client 1 adds an item to the array (this is where the bug might occur)
+    let mut updated_content = doc.content.clone();
+    if let Some(tags) = updated_content["tags"].as_array_mut() {
+        tags.push(json!("test"));
+    }
+    
+    client1.update_document(doc.id, updated_content).await.expect("Failed to update document");
+    
+    // Wait for sync
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    
+    // Get updated documents from both clients
+    let docs1_updated = client1.get_all_documents().await.expect("Failed to get client1 documents");
+    let docs2_updated = client2.get_all_documents().await.expect("Failed to get client2 documents");
+    
+    assert_eq!(docs1_updated.len(), 1);
+    assert_eq!(docs2_updated.len(), 1);
+    
+    // Check for array duplication bug
+    let tags1 = docs1_updated[0].content["tags"].as_array().unwrap();
+    let tags2 = docs2_updated[0].content["tags"].as_array().unwrap();
+    
+    println!("Client1 tags: {:?}", tags1);
+    println!("Client2 tags: {:?}", tags2);
+    
+    // Both should have exactly 2 items, not duplicates
+    assert_eq!(tags1.len(), 2, "Client1 should have exactly 2 tags, got: {:?}", tags1);
+    assert_eq!(tags2.len(), 2, "Client2 should have exactly 2 tags, got: {:?}", tags2);
+    
+    // Check content is correct
+    assert_eq!(tags1[0], "existing");
+    assert_eq!(tags1[1], "test");
+    assert_eq!(tags2[0], "existing");
+    assert_eq!(tags2[1], "test");
+    
+    // Ensure no duplicates
+    assert_ne!(tags1[0], tags1[1], "Should not have duplicate tags in client1");
+    assert_ne!(tags2[0], tags2[1], "Should not have duplicate tags in client2");
+    
+    println!("✅ Array operations test passed - no duplication detected");
+    
+    // Keep clients alive briefly to avoid disconnect race
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+});

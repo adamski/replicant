@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS documents (
     user_id UUID NOT NULL,
     title TEXT NOT NULL,
     content JSONB NOT NULL,                       -- JSONB for better performance
-    revision_id UUID NOT NULL DEFAULT gen_random_uuid(),
+    revision_id TEXT NOT NULL,
     version BIGINT NOT NULL DEFAULT 1,
     vector_clock JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE TABLE IF NOT EXISTS document_revisions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID NOT NULL,
-    revision_id UUID NOT NULL,
+    revision_id TEXT NOT NULL,
     content JSONB NOT NULL,
     patch JSONB,                                  -- Patch from previous revision
     version BIGINT NOT NULL,

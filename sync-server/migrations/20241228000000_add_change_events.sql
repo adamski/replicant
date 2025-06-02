@@ -7,7 +7,7 @@ CREATE TABLE change_events (
     document_id UUID NOT NULL,
     user_id UUID NOT NULL,
     event_type VARCHAR(10) NOT NULL CHECK (event_type IN ('create', 'update', 'delete')),
-    revision_id UUID NOT NULL,
+    revision_id TEXT NOT NULL,
     json_patch JSONB,  -- NULL for create/delete, patch for updates
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -131,11 +131,12 @@ pub struct ChangeEvent {
     pub user_id: Uuid,
     pub event_type: ChangeEventType,
     pub revision_id: String,  // CouchDB-style
-    pub json_patch: Option<serde_json::Value>,
+    pub forward_patch: Option<serde_json::Value>,
+    pub reverse_patch: Option<serde_json::Value>,  // patch to undo this change
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeEventType {
     Create,

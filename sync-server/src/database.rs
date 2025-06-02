@@ -90,7 +90,9 @@ impl ServerDatabase {
             .await?;
         
         // Log the create event
-        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Create, &doc.revision_id, None).await?;
+        // For CREATE: forward_patch contains the full document, reverse_patch is null
+        let doc_json = serde_json::to_value(doc).map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
+        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Create, &doc.revision_id, Some(&doc_json), None).await?;
         
         tx.commit().await?;
         Ok(())
@@ -109,6 +111,9 @@ impl ServerDatabase {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
         
+        // Get the original document state before update (for computing reverse patch)
+        let original_doc = self.get_document(&doc.id).await?;
+        
         let params = DbHelpers::document_to_params(doc);
         
         // Update the document
@@ -126,9 +131,19 @@ impl ServerDatabase {
             .execute(&mut *tx)
             .await?;
         
-        // Log the update event with patch data
-        let patch_json = patch.map(|p| serde_json::to_value(p).unwrap());
-        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Update, &doc.revision_id, patch_json.as_ref()).await?;
+        // Compute patches for the event log
+        let forward_patch_json = patch.map(|p| serde_json::to_value(p).unwrap());
+        let reverse_patch_json = if let Some(fwd_patch) = patch {
+            // Compute the reverse patch using the original document content
+            match sync_core::patches::compute_reverse_patch(&original_doc.content, fwd_patch) {
+                Ok(rev_patch) => Some(serde_json::to_value(rev_patch).unwrap()),
+                Err(_) => None, // If we can't compute reverse patch, store null
+            }
+        } else {
+            None
+        };
+        
+        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Update, &doc.revision_id, forward_patch_json.as_ref(), reverse_patch_json.as_ref()).await?;
         
         tx.commit().await?;
         Ok(())
@@ -138,6 +153,9 @@ impl ServerDatabase {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
         
+        // Get the document before deletion (for the reverse patch)
+        let doc_to_delete = self.get_document(document_id).await?;
+        
         // Soft delete the document
         sqlx::query("UPDATE documents SET deleted_at = NOW() WHERE id = $1 AND user_id = $2")
             .bind(document_id)
@@ -146,7 +164,9 @@ impl ServerDatabase {
             .await?;
         
         // Log the delete event
-        self.log_change_event(&mut tx, document_id, user_id, ChangeEventType::Delete, revision_id, None).await?;
+        // For DELETE: forward_patch is null, reverse_patch contains the full document
+        let doc_json = serde_json::to_value(&doc_to_delete).map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
+        self.log_change_event(&mut tx, document_id, user_id, ChangeEventType::Delete, revision_id, None, Some(&doc_json)).await?;
         
         tx.commit().await?;
         Ok(())
@@ -210,7 +230,8 @@ impl ServerDatabase {
         user_id: &Uuid,
         event_type: ChangeEventType,
         revision_id: &str,
-        json_patch: Option<&serde_json::Value>,
+        forward_patch: Option<&serde_json::Value>,
+        reverse_patch: Option<&serde_json::Value>,
     ) -> Result<(), sqlx::Error> {
         let event_type_str = match event_type {
             ChangeEventType::Create => "create",
@@ -220,8 +241,8 @@ impl ServerDatabase {
 
         sqlx::query(
             r#"
-            INSERT INTO change_events (user_id, document_id, event_type, revision_id, json_patch)
-            VALUES ($1::UUID, $2::UUID, $3::TEXT, $4::TEXT, $5::JSONB)
+            INSERT INTO change_events (user_id, document_id, event_type, revision_id, forward_patch, reverse_patch)
+            VALUES ($1::UUID, $2::UUID, $3::TEXT, $4::TEXT, $5::JSONB, $6::JSONB)
             "#
         )
         .persistent(false)  // Disable prepared statement caching
@@ -229,7 +250,8 @@ impl ServerDatabase {
         .bind(document_id)
         .bind(event_type_str)
         .bind(revision_id)
-        .bind(json_patch)
+        .bind(forward_patch)
+        .bind(reverse_patch)
         .execute(&mut **tx)
         .await?;
 
@@ -242,7 +264,7 @@ impl ServerDatabase {
         
         let rows = sqlx::query(
             r#"
-            SELECT sequence, document_id, user_id, event_type, revision_id, json_patch, created_at
+            SELECT sequence, document_id, user_id, event_type, revision_id, forward_patch, reverse_patch, created_at
             FROM change_events 
             WHERE user_id = $1 AND sequence > $2
             ORDER BY sequence ASC
@@ -271,7 +293,8 @@ impl ServerDatabase {
                 user_id: row.get("user_id"),
                 event_type,
                 revision_id: row.get("revision_id"),
-                json_patch: row.get("json_patch"),
+                forward_patch: row.get("forward_patch"),
+                reverse_patch: row.get("reverse_patch"),
                 created_at: row.get("created_at"),
             });
         }

@@ -26,6 +26,18 @@ pub fn merge_patches(patch1: &Patch, patch2: &Patch) -> Patch {
     Patch(operations)
 }
 
+/// Compute a reverse patch that can undo the given forward patch
+/// Requires the original document state before the patch was applied
+pub fn compute_reverse_patch(original: &Value, forward_patch: &Patch) -> Result<Patch, SyncError> {
+    // Apply the forward patch to get the new state
+    let mut new_state = original.clone();
+    apply_patch(&mut new_state, forward_patch)?;
+    
+    // The reverse patch is the diff from new state back to original
+    let reverse_patch = create_patch(&new_state, original)?;
+    Ok(reverse_patch)
+}
+
 pub fn transform_patches(
     local: &Patch,
     remote: &Patch,

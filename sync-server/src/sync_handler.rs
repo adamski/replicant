@@ -114,8 +114,7 @@ impl SyncHandler {
                 doc.updated_at = chrono::Utc::now();
                 
                 // Save to database
-                self.db.update_document(&doc).await?;
-                self.db.create_revision(&doc, Some(&patch.patch)).await?;
+                self.db.update_document(&doc, Some(&patch.patch)).await?;
                 
                 // Broadcast to all connected clients (including sender)
                 self.broadcast_to_user(
@@ -133,13 +132,7 @@ impl SyncHandler {
                 }
                 
                 // Soft delete
-                self.db.delete_document(&document_id, &user_id).await?;
-                
-                // Create revision for the delete operation
-                let mut deleted_doc = doc.clone();
-                deleted_doc.deleted_at = Some(chrono::Utc::now());
-                deleted_doc.revision_id = revision_id.clone();
-                self.db.create_revision(&deleted_doc, None).await?;
+                self.db.delete_document(&document_id, &user_id, &revision_id).await?;
                 
                 // Broadcast deletion to all connected clients (including sender)
                 self.broadcast_to_user(

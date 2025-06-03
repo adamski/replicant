@@ -290,6 +290,138 @@ impl TestContext {
         tracing::debug!("Database cleanup completed");
         pool.close().await;
     }
+    
+    pub async fn full_teardown_and_setup(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing::info!("Starting full teardown and setup for test isolation");
+        
+        // Step 1: Kill any existing sync-server processes
+        self.kill_all_sync_servers().await;
+        
+        // Step 2: Drop and recreate the database
+        self.recreate_database().await?;
+        
+        // Step 3: Start a fresh server instance
+        self.start_fresh_server().await?;
+        
+        // Step 4: Wait for server to be ready
+        self.wait_for_server().await?;
+        
+        tracing::info!("Full teardown and setup completed successfully");
+        Ok(())
+    }
+    
+    async fn kill_all_sync_servers(&self) {
+        tracing::debug!("Killing all sync-server processes");
+        
+        // Kill processes by port
+        if let Ok(output) = tokio::process::Command::new("lsof")
+            .args(&["-ti", ":8080"])
+            .output()
+            .await 
+        {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid in pids.lines() {
+                if let Ok(pid_num) = pid.trim().parse::<u32>() {
+                    tracing::debug!("Killing process on port 8080: {}", pid_num);
+                    let _ = tokio::process::Command::new("kill")
+                        .args(&["-9", &pid_num.to_string()])
+                        .output()
+                        .await;
+                }
+            }
+        }
+        
+        // Kill processes by name
+        let _ = tokio::process::Command::new("pkill")
+            .args(&["-f", "sync-server"])
+            .output()
+            .await;
+            
+        // Give processes time to die
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    
+    async fn recreate_database(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing::debug!("Recreating database for fresh state");
+        
+        // Extract database name from URL
+        let db_name = self.db_url.split('/').last().unwrap_or("sync_test_db_local");
+        let base_url = self.db_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&self.db_url);
+        
+        // Connect to postgres database to drop/create our test database
+        let postgres_url = format!("{}/postgres", base_url);
+        let pool = sqlx::postgres::PgPool::connect(&postgres_url).await?;
+        
+        // Drop database (disconnect all clients first)
+        sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
+            .execute(&pool)
+            .await
+            .ok(); // Ignore errors
+            
+        // Create database
+        sqlx::query(&format!("CREATE DATABASE {}", db_name))
+            .execute(&pool)
+            .await?;
+            
+        pool.close().await;
+        
+        // Run migrations on the new database
+        tracing::debug!("Running migrations on fresh database");
+        
+        // Find the project root directory (where Cargo.toml is)
+        let current_dir = std::env::current_dir()?;
+        let project_root = if current_dir.join("sync-server").exists() {
+            current_dir
+        } else if current_dir.parent().map(|p| p.join("sync-server").exists()).unwrap_or(false) {
+            current_dir.parent().unwrap().to_path_buf()
+        } else {
+            return Err("Could not find project root directory".into());
+        };
+        
+        let migration_result = tokio::process::Command::new("sqlx")
+            .args(&["migrate", "run", "--source", "sync-server/migrations"])
+            .current_dir(&project_root)
+            .env("DATABASE_URL", &self.db_url)
+            .output()
+            .await?;
+            
+        if !migration_result.status.success() {
+            let stderr = String::from_utf8_lossy(&migration_result.stderr);
+            let stdout = String::from_utf8_lossy(&migration_result.stdout);
+            return Err(format!("Migration failed: stdout: {}, stderr: {}", stdout, stderr).into());
+        }
+        
+        Ok(())
+    }
+    
+    async fn start_fresh_server(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing::debug!("Starting fresh sync-server instance");
+        
+        // Find the project root directory
+        let current_dir = std::env::current_dir()?;
+        let project_root = if current_dir.join("sync-server").exists() {
+            current_dir
+        } else if current_dir.parent().map(|p| p.join("sync-server").exists()).unwrap_or(false) {
+            current_dir.parent().unwrap().to_path_buf()
+        } else {
+            return Err("Could not find project root directory".into());
+        };
+        
+        // Start the server in background
+        tokio::process::Command::new("cargo")
+            .args(&["run", "--bin", "sync-server"])
+            .current_dir(&project_root)
+            .env("DATABASE_URL", &self.db_url)
+            .env("RUST_LOG", "info")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        
+        // Give server time to start
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        
+        Ok(())
+    }
 }
 
 pub async fn assert_eventually<F, Fut>(f: F, timeout_secs: u64) 
@@ -391,20 +523,15 @@ macro_rules! integration_test {
             }
             
             let ctx = crate::integration::helpers::TestContext::new();
-            ctx.wait_for_server().await.expect("Server not ready");
             
-            // Reset server in-memory state (much faster than restart)
-            ctx.reset_server_state().await.expect("Failed to reset server state");
-            
-            // Clean database before each test to ensure isolation
-            ctx.cleanup_database().await;
+            // Full teardown and setup for complete isolation
+            ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
             
             // Run test
             let test_fn = $body;
             test_fn(ctx.clone()).await;
             
-            // Clean up after test as well  
-            ctx.cleanup_database().await;
+            // Note: Cleanup will happen at start of next test
         }
     };
 }

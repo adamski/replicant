@@ -13,6 +13,9 @@ SERVER_PORT="${SERVER_PORT:-8080}"
 SERVER_PID_FILE="/tmp/sync_server_test.pid"
 SERVER_LOG_FILE="/tmp/sync_server_test.log"
 
+# Test execution timeout (longer for sequential execution with full teardown)
+TEST_TIMEOUT="${TEST_TIMEOUT:-600}" # 10 minutes for full suite
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -117,61 +120,22 @@ cleanup() {
 # Set trap to cleanup on exit
 trap cleanup EXIT INT TERM
 
-log "🚀 Starting robust integration test run..."
+log "🚀 Starting robust integration test run with full isolation..."
+info "Each test will get a fresh database and server instance for complete isolation"
+info "Tests run sequentially to prevent database/server conflicts"
 
 # Step 1: Kill any existing processes
 kill_port_processes $SERVER_PORT
 kill_sync_servers
 
-# Step 2: Setup fresh database
+# Step 2: Setup initial database (each test will recreate as needed)
 setup_database
 
 # Step 3: Build the project
 log "Building sync-server..."
 DATABASE_URL="$DATABASE_URL" cargo build --bin sync-server
 
-# Step 4: Start the server
-log "Starting sync server on port $SERVER_PORT..."
-DATABASE_URL="$DATABASE_URL" RUST_LOG=info cargo run --bin sync-server > "$SERVER_LOG_FILE" 2>&1 &
-server_pid=$!
-echo $server_pid > "$SERVER_PID_FILE"
-
-log "Server started with PID: $server_pid"
-
-# Step 5: Wait for server to be ready
-log "Waiting for server to be ready..."
-max_attempts=30
-attempt=0
-
-while [ $attempt -lt $max_attempts ]; do
-    if curl -s "http://localhost:$SERVER_PORT" >/dev/null 2>&1; then
-        log "✅ Server is ready!"
-        break
-    fi
-    
-    # Check if server process is still running
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-        error "Server process died unexpectedly"
-        error "Server logs:"
-        tail -50 "$SERVER_LOG_FILE"
-        exit 1
-    fi
-    
-    attempt=$((attempt + 1))
-    echo -n "."
-    sleep 1
-done
-
-echo "" # New line after dots
-
-if [ $attempt -eq $max_attempts ]; then
-    error "Server did not become ready in time"
-    error "Server logs:"
-    tail -50 "$SERVER_LOG_FILE"
-    exit 1
-fi
-
-# Step 6: Run the integration tests
+# Step 4: Run the integration tests (each test manages its own server instance)
 log "Running integration tests..."
 
 # Export environment variables for tests
@@ -182,10 +146,11 @@ export TEST_DATABASE_URL="$DATABASE_URL"
 if [ -n "$1" ]; then
     # Run specific test if provided
     log "Running specific test: $1"
-    cargo test --package sync-server --test integration "$1" -- --nocapture
+    cargo test --package sync-server --test integration "$1" -- --test-threads=1 --nocapture
 else
-    # Run all integration tests
-    cargo test --package sync-server --test integration -- --nocapture
+    # Run all integration tests sequentially for complete isolation
+    log "Running all integration tests sequentially (required for full teardown isolation)"
+    cargo test --package sync-server --test integration -- --test-threads=1 --nocapture
 fi
 
 test_exit_code=$?

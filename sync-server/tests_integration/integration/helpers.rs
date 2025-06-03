@@ -254,27 +254,40 @@ impl TestContext {
             
         // Aggressive cleanup - delete all test data to ensure isolation
         // Delete in order due to foreign key constraints
+        
+        tracing::debug!("Cleaning database for test isolation");
+        
+        // First, clean up change_events (no foreign key dependencies)
+        sqlx::query("DELETE FROM change_events")
+            .execute(&pool)
+            .await
+            .ok();
+            
+        // Then patches (depends on documents)
         sqlx::query("DELETE FROM patches")
             .execute(&pool)
             .await
             .ok();
             
+        // Then documents (depends on users)
         sqlx::query("DELETE FROM documents")
             .execute(&pool)
             .await
             .ok();
             
-        sqlx::query("DELETE FROM users WHERE email LIKE 'demo_%'")
+        // Finally users - clean up ALL users to ensure complete isolation
+        sqlx::query("DELETE FROM users")
             .execute(&pool)
             .await
             .ok();
             
-        // Also clean up any stray demo users (created by demo-token auth)
-        sqlx::query("DELETE FROM users WHERE id::text = auth_token")
+        // Reset sequences to ensure consistent IDs across test runs
+        sqlx::query("ALTER SEQUENCE IF EXISTS change_events_sequence_number_seq RESTART WITH 1")
             .execute(&pool)
             .await
             .ok();
             
+        tracing::debug!("Database cleanup completed");
         pool.close().await;
     }
 }

@@ -91,8 +91,16 @@ impl AuthState {
                         tracing::info!("Successfully created demo user with ID: {}", user_id);
                     }
                     Err(e) => {
-                        tracing::error!("Failed to create demo user: {}", e);
-                        return Err(Box::new(e));
+                        // Check if this is a duplicate key error (race condition)
+                        let error_string = e.to_string();
+                        if error_string.contains("duplicate key") || error_string.contains("unique constraint") {
+                            tracing::debug!("Demo user {} was created by another client concurrently - this is expected", user_id);
+                            // This is fine - another client created the user simultaneously
+                            // Continue with session creation
+                        } else {
+                            tracing::error!("Failed to create demo user with unexpected error: {}", e);
+                            return Err(Box::new(e));
+                        }
                     }
                 }
             } else {

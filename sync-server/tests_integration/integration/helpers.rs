@@ -62,13 +62,36 @@ impl TestContext {
     }
     
     pub async fn create_test_client(&self, user_id: Uuid, token: &str) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
+        // Retry logic to handle authentication race conditions
+        let max_retries = 3;
+        let mut last_error = None;
+        
+        for attempt in 0..max_retries {
+            match self.create_test_client_attempt(user_id, token, attempt).await {
+                Ok(client) => return Ok(client),
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < max_retries - 1 {
+                        // Exponential backoff with jitter
+                        let delay_ms = 100u64 * (1 << attempt) + (attempt as u64 * 50);
+                        tracing::debug!("Client creation attempt {} failed for user {}, retrying in {}ms", attempt + 1, user_id, delay_ms);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                    }
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or_else(|| "Unknown error creating test client".into()))
+    }
+    
+    async fn create_test_client_attempt(&self, user_id: Uuid, token: &str, attempt: usize) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
         // Use a block to ensure the permit is released after connection
         let (db_path, ws_url) = {
             // Acquire semaphore permit to limit concurrent connections
             let semaphore = get_connection_semaphore().await;
             let _permit = semaphore.acquire().await.unwrap();
             
-            tracing::debug!("Creating test client for user {} (connection queued)", user_id);
+            tracing::debug!("Creating test client for user {} (attempt {}, connection queued)", user_id, attempt + 1);
             
             // Use an in-memory database but with a proper connection string
             let db_path = format!("file:memdb_{}?mode=memory&cache=shared", Uuid::new_v4());
@@ -108,14 +131,17 @@ impl TestContext {
         // Small delay to ensure connection is established
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         
-        // Start the sync engine
-        engine.start().await?;
+        // Start the sync engine with error handling
+        engine.start().await.map_err(|e| {
+            tracing::debug!("Engine start failed for user {} on attempt {}: {}", user_id, attempt + 1, e);
+            e
+        })?;
         
-        // Longer delay to ensure authentication completes and avoid race condition
-        // in demo user creation when multiple clients use the same user_id
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        // Adaptive delay based on attempt number
+        let auth_delay = if attempt == 0 { 200u64 } else { 300u64 + (attempt as u64 * 100) };
+        tokio::time::sleep(tokio::time::Duration::from_millis(auth_delay)).await;
         
-        tracing::debug!("Test client created successfully for user {}", user_id);
+        tracing::debug!("Test client created successfully for user {} on attempt {}", user_id, attempt + 1);
         
         Ok(engine)
     }

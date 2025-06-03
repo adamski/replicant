@@ -27,12 +27,18 @@ crate::integration_test!(test_custom_token_auto_registration, |ctx: TestContext|
     // Create a document
     let _doc = client1.create_document("Auto Registration Test".to_string(), json!({"test": true})).await.expect("Failed to create document");
     
+    // Wait for document to be processed by server
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    
     // Second connection with same credentials should work
     let client2 = ctx.create_test_client(user_id, &custom_token).await.expect("Failed to create client");
     
+    // Wait for sync to complete
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    
     // Should see the same document
     let docs = client2.get_all_documents().await.expect("Failed to get documents");
-    assert_eq!(docs.len(), 1);
+    assert_eq!(docs.len(), 1, "Client2 should see 1 document but found {}", docs.len());
     assert_eq!(docs[0].title, "Auto Registration Test");
 });
 

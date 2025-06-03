@@ -123,6 +123,7 @@ pub enum ErrorCode {
     VersionMismatch,
     ServerError,
     RateLimitExceeded,
+    InvalidMessage,
 }
 
 // New types for sequence-based sync

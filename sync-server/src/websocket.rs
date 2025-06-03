@@ -107,6 +107,10 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                             // Handle other messages
                             if let Err(e) = handler.handle_message(client_msg).await {
                                 tracing::error!("Error handling message: {}", e);
+                                let _ = tx.send(ServerMessage::Error {
+                                    code: sync_core::protocol::ErrorCode::ServerError,
+                                    message: format!("Failed to process message: {}", e),
+                                }).await;
                                 if let Some(ref monitoring) = state.monitoring {
                                     monitoring.log_error(format!("Error handling message: {}", e)).await;
                                 }
@@ -116,6 +120,10 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                 }
                 Err(e) => {
                     tracing::error!("Failed to parse client message: {}", e);
+                    let _ = tx.send(ServerMessage::Error {
+                        code: sync_core::protocol::ErrorCode::InvalidMessage,
+                        message: format!("Invalid JSON: {}", e),
+                    }).await;
                 }
             }
         }

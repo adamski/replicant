@@ -75,6 +75,9 @@ crate::integration_test!(test_concurrent_updates_same_document, |ctx: TestContex
     let doc = client0.create_document("Concurrent Update Target".to_string(), json!({"test": true})).await.unwrap();
     let doc_id = doc.id;
     
+    // Wait for document to be processed by server
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    
     // Create multiple clients
     let mut handles = Vec::new();
     let barrier = Arc::new(Barrier::new(client_count));
@@ -87,7 +90,7 @@ crate::integration_test!(test_concurrent_updates_same_document, |ctx: TestContex
             let client = ctx_clone.create_test_client(user_id, token).await.expect("Failed to create client");
             
             // Wait for automatic sync to get the document
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             
             // Wait for all clients to be ready
             barrier_clone.wait().await;

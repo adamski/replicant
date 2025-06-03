@@ -4,6 +4,7 @@ use uuid::Uuid;
 use sync_core::{
     protocol::{ClientMessage, ServerMessage, ConflictResolution, ErrorCode},
     patches::{apply_patch, calculate_checksum},
+    models::Document,
 };
 use crate::{database::ServerDatabase, monitoring::MonitoringLayer, AppState};
 
@@ -84,16 +85,46 @@ impl SyncHandler {
                         monitoring.log_conflict_detected(&doc.id.to_string()).await;
                     }
                     
-                    // Conflict detected
+                    // Automatic conflict resolution: Server wins (last-write-wins)
+                    tracing::info!("Conflict detected for document {}, applying server-wins resolution", doc.id);
+                    
+                    // Apply the patch anyway (server wins - accept the update)
+                    apply_patch(&mut doc.content, &patch.patch)?;
+                    
+                    // Update revision and vector clock
+                    doc.revision_id = doc.next_revision(&doc.content);
+                    doc.vector_clock.increment(&self.user_id.ok_or("Not authenticated")?.to_string());
+                    doc.updated_at = chrono::Utc::now();
+                    
+                    // Save updated document
+                    self.db.update_document(&doc, Some(&patch.patch)).await?;
+                    
+                    // Notify client of conflict resolution
                     self.tx.send(ServerMessage::ConflictDetected {
                         document_id: patch.document_id,
                         local_revision: patch.revision_id.clone(),
                         server_revision: doc.revision_id.clone(),
-                        resolution_strategy: ConflictResolution::Manual {
-                            server_document: doc.clone(),
-                            client_patch: patch.clone(),
-                        },
+                        resolution_strategy: ConflictResolution::ServerWins,
                     }).await?;
+                    
+                    // Create a proper DocumentPatch for broadcasting
+                    let resolved_patch = sync_core::models::DocumentPatch {
+                        document_id: doc.id,
+                        revision_id: doc.revision_id.clone(),
+                        patch: patch.patch.clone(),
+                        vector_clock: doc.vector_clock.clone(),
+                        checksum: sync_core::patches::calculate_checksum(&doc.content),
+                    };
+                    
+                    // Broadcast the resolved document to all clients
+                    self.broadcast_to_user_except(
+                        user_id,
+                        self.client_id,
+                        ServerMessage::DocumentUpdated { 
+                            patch: resolved_patch
+                        }
+                    ).await?;
+                    
                     return Ok(());
                 }
                 

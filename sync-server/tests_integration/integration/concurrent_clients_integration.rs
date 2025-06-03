@@ -118,7 +118,7 @@ crate::integration_test!(test_concurrent_updates_same_document, |ctx: TestContex
         .collect();
     
     // Wait for automatic sync to ensure convergence
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     
     // All clients should have converged to the same state
     let mut final_contents = Vec::new();

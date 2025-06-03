@@ -4,7 +4,6 @@ use uuid::Uuid;
 use sync_core::{
     protocol::{ClientMessage, ServerMessage, ConflictResolution, ErrorCode},
     patches::{apply_patch, calculate_checksum},
-    models::Document,
 };
 use crate::{database::ServerDatabase, monitoring::MonitoringLayer, AppState};
 
@@ -69,6 +68,10 @@ impl SyncHandler {
             }
             
             ClientMessage::UpdateDocument { patch } => {
+                tracing::info!("🔵 Received UpdateDocument from client {} for doc {}", 
+                             self.client_id.unwrap_or_default(), patch.document_id);
+                tracing::info!("   Patch content: {:?}", patch.patch);
+                
                 // Get current document
                 let mut doc = self.db.get_document(&patch.document_id).await?;
                 
@@ -86,17 +89,24 @@ impl SyncHandler {
                     }
                     
                     // Automatic conflict resolution: Server wins (last-write-wins)
-                    tracing::info!("Conflict detected for document {}, applying server-wins resolution", doc.id);
+                    tracing::warn!("🔥 CONFLICT DETECTED for document {}", doc.id);
+                    tracing::warn!("   Server revision: {} | Client revision: {}", doc.revision_id, patch.revision_id);
+                    tracing::warn!("   Server content before: {:?}", doc.content);
+                    tracing::warn!("   Client patch: {:?}", patch.patch);
                     
                     // Apply the patch anyway (server wins - accept the update)
                     apply_patch(&mut doc.content, &patch.patch)?;
                     
                     // Update revision and vector clock
+                    let old_revision = doc.revision_id.clone();
                     doc.revision_id = doc.next_revision(&doc.content);
                     doc.vector_clock.increment(&self.user_id.ok_or("Not authenticated")?.to_string());
                     doc.updated_at = chrono::Utc::now();
                     
-                    // Save updated document
+                    tracing::warn!("   Server content after conflict resolution: {:?}", doc.content);
+                    tracing::warn!("   New revision: {} -> {}", old_revision, doc.revision_id);
+                    
+                    // Save updated document - this logs the change event properly
                     self.db.update_document(&doc, Some(&patch.patch)).await?;
                     
                     // Notify client of conflict resolution
@@ -107,28 +117,22 @@ impl SyncHandler {
                         resolution_strategy: ConflictResolution::ServerWins,
                     }).await?;
                     
-                    // Create a proper DocumentPatch for broadcasting
-                    let resolved_patch = sync_core::models::DocumentPatch {
-                        document_id: doc.id,
-                        revision_id: doc.revision_id.clone(),
-                        patch: patch.patch.clone(),
-                        vector_clock: doc.vector_clock.clone(),
-                        checksum: sync_core::patches::calculate_checksum(&doc.content),
-                    };
-                    
-                    // Broadcast the resolved document to all clients
-                    self.broadcast_to_user_except(
+                    // Broadcast the final state to ALL clients to ensure convergence
+                    // This ensures all clients get the authoritative state after conflict resolution
+                    tracing::info!("🔸 Broadcasting final document state after conflict resolution");
+                    self.broadcast_to_user(
                         user_id,
-                        self.client_id,
-                        ServerMessage::DocumentUpdated { 
-                            patch: resolved_patch
-                        }
+                        ServerMessage::SyncDocument { document: doc.clone() }
                     ).await?;
                     
                     return Ok(());
                 }
                 
-                // Apply patch
+                // Apply patch (no conflict)
+                tracing::info!("📝 NORMAL UPDATE for document {}", doc.id);
+                tracing::info!("   Revision: {} | Content before: {:?}", doc.revision_id, doc.content);
+                tracing::info!("   Patch: {:?}", patch.patch);
+                
                 apply_patch(&mut doc.content, &patch.patch)?;
                 
                 // Log patch applied if monitoring is enabled
@@ -153,12 +157,14 @@ impl SyncHandler {
                 // Save to database
                 self.db.update_document(&doc, Some(&patch.patch)).await?;
                 
-                // Broadcast to all connected clients except the sender
-                tracing::info!("Broadcasting DocumentUpdated for doc {} to all clients of user {} except sender", patch.document_id, user_id);
-                self.broadcast_to_user_except(
+                tracing::info!("   Content after normal update: {:?}", doc.content);
+                tracing::info!("   New revision: {}", doc.revision_id);
+                
+                // Broadcast final state to ALL clients to ensure convergence
+                tracing::info!("Broadcasting final document state for doc {} to all clients of user {}", doc.id, user_id);
+                self.broadcast_to_user(
                     user_id,
-                    self.client_id,
-                    ServerMessage::DocumentUpdated { patch }
+                    ServerMessage::SyncDocument { document: doc.clone() }
                 ).await?;
             }
             

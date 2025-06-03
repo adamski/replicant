@@ -189,7 +189,7 @@ impl SyncEngine {
                 
                 // Check for conflicts
                 if doc.vector_clock.is_concurrent(&patch.vector_clock) {
-                    tracing::warn!("Conflict detected for document {}", patch.document_id);
+                    tracing::warn!("CLIENT {}: Conflict detected for document {}", client_id, patch.document_id);
                     // Handle conflict - for now, server wins
                 }
                 
@@ -239,10 +239,41 @@ impl SyncEngine {
                 // Implement conflict resolution UI callback
             }
             ServerMessage::SyncDocument { document } => {
-                // Document from full sync
-                tracing::info!("CLIENT: Received SyncDocument from full sync: {} ({})", document.id, document.title);
-                db.save_document(&document).await?;
-                db.mark_synced(&document.id, &document.revision_id).await?;
+                // Document sync - check if it's newer than what we have
+                tracing::info!("CLIENT {}: Received SyncDocument: {} (rev: {})", client_id, document.id, document.revision_id);
+                
+                match db.get_document(&document.id).await {
+                    Ok(local_doc) => {
+                        // Compare revisions
+                        let local_rev_parts: Vec<&str> = local_doc.revision_id.split('-').collect();
+                        let sync_rev_parts: Vec<&str> = document.revision_id.split('-').collect();
+                        
+                        if local_rev_parts.len() == 2 && sync_rev_parts.len() == 2 {
+                            let local_gen: u32 = local_rev_parts[0].parse().unwrap_or(0);
+                            let sync_gen: u32 = sync_rev_parts[0].parse().unwrap_or(0);
+                            
+                            if sync_gen >= local_gen {
+                                tracing::info!("CLIENT {}: Updating to newer version (gen {} -> {})", 
+                                             client_id, local_gen, sync_gen);
+                                db.save_document(&document).await?;
+                                db.mark_synced(&document.id, &document.revision_id).await?;
+                            } else {
+                                tracing::info!("CLIENT {}: Skipping older sync (local gen {} > sync gen {})", 
+                                             client_id, local_gen, sync_gen);
+                            }
+                        } else {
+                            // Can't compare, accept the sync
+                            db.save_document(&document).await?;
+                            db.mark_synced(&document.id, &document.revision_id).await?;
+                        }
+                    }
+                    Err(_) => {
+                        // Document doesn't exist locally - save it
+                        tracing::info!("CLIENT {}: Document {} is new, saving", client_id, document.id);
+                        db.save_document(&document).await?;
+                        db.mark_synced(&document.id, &document.revision_id).await?;
+                    }
+                }
             }
             ServerMessage::SyncComplete { synced_count } => {
                 tracing::debug!("Sync complete, received {} documents", synced_count);

@@ -8,6 +8,10 @@ crate::integration_test!(test_basic_sync_flow, |ctx: TestContext| async move {
     
     // Create two clients
     let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    
+    // Add delay to prevent authentication race condition for demo user creation
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    
     let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
     
     // Client 1 creates a document
@@ -277,6 +281,10 @@ crate::integration_test!(test_array_duplication_bug, |ctx: TestContext| async mo
     
     // Create two clients
     let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client1");
+    
+    // Add delay to prevent authentication race condition for demo user creation
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    
     let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client2");
     
     // Client 1 creates a document with an array

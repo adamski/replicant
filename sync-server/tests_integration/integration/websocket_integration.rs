@@ -2,8 +2,8 @@ use crate::integration::helpers::*;
 use uuid::Uuid;
 use futures_util::{StreamExt, SinkExt};
 use tokio_tungstenite::tungstenite::Message;
-use sync_core::protocol::{ClientMessage, ServerMessage, ErrorCode};
-use sync_core::models::{Document, DocumentPatch, VectorClock};
+use sync_core::protocol::{ClientMessage, ServerMessage};
+use sync_core::models::{Document, VectorClock};
 use chrono::Utc;
 use serde_json::json;
 
@@ -43,8 +43,10 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     
     // Send authenticate message
+    let client_id = Uuid::new_v4();
     let auth_msg = ClientMessage::Authenticate {
         user_id,
+        client_id,
         auth_token: token.to_string(),
     };
     let json_msg = serde_json::to_string(&auth_msg).unwrap();
@@ -54,7 +56,7 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
     if let Some(Ok(Message::Text(response))) = ws.next().await {
         let msg: ServerMessage = serde_json::from_str(&response).unwrap();
         match msg {
-            ServerMessage::AuthSuccess { session_id } => {
+            ServerMessage::AuthSuccess { session_id, client_id: _ } => {
                 assert!(!session_id.is_nil());
             }
             ServerMessage::AuthError { reason } => {
@@ -67,6 +69,7 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
     // Test invalid authentication
     let bad_auth_msg = ClientMessage::Authenticate {
         user_id,
+        client_id,
         auth_token: "invalid-token".to_string(),
     };
     ws.send(Message::Text(serde_json::to_string(&bad_auth_msg).unwrap())).await.unwrap();

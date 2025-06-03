@@ -1,6 +1,7 @@
 -- User configuration (single row)
 CREATE TABLE IF NOT EXISTS user_config (
     user_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL UNIQUE,               -- Unique identifier for this client instance
     server_url TEXT NOT NULL,
     last_sync_at TIMESTAMP,
     auth_token TEXT

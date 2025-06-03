@@ -1,12 +1,10 @@
 use std::time::Duration;
-use tokio::time::timeout;
 use uuid::Uuid;
 use sync_client::SyncEngine as SyncClient;
 use sync_core::models::Document;
 use serde_json::json;
 use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream};
 use std::sync::Arc;
-use sqlx::Row;
 use tokio::sync::Semaphore;
 
 // Global semaphore to limit concurrent client connections in tests
@@ -79,11 +77,15 @@ impl TestContext {
             let db = sync_client::ClientDatabase::new(&db_path).await?;
             db.run_migrations().await?;
             
-            // Set up user config in the client database
+            // Generate a unique client_id for this test client
+            let client_id = Uuid::new_v4();
+            
+            // Set up user config in the client database with client_id
             sqlx::query(
-                "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)"
+                "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)"
             )
             .bind(user_id.to_string())
+            .bind(client_id.to_string())
             .bind(&self.server_url)
             .bind(token)
             .execute(&db.pool)
@@ -109,8 +111,9 @@ impl TestContext {
         // Start the sync engine
         engine.start().await?;
         
-        // Another small delay to ensure the message handler is ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        // Longer delay to ensure authentication completes and avoid race condition
+        // in demo user creation when multiple clients use the same user_id
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
         
         tracing::debug!("Test client created successfully for user {}", user_id);
         
@@ -118,11 +121,43 @@ impl TestContext {
     }
     
     pub async fn create_authenticated_websocket(&self, user_id: Uuid, token: &str) -> WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>> {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+        use sync_core::protocol::ClientMessage;
+        
         let url = format!("{}/ws", self.server_url);
         
-        let (ws_stream, _) = connect_async(&url)
+        let (mut ws_stream, _) = connect_async(&url)
             .await
             .expect("Failed to connect to WebSocket");
+        
+        // Generate a unique client_id for this test connection
+        let client_id = Uuid::new_v4();
+        
+        // Send authentication message
+        let auth_msg = ClientMessage::Authenticate {
+            user_id,
+            client_id,
+            auth_token: token.to_string(),
+        };
+        let json_msg = serde_json::to_string(&auth_msg).unwrap();
+        ws_stream.send(Message::Text(json_msg)).await.unwrap();
+        
+        // Wait for auth response
+        use futures_util::StreamExt;
+        if let Some(Ok(Message::Text(response))) = ws_stream.next().await {
+            use sync_core::protocol::ServerMessage;
+            let msg: ServerMessage = serde_json::from_str(&response).unwrap();
+            match msg {
+                ServerMessage::AuthSuccess { .. } => {
+                    // Authentication successful
+                }
+                ServerMessage::AuthError { reason } => {
+                    panic!("Authentication failed: {}", reason);
+                }
+                _ => panic!("Expected AuthSuccess or AuthError, got {:?}", msg),
+            }
+        }
             
         ws_stream
     }

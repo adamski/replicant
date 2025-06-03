@@ -19,6 +19,7 @@ impl WebSocketClient {
     pub async fn connect(
         server_url: &str,
         user_id: Uuid,
+        client_id: Uuid,
         auth_token: &str,
     ) -> Result<(Self, WebSocketReceiver), ClientError> {
         let ws_stream = Self::connect_with_retry(server_url, 3).await?;
@@ -69,6 +70,7 @@ impl WebSocketClient {
         // Send authentication
         client.send(ClientMessage::Authenticate {
             user_id,
+            client_id,
             auth_token: auth_token.to_string(),
         }).await?;
         

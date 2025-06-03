@@ -56,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth: AuthState::new(db),
         monitoring: monitoring_layer,
         clients: Arc::new(DashMap::new()),
+        user_clients: Arc::new(DashMap::new()),
     });
     
     // Build router
@@ -100,6 +101,7 @@ async fn reset_server_state(State(state): State<Arc<AppState>>) -> &'static str 
     
     // Clear the client registry
     state.clients.clear();
+    state.user_clients.clear();
     
     // TODO: Could also reset other in-memory state here
     

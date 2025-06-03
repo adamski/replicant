@@ -53,8 +53,12 @@ impl Queries {
     // User config queries
     pub const GET_USER_ID: &'static str = "SELECT user_id FROM user_config LIMIT 1";
     
+    pub const GET_CLIENT_ID: &'static str = "SELECT client_id FROM user_config LIMIT 1";
+    
+    pub const GET_USER_AND_CLIENT_ID: &'static str = "SELECT user_id, client_id FROM user_config LIMIT 1";
+    
     pub const INSERT_USER_CONFIG: &'static str = 
-        "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)";
+        "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)";
     
     pub const UPDATE_LAST_SYNC: &'static str = 
         "UPDATE user_config SET last_sync_at = ?1 WHERE user_id = ?2";

@@ -35,6 +35,25 @@ impl ClientDatabase {
         Ok(Uuid::parse_str(&user_id)?)
     }
     
+    pub async fn get_client_id(&self) -> Result<Uuid, ClientError> {
+        let row = sqlx::query(Queries::GET_CLIENT_ID)
+            .fetch_one(&self.pool)
+            .await?;
+        
+        let client_id: String = row.try_get("client_id")?;
+        Ok(Uuid::parse_str(&client_id)?)
+    }
+    
+    pub async fn get_user_and_client_id(&self) -> Result<(Uuid, Uuid), ClientError> {
+        let row = sqlx::query(Queries::GET_USER_AND_CLIENT_ID)
+            .fetch_one(&self.pool)
+            .await?;
+        
+        let user_id: String = row.try_get("user_id")?;
+        let client_id: String = row.try_get("client_id")?;
+        Ok((Uuid::parse_str(&user_id)?, Uuid::parse_str(&client_id)?))
+    }
+    
     pub async fn get_document(&self, id: &Uuid) -> Result<Document, ClientError> {
         let row = sqlx::query(Queries::GET_DOCUMENT)
             .bind(id.to_string())

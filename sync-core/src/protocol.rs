@@ -8,6 +8,7 @@ pub enum ClientMessage {
     // Authentication
     Authenticate {
         user_id: Uuid,
+        client_id: Uuid,
         auth_token: String,
     },
     
@@ -48,6 +49,7 @@ pub enum ServerMessage {
     // Authentication responses
     AuthSuccess {
         session_id: Uuid,
+        client_id: Uuid,
     },
     AuthError {
         reason: String,

@@ -11,6 +11,7 @@ pub struct SyncHandler {
     db: Arc<ServerDatabase>,
     tx: mpsc::Sender<ServerMessage>,
     user_id: Option<Uuid>,
+    client_id: Option<Uuid>,
     monitoring: Option<MonitoringLayer>,
     app_state: Arc<AppState>,
 }
@@ -21,6 +22,7 @@ impl SyncHandler {
             db,
             tx,
             user_id: None,
+            client_id: None,
             monitoring,
             app_state,
         }
@@ -28,6 +30,10 @@ impl SyncHandler {
     
     pub fn set_user_id(&mut self, user_id: Uuid) {
         self.user_id = Some(user_id);
+    }
+    
+    pub fn set_client_id(&mut self, client_id: Uuid) {
+        self.client_id = Some(client_id);
     }
     
     pub async fn handle_message(&mut self, msg: ClientMessage) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -45,12 +51,12 @@ impl SyncHandler {
                 // Save to database
                 self.db.create_document(&document).await?;
                 
-                // Broadcast to all connected clients (including sender)
+                // Broadcast to all connected clients (including sender for document creation)
                 tracing::info!("Broadcasting DocumentCreated for doc {} to all clients of user {}", document.id, user_id);
                 
                 // Log current client count
-                if let Some(clients) = self.app_state.clients.get(&user_id) {
-                    tracing::info!("User {} has {} connected clients", user_id, clients.len());
+                if let Some(client_ids) = self.app_state.user_clients.get(&user_id) {
+                    tracing::info!("User {} has {} connected clients", user_id, client_ids.len());
                 } else {
                     tracing::warn!("User {} has no registered clients!", user_id);
                 }
@@ -116,9 +122,11 @@ impl SyncHandler {
                 // Save to database
                 self.db.update_document(&doc, Some(&patch.patch)).await?;
                 
-                // Broadcast to all connected clients (including sender)
-                self.broadcast_to_user(
+                // Broadcast to all connected clients except the sender
+                tracing::info!("Broadcasting DocumentUpdated for doc {} to all clients of user {} except sender", patch.document_id, user_id);
+                self.broadcast_to_user_except(
                     user_id,
+                    self.client_id,
                     ServerMessage::DocumentUpdated { patch }
                 ).await?;
             }
@@ -134,7 +142,7 @@ impl SyncHandler {
                 // Soft delete
                 self.db.delete_document(&document_id, &user_id, &revision_id).await?;
                 
-                // Broadcast deletion to all connected clients (including sender)
+                // Broadcast deletion to all connected clients
                 self.broadcast_to_user(
                     user_id,
                     ServerMessage::DocumentDeleted { document_id, revision_id }
@@ -203,39 +211,68 @@ impl SyncHandler {
         user_id: Uuid,
         message: ServerMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Get all connected clients for this user
-        if let Some(clients) = self.app_state.clients.get(&user_id) {
-            tracing::info!("Broadcasting message to {} clients for user {}", clients.len(), user_id);
+        self.broadcast_to_user_except(user_id, None, message).await
+    }
+    
+    async fn broadcast_to_user_except(
+        &self,
+        user_id: Uuid,
+        exclude_client_id: Option<Uuid>,
+        message: ServerMessage,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Get all connected client IDs for this user
+        if let Some(client_ids) = self.app_state.user_clients.get(&user_id) {
+            let total_clients = client_ids.len();
+            let excluded = if exclude_client_id.is_some() { 1 } else { 0 };
+            tracing::info!("Broadcasting message to {}/{} clients for user {}", total_clients - excluded, total_clients, user_id);
+            
             let mut dead_clients = Vec::new();
             let mut successful_sends = 0;
+            let mut skipped = 0;
             
-            // Send message to all clients for this user
-            for (index, client_tx) in clients.iter().enumerate() {
-                if client_tx.send(message.clone()).await.is_err() {
-                    // Client disconnected, mark for removal
-                    dead_clients.push(index);
-                    tracing::warn!("Failed to send to client {} for user {}", index, user_id);
+            // Send message to all clients for this user except the excluded one
+            for client_id in client_ids.iter() {
+                // Skip if this is the client to exclude
+                if let Some(exclude_id) = exclude_client_id {
+                    if *client_id == exclude_id {
+                        skipped += 1;
+                        tracing::info!("Skipping broadcast to sender client {} for user {}", client_id, user_id);
+                        continue;
+                    }
+                }
+                
+                if let Some(client_tx) = self.app_state.clients.get(&(user_id, *client_id)) {
+                    if client_tx.send(message.clone()).await.is_err() {
+                        // Client disconnected, mark for removal
+                        dead_clients.push(*client_id);
+                        tracing::warn!("Failed to send to client {} for user {}", client_id, user_id);
+                    } else {
+                        successful_sends += 1;
+                        tracing::debug!("Successfully sent message to client {} for user {}", client_id, user_id);
+                    }
                 } else {
-                    successful_sends += 1;
+                    // Client not found in registry - this shouldn't happen
+                    dead_clients.push(*client_id);
+                    tracing::warn!("Client {} not found in registry for user {}", client_id, user_id);
                 }
             }
             
-            tracing::info!("Successfully sent to {}/{} clients for user {}", successful_sends, clients.len(), user_id);
+            tracing::info!("Successfully sent to {}/{} clients for user {} (skipped {})", 
+                         successful_sends, total_clients - skipped, user_id, skipped);
             
-            // Remove dead clients (in reverse order to maintain indices)
+            // Remove dead clients
             if !dead_clients.is_empty() {
-                drop(clients); // Release the read lock
-                if let Some(mut clients_mut) = self.app_state.clients.get_mut(&user_id) {
-                    for &index in dead_clients.iter().rev() {
-                        if index < clients_mut.len() {
-                            clients_mut.remove(index);
-                        }
+                drop(client_ids); // Release the read lock
+                if let Some(mut client_ids_mut) = self.app_state.user_clients.get_mut(&user_id) {
+                    for dead_client_id in &dead_clients {
+                        client_ids_mut.remove(dead_client_id);
+                        self.app_state.clients.remove(&(user_id, *dead_client_id));
                     }
                     
                     // Remove user entry if no clients left
-                    if clients_mut.is_empty() {
-                        drop(clients_mut);
-                        self.app_state.clients.remove(&user_id);
+                    if client_ids_mut.is_empty() {
+                        drop(client_ids_mut);
+                        self.app_state.user_clients.remove(&user_id);
                     }
                 }
             }
@@ -243,4 +280,5 @@ impl SyncHandler {
         
         Ok(())
     }
+
 }

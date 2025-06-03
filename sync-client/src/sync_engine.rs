@@ -16,6 +16,7 @@ pub struct SyncEngine {
     db: Arc<ClientDatabase>,
     ws_client: Arc<WebSocketClient>,
     user_id: Uuid,
+    client_id: Uuid,
     node_id: String,
     message_rx: Option<mpsc::Receiver<ServerMessage>>,
 }
@@ -29,10 +30,10 @@ impl SyncEngine {
         let db = Arc::new(ClientDatabase::new(database_url).await?);
         db.run_migrations().await?;
         
-        let user_id = db.get_user_id().await?;
+        let (user_id, client_id) = db.get_user_and_client_id().await?;
         let node_id = format!("client_{}", user_id);
         
-        let (ws_client, ws_receiver) = WebSocketClient::connect(server_url, user_id, auth_token).await?;
+        let (ws_client, ws_receiver) = WebSocketClient::connect(server_url, user_id, client_id, auth_token).await?;
         
         // Create a channel for messages
         let (tx, rx) = mpsc::channel(100);
@@ -48,6 +49,7 @@ impl SyncEngine {
             db,
             ws_client: Arc::new(ws_client),
             user_id,
+            client_id,
             node_id,
             message_rx: Some(rx),
         };
@@ -61,20 +63,21 @@ impl SyncEngine {
             .ok_or_else(|| ClientError::WebSocket("SyncEngine already started".to_string()))?;
         
         let db = self.db.clone();
+        let client_id = self.client_id;
         
         // Spawn message handler
         tokio::spawn(async move {
             let mut rx = rx;
-            tracing::info!("CLIENT: Message handler started");
+            tracing::info!("CLIENT {}: Message handler started", client_id);
             while let Some(msg) = rx.recv().await {
-                tracing::info!("CLIENT: Processing server message: {:?}", std::mem::discriminant(&msg));
-                if let Err(e) = Self::handle_server_message(msg, &db).await {
-                    tracing::error!("CLIENT: Error handling server message: {}", e);
+                tracing::info!("CLIENT {}: Processing server message: {:?}", client_id, std::mem::discriminant(&msg));
+                if let Err(e) = Self::handle_server_message(msg, &db, client_id).await {
+                    tracing::error!("CLIENT {}: Error handling server message: {}", client_id, e);
                 } else {
-                    tracing::info!("CLIENT: Successfully processed server message");
+                    tracing::info!("CLIENT {}: Successfully processed server message", client_id);
                 }
             }
-            tracing::warn!("CLIENT: Message handler terminated");
+            tracing::warn!("CLIENT {}: Message handler terminated", client_id);
         });
         
         // Initial sync
@@ -117,6 +120,9 @@ impl SyncEngine {
         let mut doc = self.db.get_document(&id).await?;
         let old_content = doc.content.clone();
         
+        tracing::info!("CLIENT {}: Updating document {} - old content: {:?}, new content: {:?}", 
+                     self.client_id, id, old_content, new_content);
+        
         // Create patch
         let patch = create_patch(&old_content, &new_content)?;
         
@@ -133,16 +139,16 @@ impl SyncEngine {
         // Create patch message
         let patch_msg = DocumentPatch {
             document_id: id,
-            revision_id: doc.revision_id,
+            revision_id: doc.revision_id.clone(),
             patch,
             vector_clock: doc.vector_clock.clone(),
             checksum: calculate_checksum(&doc.content),
         };
         
         // Send to server
-        tracing::debug!("Sending update to server");
+        tracing::info!("CLIENT {}: Sending update to server for doc {}", self.client_id, id);
         self.ws_client.send(ClientMessage::UpdateDocument { patch: patch_msg }).await?;
-        tracing::debug!("Update sent successfully");
+        tracing::info!("CLIENT {}: Update sent successfully", self.client_id);
         
         Ok(())
     }
@@ -171,11 +177,15 @@ impl SyncEngine {
         Ok(docs)
     }
     
-    async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>) -> Result<(), ClientError> {
+    async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid) -> Result<(), ClientError> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
                 // Apply patch from server
+                tracing::info!("CLIENT {}: Received DocumentUpdated for doc {}", client_id, patch.document_id);
                 let mut doc = db.get_document(&patch.document_id).await?;
+                
+                tracing::info!("CLIENT {}: Document content before patch: {:?}", client_id, doc.content);
+                tracing::info!("CLIENT {}: Patch to apply: {:?}", client_id, patch.patch);
                 
                 // Check for conflicts
                 if doc.vector_clock.is_concurrent(&patch.vector_clock) {
@@ -189,15 +199,36 @@ impl SyncEngine {
                 doc.vector_clock.merge(&patch.vector_clock);
                 doc.updated_at = chrono::Utc::now();
                 
+                tracing::info!("CLIENT {}: Document content after patch: {:?}", client_id, doc.content);
+                
                 db.save_document(&doc).await?;
                 db.mark_synced(&doc.id, &doc.revision_id).await?;
             }
             ServerMessage::DocumentCreated { document } => {
-                // New document from server
+                // New document from server - check if we already have it to avoid duplicates
                 tracing::info!("CLIENT: Received DocumentCreated from server: {} ({})", document.id, document.title);
-                db.save_document(&document).await?;
-                db.mark_synced(&document.id, &document.revision_id).await?;
-                tracing::info!("CLIENT: Saved document {} to local database", document.id);
+                
+                // Check if we already have this document (e.g., if we were the creator)
+                match db.get_document(&document.id).await {
+                    Ok(existing_doc) => {
+                        // We already have this document - just ensure it's marked as synced
+                        if existing_doc.revision_id == document.revision_id {
+                            tracing::info!("CLIENT: Document {} already exists locally with same revision, marking as synced", document.id);
+                            db.mark_synced(&document.id, &document.revision_id).await?;
+                        } else {
+                            // Different revision - update it
+                            tracing::info!("CLIENT: Document {} exists locally but has different revision, updating", document.id);
+                            db.save_document(&document).await?;
+                            db.mark_synced(&document.id, &document.revision_id).await?;
+                        }
+                    }
+                    Err(_) => {
+                        // Document doesn't exist locally - save it
+                        tracing::info!("CLIENT: Document {} is new, saving to local database", document.id);
+                        db.save_document(&document).await?;
+                        db.mark_synced(&document.id, &document.revision_id).await?;
+                    }
+                }
             }
             ServerMessage::DocumentDeleted { document_id, .. } => {
                 // Document deleted from server

@@ -11,8 +11,8 @@ use uuid::Uuid;
 #[command(name = "sync-client")]
 #[command(about = "Interactive JSON database sync client", long_about = None)]
 struct Cli {
-    /// Database file path
-    #[arg(short, long, default_value = "client.db")]
+    /// Database file name (will auto-create in databases/ directory)
+    #[arg(short, long, default_value = "alice")]
     database: String,
 
     /// Server WebSocket URL
@@ -30,21 +30,27 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
+    // Initialize logging (only show warnings and errors)
     tracing_subscriber::fmt()
-        .with_env_filter("sync_client=debug,sync_core=debug")
+        .with_env_filter("warn")
         .init();
 
     let cli = Cli::parse();
 
+    // Auto-create database file path with .sqlite3 extension in databases/ folder
+    std::fs::create_dir_all("databases")?;
+    let db_file = format!("databases/{}.sqlite3", cli.database);
+    let db_url = format!("sqlite:{}?mode=rwc", db_file);
+    
     println!("{}", "🚀 JSON Database Sync Client".bold().cyan());
     println!("{}", "============================".cyan());
+    println!("📁 Database: {}", db_file.green());
 
-    // Initialize database
-    let db = ClientDatabase::new(&cli.database).await?;
+    // Initialize database (will auto-create the file)
+    let db = ClientDatabase::new(&db_url).await?;
     
-    // Create schema if needed
-    init_database(&db).await?;
+    // Run migrations
+    db.run_migrations().await?;
 
     // Get or create user
     let user_id = match cli.user_id {
@@ -55,7 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(_) => {
                     let id = Uuid::new_v4();
                     println!("🆕 Creating new user: {}", id.to_string().yellow());
-                    setup_user(&db, id, &cli.server, &cli.token).await?;
+                    let client_id = Uuid::new_v4();
+                    setup_user(&db, id, client_id, &cli.server, &cli.token).await?;
                     id
                 }
             }
@@ -67,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Try to connect to server
-    let sync_engine = match SyncEngine::new(&cli.database, &cli.server, &cli.token).await {
+    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.token).await {
         Ok(mut engine) => {
             println!("✅ Connected to sync server!");
             
@@ -128,49 +135,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn init_database(db: &ClientDatabase) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS user_config (
-            user_id TEXT PRIMARY KEY,
-            server_url TEXT NOT NULL,
-            last_sync_at TIMESTAMP,
-            auth_token TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS documents (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            content JSON NOT NULL,
-            revision_id TEXT NOT NULL,
-            version INTEGER NOT NULL DEFAULT 1,
-            vector_clock JSON,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            deleted_at TIMESTAMP,
-            local_changes JSON,
-            sync_status TEXT DEFAULT 'pending',
-            last_synced_revision TEXT,
-            CHECK (sync_status IN ('synced', 'pending', 'conflict'))
-        );
-        "#,
-    )
-    .execute(&db.pool)
-    .await?;
-    Ok(())
-}
 
 async fn setup_user(
     db: &ClientDatabase,
     user_id: Uuid,
+    client_id: Uuid,
     server_url: &str,
     token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     sqlx::query(
-        "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)",
+        "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)",
     )
     .bind(user_id.to_string())
+    .bind(client_id.to_string())
     .bind(server_url)
     .bind(token)
     .execute(&db.pool)

@@ -5,6 +5,9 @@ pub mod offline_queue;
 pub mod errors;
 pub mod queries;
 
+// C FFI module
+pub mod ffi;
+
 pub use database::ClientDatabase;
 pub use sync_engine::SyncEngine;
 pub use websocket::WebSocketClient;

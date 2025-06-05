@@ -293,33 +293,3 @@ impl SyncEngine {
     }
 }
 
-// C FFI exports for C++ integration
-#[no_mangle]
-pub extern "C" fn sync_engine_create(
-    database_path: *const std::os::raw::c_char,
-    server_url: *const std::os::raw::c_char,
-    auth_token: *const std::os::raw::c_char,
-) -> *mut SyncEngine {
-    use std::ffi::CStr;
-    
-    let database_path = unsafe { CStr::from_ptr(database_path).to_string_lossy() };
-    let server_url = unsafe { CStr::from_ptr(server_url).to_string_lossy() };
-    let auth_token = unsafe { CStr::from_ptr(auth_token).to_string_lossy() };
-    
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let engine = runtime.block_on(async {
-        SyncEngine::new(&database_path, &server_url, &auth_token).await.ok()
-    });
-    
-    match engine {
-        Some(e) => Box::into_raw(Box::new(e)),
-        None => std::ptr::null_mut(),
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn sync_engine_destroy(engine: *mut SyncEngine) {
-    if !engine.is_null() {
-        unsafe { drop(Box::from_raw(engine)); }
-    }
-}

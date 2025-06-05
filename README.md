@@ -159,23 +159,131 @@ Update with JSON patches:
 }
 ```
 
-### C++ Integration
+### C/C++ Integration
+
+The sync client provides a C API that can be used from C, C++, and other languages. Build the library to generate the header file:
+
+```bash
+cd sync-client
+cargo build --release
+# Header file generated at: sync-client/target/include/sync_client.h
+```
+
+**C API Example:**
+
+```c
+#include "sync_client.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+int main() {
+    // Create sync engine
+    struct CSyncEngine* engine = sync_engine_create(
+        "sqlite:client.db?mode=rwc",
+        "ws://localhost:8080/ws", 
+        "demo-token"
+    );
+    
+    if (!engine) {
+        printf("Failed to create sync engine\n");
+        return 1;
+    }
+    
+    // Create a document
+    char doc_id[37] = {0}; // UUID string + null terminator
+    enum CSyncResult result = sync_engine_create_document(
+        engine,
+        "My Task",
+        "{\"description\":\"Complete project\",\"priority\":\"high\",\"status\":\"pending\"}",
+        doc_id
+    );
+    
+    if (result == Success) {
+        printf("Created document: %s\n", doc_id);
+        
+        // Update the document
+        result = sync_engine_update_document(
+            engine,
+            doc_id,
+            "{\"description\":\"Complete project\",\"priority\":\"high\",\"status\":\"completed\"}"
+        );
+        
+        if (result == Success) {
+            printf("Updated document successfully\n");
+        }
+    }
+    
+    // Clean up
+    sync_engine_destroy(engine);
+    return 0;
+}
+```
+
+**C++ Integration:**
 
 ```cpp
-extern "C" {
-    void* sync_engine_create(
-        const char* database_path,
-        const char* server_url,
-        const char* auth_token
-    );
-    void sync_engine_destroy(void* engine);
-}
+#include "sync_client.h"
+#include <memory>
+#include <string>
+#include <iostream>
 
-auto engine = sync_engine_create(
-    "client.db",
-    "ws://localhost:8080/ws",
-    "demo-token"
-);
+class SyncClient {
+private:
+    std::unique_ptr<CSyncEngine, decltype(&sync_engine_destroy)> engine_;
+    
+public:
+    SyncClient(const std::string& db_url, const std::string& server_url, const std::string& token)
+        : engine_(sync_engine_create(db_url.c_str(), server_url.c_str(), token.c_str()), 
+                  sync_engine_destroy) {
+        if (!engine_) {
+            throw std::runtime_error("Failed to create sync engine");
+        }
+    }
+    
+    std::string createDocument(const std::string& title, const std::string& content) {
+        char doc_id[37] = {0};
+        auto result = sync_engine_create_document(engine_.get(), title.c_str(), content.c_str(), doc_id);
+        if (result != Success) {
+            throw std::runtime_error("Failed to create document");
+        }
+        return std::string(doc_id);
+    }
+    
+    void updateDocument(const std::string& id, const std::string& content) {
+        auto result = sync_engine_update_document(engine_.get(), id.c_str(), content.c_str());
+        if (result != Success) {
+            throw std::runtime_error("Failed to update document");
+        }
+    }
+};
+
+// Usage
+int main() {
+    try {
+        SyncClient client("sqlite:client.db?mode=rwc", "ws://localhost:8080/ws", "demo-token");
+        auto doc_id = client.createDocument("Task", R"({"status":"pending","priority":"high"})");
+        client.updateDocument(doc_id, R"({"status":"completed","priority":"high"})");
+        std::cout << "Document operations completed successfully\n";
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+    return 0;
+}
+```
+
+**Building and Linking:**
+
+```bash
+# Build the Rust library
+cd sync-client
+cargo build --release
+
+# Compile your C/C++ code (example for macOS/Linux)
+gcc -I./sync-client/target/include your_code.c -L./sync-client/target/release -lsync_client -framework Security -o your_program
+
+# For C++
+g++ -I./sync-client/target/include your_code.cpp -L./sync-client/target/release -lsync_client -framework Security -o your_program
 ```
 
 ## Bidirectional Patch System

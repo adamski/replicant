@@ -30,6 +30,9 @@ impl SyncEngine {
         let db = Arc::new(ClientDatabase::new(database_url).await?);
         db.run_migrations().await?;
         
+        // Ensure user_config exists before trying to get user/client IDs
+        db.ensure_user_config(server_url, auth_token).await?;
+        
         let (user_id, client_id) = db.get_user_and_client_id().await?;
         let node_id = format!("client_{}", user_id);
         

@@ -26,6 +26,31 @@ impl ClientDatabase {
         Ok(())
     }
     
+    pub async fn ensure_user_config(&self, server_url: &str, auth_token: &str) -> Result<(), ClientError> {
+        // Check if user_config already exists
+        let exists = sqlx::query("SELECT COUNT(*) as count FROM user_config")
+            .fetch_one(&self.pool)
+            .await?;
+        
+        let count: i64 = exists.try_get("count")?;
+        
+        if count == 0 {
+            // No user config exists, create default
+            let user_id = Uuid::new_v4();
+            let client_id = Uuid::new_v4();
+            
+            sqlx::query("INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)")
+                .bind(user_id.to_string())
+                .bind(client_id.to_string())
+                .bind(server_url)
+                .bind(auth_token)
+                .execute(&self.pool)
+                .await?;
+        }
+        
+        Ok(())
+    }
+    
     pub async fn get_user_id(&self) -> Result<Uuid, ClientError> {
         let row = sqlx::query(Queries::GET_USER_ID)
             .fetch_one(&self.pool)

@@ -161,12 +161,17 @@ Update with JSON patches:
 
 ### C/C++ Integration
 
-The sync client provides a C API that can be used from C, C++, and other languages. Build the library to generate the header file:
+The sync client provides a C API that can be used from C, C++, and other languages. Build the distribution SDK:
 
 ```bash
-cd sync-client
-cargo build --release
-# Header file generated at: sync-client/target/include/sync_client.h
+# Build the complete SDK with headers and libraries
+./scripts/build_dist.sh
+
+# This creates:
+# - dist/include/sync_client.h    (C header)
+# - dist/include/sync_client.hpp  (C++ wrapper)
+# - dist/lib/                     (compiled libraries)
+# - dist/examples/                (working examples)
 ```
 
 **C API Example:**
@@ -177,7 +182,7 @@ cargo build --release
 #include <stdlib.h>
 
 int main() {
-    // Create sync engine
+    // Create sync engine (works both online and offline)
     struct CSyncEngine* engine = sync_engine_create(
         "sqlite:client.db?mode=rwc",
         "ws://localhost:8080/ws", 
@@ -189,12 +194,19 @@ int main() {
         return 1;
     }
     
+    // Get version
+    char* version = sync_get_version();
+    if (version) {
+        printf("Sync client version: %s\n", version);
+        sync_string_free(version);
+    }
+    
     // Create a document
     char doc_id[37] = {0}; // UUID string + null terminator
     enum CSyncResult result = sync_engine_create_document(
         engine,
-        "My Task",
-        "{\"description\":\"Complete project\",\"priority\":\"high\",\"status\":\"pending\"}",
+        "My Document",
+        "{\"content\":\"Hello World\",\"type\":\"note\",\"priority\":\"medium\"}",
         doc_id
     );
     
@@ -205,7 +217,7 @@ int main() {
         result = sync_engine_update_document(
             engine,
             doc_id,
-            "{\"description\":\"Complete project\",\"priority\":\"high\",\"status\":\"completed\"}"
+            "{\"content\":\"Hello Updated World\",\"type\":\"note\",\"priority\":\"high\"}"
         );
         
         if (result == Success) {
@@ -222,68 +234,75 @@ int main() {
 **C++ Integration:**
 
 ```cpp
-#include "sync_client.h"
-#include <memory>
-#include <string>
+#include "sync_client.hpp"
 #include <iostream>
 
-class SyncClient {
-private:
-    std::unique_ptr<CSyncEngine, decltype(&sync_engine_destroy)> engine_;
-    
-public:
-    SyncClient(const std::string& db_url, const std::string& server_url, const std::string& token)
-        : engine_(sync_engine_create(db_url.c_str(), server_url.c_str(), token.c_str()), 
-                  sync_engine_destroy) {
-        if (!engine_) {
-            throw std::runtime_error("Failed to create sync engine");
-        }
-    }
-    
-    std::string createDocument(const std::string& title, const std::string& content) {
-        char doc_id[37] = {0};
-        auto result = sync_engine_create_document(engine_.get(), title.c_str(), content.c_str(), doc_id);
-        if (result != Success) {
-            throw std::runtime_error("Failed to create document");
-        }
-        return std::string(doc_id);
-    }
-    
-    void updateDocument(const std::string& id, const std::string& content) {
-        auto result = sync_engine_update_document(engine_.get(), id.c_str(), content.c_str());
-        if (result != Success) {
-            throw std::runtime_error("Failed to update document");
-        }
-    }
-};
-
-// Usage
 int main() {
     try {
-        SyncClient client("sqlite:client.db?mode=rwc", "ws://localhost:8080/ws", "demo-token");
-        auto doc_id = client.createDocument("Task", R"({"status":"pending","priority":"high"})");
-        client.updateDocument(doc_id, R"({"status":"completed","priority":"high"})");
-        std::cout << "Document operations completed successfully\n";
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
+        // Works both online and offline
+        SyncClient::sync_engine engine(
+            "sqlite:client.db?mode=rwc",
+            "ws://localhost:8080/ws", 
+            "demo-token"
+        );
+        
+        std::cout << "Sync client version: " << SyncClient::sync_engine::get_version() << std::endl;
+        
+        // Create a document
+        auto doc_id = engine.create_document(
+            "My Document",
+            R"({"content":"Hello World","type":"note","priority":"medium"})"
+        );
+        
+        std::cout << "Created document: " << doc_id << std::endl;
+        
+        // Update the document
+        engine.update_document(
+            doc_id,
+            R"({"content":"Hello Updated World","type":"note","priority":"high"})"
+        );
+        
+        std::cout << "Updated document successfully" << std::endl;
+        
+    } catch (const SyncClient::sync_exception& e) {
+        std::cerr << "Sync error: " << e.what() << std::endl;
         return 1;
     }
+    
     return 0;
 }
 ```
 
 **Building and Linking:**
 
+Using the distribution SDK (recommended):
+
+```cmake
+# CMakeLists.txt
+cmake_minimum_required(VERSION 3.15)
+project(MyProject)
+
+set(CMAKE_CXX_STANDARD 11)
+
+# Find the sync client SDK
+find_package(sync_client REQUIRED PATHS /path/to/sync-workspace/dist)
+
+# Your C++ application
+add_executable(my_app main.cpp)
+target_link_libraries(my_app sync_client)
+```
+
+Or compile directly:
+
 ```bash
-# Build the Rust library
-cd sync-client
-cargo build --release
+# Build the distribution first
+./scripts/build_dist.sh
 
 # Compile your C/C++ code (example for macOS/Linux)
-gcc -I./sync-client/target/include your_code.c -L./sync-client/target/release -lsync_client -framework Security -o your_program
+gcc -I./dist/include your_code.c -L./dist/lib -lsync_client -framework Security -o your_program
 
 # For C++
-g++ -I./sync-client/target/include your_code.cpp -L./sync-client/target/release -lsync_client -framework Security -o your_program
+g++ -std=c++11 -I./dist/include your_code.cpp -L./dist/lib -lsync_client -framework Security -o your_program
 ```
 
 ## Bidirectional Patch System

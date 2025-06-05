@@ -1,10 +1,29 @@
-# Rust JSON Database Sync System
+# JSON Database Sync
 
-A production-ready client-server synchronization system built in Rust, featuring real-time WebSocket communication, bidirectional patch-based version control, and automatic conflict resolution with eventual consistency guarantees.
+A client-server synchronization system built in Rust, featuring real-time WebSocket communication, bidirectional patch-based version control, and automatic conflict resolution.
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](BUILD_STATUS.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-24%20passing-brightgreen.svg)](TESTING.md)
+
+## Features
+
+### 🔄 Real-Time Synchronization
+- **WebSocket-based** bidirectional sync with sub-second latency
+- **Vector clock** conflict detection for distributed systems
+- **Automatic conflict resolution** with ServerWins strategy
+- **Offline-first** design with queue-based retry logic
+- **Concurrent update handling** with guaranteed convergence
+
+### 📝 Advanced Version Control
+- **Bidirectional patches**: Forward and reverse JSON patches for every change
+- **Instant undo/redo**: Navigate document history without state reconstruction
+- **Time-travel debugging**: Jump to any previous document version
+- **Efficient storage**: Patches are ~90% smaller than full document snapshots
+- **Complete audit trails**: All changes logged with user attribution
+
+### 🗄️ Database Architecture
+- **Client**: SQLite with offline queue and document caching
+- **Server**: PostgreSQL with JSONB support and event logging
+- **Change events**: Sequence-based sync with forward/reverse patch storage
 
 ## Architecture
 
@@ -12,131 +31,98 @@ A production-ready client-server synchronization system built in Rust, featuring
 - **sync-client**: Client library with SQLite storage, offline queue, and C FFI exports
 - **sync-server**: Server binary with PostgreSQL storage, WebSocket support, and event logging
 
-## Core Features
-
-### 🔄 Real-Time Synchronization
-- **WebSocket-based** bidirectional sync with sub-second latency
-- **Vector clock** conflict detection for distributed systems
-- **Automatic conflict resolution** with ServerWins strategy and eventual consistency
-- **Offline-first** design with queue-based retry logic
-- **Concurrent update handling** with proper convergence guarantees
-
-### 📝 Advanced Version Control
-- **Bidirectional patches**: Forward and reverse JSON patches for every change
-- **Instant undo/redo**: Navigate document history without state reconstruction
-- **Time-travel debugging**: Jump to any previous document version
-- **Efficient storage**: Patches are space-efficient compared to full snapshots
-- **Audit trails**: Complete change history with user attribution
-
-### 🗄️ Database Architecture
-- **Client**: SQLite with offline queue and document caching
-- **Server**: PostgreSQL with JSONB support and event logging
-- **Change events**: Sequence-based sync with forward/reverse patch storage
-- **Consolidated SQL**: Organized queries with helper functions for maintainability
-
-### 🛠️ Developer Experience  
-- **Interactive examples**: CLI client and monitoring server
-- **C FFI exports** for seamless C++ integration
-- **Docker deployment** ready with compose files
-- **Comprehensive testing**: 24 tests covering all functionality including concurrent scenarios
-- **Built-in monitoring** with real-time activity logs
-- **Robust test isolation** with complete database teardown/setup between tests
-
-## Getting Started
+## Quick Start
 
 ### Prerequisites
-
 - Rust 1.75+
 - PostgreSQL 16+
-- SQLite 3+
+- Docker (optional)
 
-### Development Setup
+### Option 1: Docker (Recommended)
 
-1. Clone the repository:
 ```bash
-cd sync-workspace
+git clone https://github.com/yourusername/json-db-sync.git
+cd json-db-sync/sync-workspace
+docker-compose up -d
 ```
 
-2. Copy environment variables:
+This starts PostgreSQL and the sync server on port 8080.
+
+### Option 2: Manual Setup
+
+1. **Install dependencies:**
 ```bash
-cp .env.example .env
-# Edit .env with your configuration
+cargo build --workspace
 ```
 
-3. Start PostgreSQL (using Docker):
+2. **Set up PostgreSQL:**
 ```bash
-docker-compose up -d postgres
+createdb sync_db
+export DATABASE_URL="postgres://user:password@localhost/sync_db"
 ```
 
-4. Run migrations:
+3. **Run migrations:**
 ```bash
 cd sync-server
 sqlx migrate run
 ```
 
-5. Build and run the server:
+4. **Start the server:**
 ```bash
 cargo run --bin sync-server
 ```
 
-6. Build the client library:
-```bash
-cd sync-client
-cargo build --release
-```
-
-### Docker Deployment
+### Try the Interactive Client
 
 ```bash
-docker-compose up -d
+# Uses demo authentication, creates database in databases/alice.sqlite3
+cargo run --package sync-client --example interactive_client
+
+# Or specify a different database name
+cargo run --package sync-client --example interactive_client -- --database bob
 ```
 
-This starts both PostgreSQL and the sync server.
-
-## Bidirectional Patch System
-
-Our advanced version control system stores both forward and reverse patches for every document change, enabling powerful features:
-
-### How It Works
-
-**CREATE Event:**
-- `forward_patch`: Contains the full document as initial state
-- `reverse_patch`: `null` (creation cannot be undone to a previous state)
-
-**UPDATE Event:**  
-- `forward_patch`: JSON patch to apply the change (e.g., `{"op": "replace", "path": "/title", "value": "New Title"}`)
-- `reverse_patch`: JSON patch to undo the change (e.g., `{"op": "replace", "path": "/title", "value": "Old Title"}`)
-
-**DELETE Event:**
-- `forward_patch`: `null` (deletion is implicit)  
-- `reverse_patch`: Contains full document to restore if undeleted
-
-### Benefits
-
-✅ **Instant Undo**: Apply reverse patches without reconstructing history  
-✅ **Efficient Reversion**: Jump to any version in O(n) patch operations  
-✅ **Bidirectional Navigation**: Move forward/backward through document timeline  
-✅ **Space Efficient**: Patches are ~90% smaller than storing full document snapshots  
-✅ **Audit Compliance**: Complete change history with recovery capabilities  
-
-### Database Schema
-
-```sql
-CREATE TABLE change_events (
-    sequence BIGSERIAL PRIMARY KEY,
-    document_id UUID NOT NULL,
-    user_id UUID NOT NULL,
-    event_type VARCHAR(10) NOT NULL,
-    revision_id TEXT NOT NULL,
-    forward_patch JSONB,    -- Patch to apply this change
-    reverse_patch JSONB,    -- Patch to undo this change  
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
+The interactive client provides a task management interface with:
+- ✅ Create, edit, and complete tasks
+- 🏷️ Priority levels and tags
+- 📋 Rich task listing with status indicators
+- 🔄 Real-time sync across multiple clients
+- 📱 Offline support with automatic sync when reconnected
 
 ## API Usage
 
-### WebSocket Connection
+### Rust Client Library
+
+```rust
+use sync_client::SyncEngine;
+use serde_json::json;
+
+// Connect to server
+let engine = SyncEngine::new(
+    "sqlite:client.db?mode=rwc",
+    "ws://localhost:8080/ws", 
+    "demo-token"
+).await?;
+
+// Create a document
+let doc = engine.create_document(
+    "My Document".to_string(),
+    json!({
+        "title": "Task title",
+        "description": "Task description", 
+        "status": "pending",
+        "priority": "medium",
+        "tags": ["work", "important"]
+    })
+).await?;
+
+// Update document
+engine.update_document(doc.id, json!({
+    "status": "completed"
+})).await?;
+```
+
+### WebSocket API
 
 Connect to `ws://localhost:8080/ws` and authenticate:
 
@@ -144,12 +130,11 @@ Connect to `ws://localhost:8080/ws` and authenticate:
 {
   "type": "authenticate",
   "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "auth_token": "your-auth-token"
+  "auth_token": "demo-token"
 }
 ```
 
-### Create Document
-
+Create documents:
 ```json
 {
   "type": "create_document",
@@ -161,8 +146,7 @@ Connect to `ws://localhost:8080/ws` and authenticate:
 }
 ```
 
-### Update Document
-
+Update with JSON patches:
 ```json
 {
   "type": "update_document",
@@ -175,130 +159,7 @@ Connect to `ws://localhost:8080/ws` and authenticate:
 }
 ```
 
-### Change Events Response
-
-When requesting changes since a sequence, you'll receive both forward and reverse patches:
-
-```json
-{
-  "type": "changes_since",
-  "changes": [
-    {
-      "sequence": 1,
-      "document_id": "550e8400-e29b-41d4-a716-446655440001",
-      "event_type": "create",
-      "revision_id": "1-abc123",
-      "forward_patch": {
-        "id": "550e8400-e29b-41d4-a716-446655440001",
-        "title": "My Document", 
-        "content": {"text": "Hello, World!"}
-      },
-      "reverse_patch": null,
-      "created_at": "2024-01-01T12:00:00Z"
-    },
-    {
-      "sequence": 2,
-      "document_id": "550e8400-e29b-41d4-a716-446655440001", 
-      "event_type": "update",
-      "revision_id": "2-def456",
-      "forward_patch": [
-        {"op": "replace", "path": "/text", "value": "Updated text"}
-      ],
-      "reverse_patch": [
-        {"op": "replace", "path": "/text", "value": "Hello, World!"}
-      ],
-      "created_at": "2024-01-01T12:05:00Z"  
-    }
-  ]
-}
-```
-
-### Undo/Redo Operations
-
-Use reverse patches to implement undo functionality:
-
-```json
-{
-  "type": "undo_to_sequence",
-  "target_sequence": 1
-}
-```
-
-This applies reverse patches in chronological order until reaching the target sequence.
-
-## Concurrent Updates & Conflict Resolution
-
-The system handles concurrent updates with automatic conflict resolution and guaranteed eventual consistency:
-
-### How Concurrent Updates Work
-
-1. **Multiple clients** can update the same document simultaneously
-2. **Server receives updates** in some order and processes them sequentially  
-3. **Conflicts are detected** using vector clocks when updates have concurrent histories
-4. **ServerWins strategy** automatically resolves conflicts by accepting the latest update
-5. **Full document sync** ensures all clients converge to the same final state
-
-### Conflict Resolution Flow
-
-```
-Client A: document.title = "Version A"
-Client B: document.title = "Version B"  (concurrent with A)
-Client C: document.title = "Version C"  (concurrent with A & B)
-
-Server Processing:
-1. Receives A's update → applies it → broadcasts to B & C
-2. Receives B's update → detects conflict → applies it (ServerWins) → broadcasts to A & C
-3. Receives C's update → detects conflict → applies it (ServerWins) → broadcasts to A & B
-
-Final Result: All clients converge to "Version C" (last processed)
-```
-
-### Guarantees
-
-✅ **Eventual Consistency**: All clients will converge to the same state  
-✅ **No Lost Updates**: All updates are processed and logged  
-✅ **Conflict Detection**: Vector clocks identify concurrent modifications  
-✅ **Automatic Resolution**: No manual intervention required  
-✅ **Audit Trail**: All changes logged with forward/reverse patches  
-
-### Test Validation
-
-The system includes comprehensive tests for concurrent scenarios:
-- `test_concurrent_updates_same_document`: 10 clients updating simultaneously
-- `test_many_concurrent_clients`: High-load testing with 20+ clients
-- `test_concurrent_sessions`: Multiple client sessions with eventual convergence
-
-## Interactive Examples
-
-The project includes interactive examples to demonstrate functionality:
-
-### Client Example
-```bash
-cd sync-client  
-cargo run --example interactive_client
-```
-
-Features a CLI interface with:
-- Document creation and editing
-- Real-time sync visualization  
-- Offline queue management
-- Colored output for better UX
-
-### Server Monitoring Example  
-```bash
-cd sync-server
-cargo run --example monitoring_server
-```
-
-Shows real-time activity including:
-- Client connections/disconnections
-- JSON patch operations with diffs
-- Bidirectional patch storage
-- Event logging and sequence tracking
-
-## C++ Integration
-
-The client library exports C FFI functions:
+### C++ Integration
 
 ```cpp
 extern "C" {
@@ -307,161 +168,133 @@ extern "C" {
         const char* server_url,
         const char* auth_token
     );
-    
     void sync_engine_destroy(void* engine);
 }
+
+auto engine = sync_engine_create(
+    "client.db",
+    "ws://localhost:8080/ws",
+    "demo-token"
+);
 ```
+
+## Bidirectional Patch System
+
+The system stores both forward and reverse patches for every document change:
+
+### How It Works
+
+**CREATE Event:**
+- `forward_patch`: Contains the full document as initial state
+- `reverse_patch`: `null` (creation cannot be undone)
+
+**UPDATE Event:**  
+- `forward_patch`: JSON patch to apply the change
+- `reverse_patch`: JSON patch to undo the change
+
+**DELETE Event:**
+- `forward_patch`: `null` (deletion is implicit)  
+- `reverse_patch`: Contains full document to restore if undeleted
+
+### Benefits
+
+✅ **Instant Undo**: Apply reverse patches without reconstructing history  
+✅ **Efficient Reversion**: Jump to any version in O(n) patch operations  
+✅ **Space Efficient**: Patches are ~90% smaller than full document snapshots  
+✅ **Complete Audit Trail**: All changes logged with recovery capabilities  
+
+## Conflict Resolution
+
+The system handles concurrent updates with automatic conflict resolution:
+
+1. **Multiple clients** can update the same document simultaneously
+2. **Server processes updates** sequentially and detects conflicts using vector clocks
+3. **ServerWins strategy** automatically resolves conflicts
+4. **All clients converge** to the same final state through full document sync
 
 ## Testing
 
-### Comprehensive Test Suite (24 passing)
-
-The system includes extensive testing with full isolation guarantees:
-
-#### Integration Tests with Full Isolation
+### Unit Tests
 ```bash
-# Run integration tests with proper setup/teardown
-./run_integration_tests_local.sh
-
-# Run specific test
-./run_integration_tests_local.sh test_concurrent_updates_same_document
-```
-
-#### Unit Tests
-```bash
-# Set up test database
-export DATABASE_URL="postgresql://$USER@localhost:5432/sync_test_db_local"
-
-# Run unit tests
-cargo test --lib
-```
-
-### Database Tests
-```bash
-# Test bidirectional patch functionality
-cargo test --package sync-server --test unit_tests database_tests::test_event_logging -- --nocapture
-
-# Test document operations
-cargo test --package sync-server --test unit_tests database_tests::test_document_delete -- --nocapture
+cargo test --lib --bins
 ```
 
 ### Integration Tests
 ```bash
-# Set environment variable and run
+# Local setup with PostgreSQL (fast)
+./test/run_integration_tests_local.sh
+
+# Docker-based setup (consistent environment)
+./test/run_integration_tests_docker.sh
+
+# Manual setup
+docker-compose -f docker-compose.test.yml up -d
 export RUN_INTEGRATION_TESTS=1
-cargo test --test integration -- --test-threads=1
+export TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5433/sync_test_db"
+cargo test integration -- --test-threads=1
 ```
 
 ### Test Coverage
-
 - **sync-core**: 7 tests (vector clocks, document revisions, JSON patches)
 - **sync-client**: 3 tests (database operations, offline queue, document lifecycle)  
-- **sync-server**: 14 tests (authentication, database operations, event logging, bidirectional patches, concurrent scenarios)
+- **sync-server**: 14 tests (authentication, WebSocket protocol, concurrent scenarios)
 
-#### Key Test Categories:
+## Authentication
 
-**🔄 Synchronization Tests:**
-✅ Vector clock synchronization  
-✅ JSON patch creation and application  
-✅ Document CRUD operations  
-✅ Event logging with forward/reverse patches  
+The system supports demo mode for easy testing:
 
-**🔐 Authentication & Security:**  
-✅ Token-based authentication  
-✅ Auto-registration for custom tokens  
-✅ Invalid token rejection  
+- **Demo token**: Use `demo-token` with any user ID
+- **Auto-registration**: Server automatically creates users for demo tokens
+- **Extensible design**: Authentication system ready for production enhancements
 
-**⚡ Concurrent Operations:**
-✅ Multiple concurrent clients  
-✅ Simultaneous document updates with convergence  
-✅ Conflict detection and automatic resolution  
-✅ Server-side broadcast to all clients  
+### Production Considerations
 
-**🛠️ Infrastructure:**
-✅ Offline queue functionality  
-✅ WebSocket message handling  
-✅ Database isolation between tests  
-✅ Full system integration scenarios
+For production deployment, you'll need to implement:
 
-## Performance Considerations
+**Core Authentication Flow:**
+1. **User Registration**: Secure user creation with password hashing (system already uses Argon2)
+2. **Login/Session Management**: JWT or session tokens with expiry and refresh mechanisms
+3. **Token Validation**: Secure token verification with proper error handling
 
-### Database Optimizations
+**Security Requirements:**
+- **Session Storage**: Use Redis or distributed cache for session management
+- **Rate Limiting**: Prevent brute force attacks on authentication endpoints
+- **Password Security**: Already implemented with Argon2 hashing
+- **TLS/WSS**: Use secure WebSocket connections in production
+- **Audit Logging**: Track authentication events and failed attempts
+
+**Scalability Features:**
+- **Stateless Sessions**: Consider JWT for horizontal scaling
+- **Token Refresh**: Implement refresh tokens for better UX
+- **Multi-Factor Authentication**: Add TOTP or SMS verification
+- **OAuth2 Integration**: Support third-party authentication providers
+
+The current implementation provides a solid foundation with secure hashing and extensible architecture.
+
+## Performance & Security
+
+### Optimizations
 - **Connection pooling** for PostgreSQL and SQLite
-- **Consolidated SQL queries** with prepared statements and caching disabled for schema flexibility
-- **JSONB indexing** for fast document content searches
-- **Sequence-based sync** for efficient incremental updates
+- **JSONB indexing** for fast document searches
+- **WebSocket compression** for reduced bandwidth
+- **Patch-based storage** for ~90% space savings
 
-### Memory & Network  
-- **Patch-based storage**: ~90% space savings vs full document snapshots
-- **WebSocket compression** enabled for reduced bandwidth
-- **Message batching** for multiple updates
-- **Document caching** in memory with LRU eviction
-- **Rate limiting** per user to prevent abuse
-
-### Scalability Features
-- **Vector clocks** prevent synchronization bottlenecks
-- **Offline-first design** reduces server dependency
-- **Bidirectional patches** enable instant undo without history replay
-- **Event sourcing** architecture for horizontal scaling
-- **Eventual consistency** with guaranteed convergence for concurrent updates
-- **Client-side revision checking** prevents applying outdated changes
-
-## Monitoring Mode
-
-The server includes a built-in monitoring mode that provides real-time visibility into sync operations. This is useful for debugging, development, and understanding system behavior.
-
-### Enabling Monitoring
-
-Set the `MONITORING` environment variable to `true` when starting the server:
-
-```bash
-MONITORING=true cargo run --bin sync-server
-```
-
-Or with Docker:
-```bash
-docker run -e MONITORING=true sync-server
-```
-
-### Monitoring Features
-
-When monitoring is enabled, you'll see:
-- Real-time client connections and disconnections
-- All WebSocket messages sent and received
-- JSON patch operations with full content
-- Conflict detection events
-- Error messages and stack traces
-- Colorized output for easy reading
-
-### Example Output
-
-```
-🚀 Sync Server with Monitoring
-==============================
-
-📋 Activity Log:
-────────────────────────────────────────────────────────────────────────────────
-14:32:15.123 → Client connected: a1b2c3d4-e5f6-7890-abcd-ef1234567890
-14:32:15.456 ↓ Authenticate from a1b2c3d4-e5f6-7890-abcd-ef1234567890
-14:32:15.789 ↑ AuthSuccess to a1b2c3d4-e5f6-7890-abcd-ef1234567890
-14:32:16.012 ↓ UpdateDocument from a1b2c3d4-e5f6-7890-abcd-ef1234567890
-14:32:16.034 🔧 Patch applied to document 123e4567-e89b-12d3-a456-426614174000:
-     {
-       "op": "replace",
-       "path": "/title",
-       "value": "Updated Title"
-     }
-14:32:16.056 ↑ DocumentUpdated to a1b2c3d4-e5f6-7890-abcd-ef1234567890
-```
-
-## Security
-
-- Token-based authentication with Argon2 hashing
-- TLS/WSS required in production
+### Security Features
+- Token-based authentication with secure hashing
 - Input validation for all JSON patches
-- Rate limiting to prevent DoS
-- Audit logging for all operations
+- Rate limiting and audit logging
+- TLS/WSS support for production
 
 ## License
 
 MIT
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Run `cargo test` and `./test/run_integration_tests_docker.sh`
+5. Submit a pull request
+
+See [TESTING.md](TESTING.md) for detailed testing guidelines and [EXAMPLES.md](EXAMPLES.md) for usage examples.

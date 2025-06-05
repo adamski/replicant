@@ -13,7 +13,7 @@ We follow a pragmatic testing approach:
 ## Test Structure
 
 ```
-tests/
+sync-server/tests_integration/
 ├── integration_tests.rs          # Main integration test entry point
 ├── integration/
 │   ├── mod.rs                   # Module declarations
@@ -23,14 +23,38 @@ tests/
 │   ├── conflict_resolution_integration.rs # Conflict handling
 │   ├── websocket_integration.rs # WebSocket protocol tests
 │   └── concurrent_clients_integration.rs # Load and concurrency tests
-└── unit/
-    └── basic_test.rs            # Core unit tests
+├── basic_test.rs                # Core integration tests
+└── full_sync_test.rs            # End-to-end sync scenarios
 
 sync-server/tests/
 └── unit_tests.rs                # Server-specific unit tests
+
+test/
+├── run_integration_tests.sh      # Docker-based integration tests
+├── run_integration_tests_fast.sh # Fast integration tests with caching
+└── run_integration_tests_local.sh # Local integration tests
 ```
 
 ## Running Tests
+
+### Quick Reference
+
+```bash
+# Unit tests
+cargo test --lib --bins
+
+# Integration tests (local PostgreSQL - fast)
+./test/run_integration_tests_local.sh
+
+# Integration tests (Docker - consistent environment)
+./test/run_integration_tests_docker.sh
+
+# Manual integration test setup
+docker-compose -f docker-compose.test.yml up -d
+export RUN_INTEGRATION_TESTS=1
+export TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5433/sync_test_db"
+cargo test integration -- --test-threads=1
+```
 
 ### Unit Tests
 ```bash
@@ -43,13 +67,19 @@ cargo test test_token_hashing
 
 ### Integration Tests
 
-#### Option 1: Docker-based (Recommended)
+#### Option 1: Local PostgreSQL (Fast)
 ```bash
-# Run full integration test suite with Docker
-./run_integration_tests.sh
+# Run integration tests with automated setup/teardown (requires local PostgreSQL)
+./test/run_integration_tests_local.sh
 ```
 
-#### Option 2: Manual Setup
+#### Option 2: Docker-based (Consistent)
+```bash
+# Run integration tests with Docker (consistent environment, no local PostgreSQL needed)
+./test/run_integration_tests_docker.sh
+```
+
+#### Option 3: Manual setup
 ```bash
 # Start PostgreSQL
 docker-compose -f docker-compose.test.yml up -d

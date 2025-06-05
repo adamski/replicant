@@ -1,6 +1,6 @@
 # Interactive Examples
 
-This project includes two interactive examples that demonstrate the sync system in action.
+This project includes interactive examples that demonstrate the sync system in action.
 
 ## Prerequisites
 
@@ -9,55 +9,67 @@ This project includes two interactive examples that demonstrate the sync system 
 
 ## Running the Examples
 
-### 1. Start the Monitoring Server
+### 1. Start the Sync Server
 
-First, start the server with live monitoring:
+First, start the server:
 
 ```bash
-# Set up the database
-export DATABASE_URL="postgres://postgres:postgres@localhost/sync_db"
+# Option 1: Using Docker (recommended)
+docker-compose up -d
 
-# Run the monitoring server
-cargo run --example monitoring_server
+# Option 2: Manual setup
+export DATABASE_URL="postgres://postgres:postgres@localhost/sync_db"
+cargo run --bin sync-server
+
+# Option 3: With monitoring enabled (shows real-time activity)
+export DATABASE_URL="postgres://postgres:postgres@localhost/sync_db"
+MONITORING=true cargo run --bin sync-server
 ```
 
-The server will display:
+With monitoring enabled, the server displays:
 - Real-time connection events
 - All messages sent/received
 - JSON patch diffs when documents are updated
 - Conflict detection alerts
+- Colorized output for easy debugging
 
-### 2. Run the Interactive Client
+### 2. Run the Interactive Task Manager Client
 
 In another terminal, run the interactive client:
 
 ```bash
-# Run with defaults (connects to localhost:8080)
-cargo run --example interactive_client
+# Run with defaults (creates databases/alice.sqlite3)
+cargo run --package sync-client --example interactive_client
+
+# Or specify a different database name
+cargo run --package sync-client --example interactive_client -- --database bob
 
 # Or specify custom options
-cargo run --example interactive_client -- \
-  --database my_client.db \
+cargo run --package sync-client --example interactive_client -- \
+  --database my_tasks \
   --server ws://localhost:8080/ws \
   --token my-auth-token
 ```
 
-The client provides a menu-driven interface to:
-- 📄 List all documents
-- ➕ Create new JSON documents
-- ✏️  Edit existing documents
-- 🔍 View document details
+The client provides a modern task management interface with:
+- 📋 List tasks with status and priority indicators
+- ➕ Create new tasks with form-based input
+- ✏️  Edit tasks with guided field editing
+- 🔍 View detailed task information
+- ✅ Mark tasks as completed
+- 🗑️  Delete tasks with confirmation
 - 🔄 Check sync status
-- Works offline with automatic sync when reconnected
+- 📱 Works offline with automatic sync when reconnected
 
 ## Example Workflow
 
 1. **Start the server** - You'll see it's ready when it displays the listening address
 2. **Start a client** - It will create a new user ID automatically
-3. **Create a document** - Use the menu to create a new document with JSON content
-4. **Watch the server** - See the real-time logs showing the document creation
-5. **Edit the document** - Make changes and see the JSON patch in the server logs
-6. **Start another client** - Use the same user ID to see documents sync across clients
+3. **Create a task** - Use the guided interface to create a task with title, description, priority, and tags
+4. **Watch the server** - If monitoring is enabled, see real-time logs showing the task creation
+5. **Edit the task** - Make changes through the form interface and see JSON patches in server logs
+6. **Start another client** - Use the same database name to see tasks sync across clients
+7. **Try different operations** - Mark tasks complete, change priorities, add tags
 
 ## Server Log Example
 
@@ -100,30 +112,61 @@ The client provides a menu-driven interface to:
 ```
 🚀 JSON Database Sync Client
 ============================
+📁 Database: databases/alice.sqlite3
 👤 User ID: 123e4567-e89b-12d3-a456-426614174000
 🌐 Server: ws://localhost:8080/ws
 
 ✅ Connected to sync server!
 
 What would you like to do?
-> 📄 List documents
-  ➕ Create new document
-  ✏️  Edit document
-  🔍 View document
-  🗑️  Delete document
+> 📋 List tasks
+  ➕ Create new task
+  ✏️  Edit task
+  🔍 View task details
+  ✅ Mark task completed
+  🗑️  Delete task
   🔄 Sync status
   ❌ Exit
 
-📚 Your Documents:
-────────────────────────────────────────────────────────────────────────────────
-✅ 987fcdeb-51a2-43b7-8c9d-0e1f2a3b4c5d My First Document (2024-01-15T14:23:20Z)
-⏳ abc12345-6789-def0-1234-56789abcdef0 Work Notes (2024-01-15T14:25:00Z)
-────────────────────────────────────────────────────────────────────────────────
+📋 Your Tasks:
+────────────────────────────────────────────────────────────────────────────────────────────────
+⏳ 🔴 987fcdeb Fix critical bug - Investigate database connection issues  📤
+✅ 🟡 abc12345 Complete project documentation - Write API documentation  
+🔄 🟢 def67890 Code review - Review pull request #123  
+────────────────────────────────────────────────────────────────────────────────────────────────
+Legend: ✅=done 🔄=progress ⏳=pending | 🔴=high 🟡=med 🟢=low | 📤=sync pending
+```
+
+## Authentication
+
+The system supports demo mode for easy testing and development:
+
+### Demo Mode (Default)
+
+```bash
+# Uses demo-token by default - no setup required
+cargo run --package sync-client --example interactive_client
+
+# Server automatically creates users for demo-token
+# Each client gets a unique user ID
+```
+
+### Custom Authentication
+
+```bash
+# Use your own auth token
+cargo run --package sync-client --example interactive_client -- \
+  --token my-custom-token \
+  --user-id 550e8400-e29b-41d4-a716-446655440000
+
+# Server will auto-register users with custom tokens in demo mode
 ```
 
 ## Tips
 
-- The client works offline - documents are marked as "pending" (⏳) until synced
-- You can run multiple clients with the same user ID to test real-time sync
-- The server shows JSON patch diffs, making it easy to debug sync issues
+- The client works offline - tasks show sync status indicators (📤 = pending sync)
+- You can run multiple clients with the same database name to test real-time sync
+- Use monitoring mode (`MONITORING=true`) to see JSON patch diffs and debug sync issues
+- The task interface provides guided input - no need to write raw JSON
+- Tasks support rich metadata: priorities, tags, descriptions, and completion status
 - Use Ctrl+C to cleanly exit either application

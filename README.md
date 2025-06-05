@@ -7,18 +7,17 @@ A client-server synchronization system built in Rust, featuring real-time WebSoc
 ## Features
 
 ### 🔄 Real-Time Synchronization
-- **WebSocket-based** bidirectional sync with sub-second latency
+- **WebSocket-based** bidirectional sync
 - **Vector clock** conflict detection for distributed systems
-- **Automatic conflict resolution** with ServerWins strategy
-- **Offline-first** design with queue-based retry logic
-- **Concurrent update handling** with guaranteed convergence
+- **Basic conflict resolution** with server-wins fallback
+- **Offline-first** design with local storage
+- **Concurrent update handling** with conflict detection
 
-### 📝 Advanced Version Control
-- **Bidirectional patches**: Forward and reverse JSON patches for every change
-- **Instant undo/redo**: Navigate document history without state reconstruction
-- **Time-travel debugging**: Jump to any previous document version
-- **Efficient storage**: Patches are ~90% smaller than full document snapshots
-- **Complete audit trails**: All changes logged with user attribution
+### 📝 Version Control
+- **JSON patches**: Forward patches for document changes
+- **Document versioning**: Each document has version and revision tracking
+- **Change events**: All modifications logged with sequence numbers
+- **Audit trails**: Changes logged with user attribution
 
 ### 🗄️ Database Architecture
 - **Client**: SQLite with offline queue and document caching
@@ -325,19 +324,18 @@ The system stores both forward and reverse patches for every document change:
 
 ### Benefits
 
-✅ **Instant Undo**: Apply reverse patches without reconstructing history  
-✅ **Efficient Reversion**: Jump to any version in O(n) patch operations  
-✅ **Space Efficient**: Patches are ~90% smaller than full document snapshots  
 ✅ **Complete Audit Trail**: All changes logged with recovery capabilities  
+✅ **Efficient Storage**: JSON patches store only the differences between versions
+✅ **Version History**: Forward and reverse patch support for future undo functionality  
 
 ## Conflict Resolution
 
-The system handles concurrent updates with automatic conflict resolution:
+The system handles concurrent updates with basic conflict detection:
 
 1. **Multiple clients** can update the same document simultaneously
 2. **Server processes updates** sequentially and detects conflicts using vector clocks
-3. **ServerWins strategy** automatically resolves conflicts
-4. **All clients converge** to the same final state through full document sync
+3. **Server-wins fallback** for conflict resolution (clients accept server state)
+4. **Conflict detection** implemented with vector clock comparison
 
 ## Testing
 
@@ -363,8 +361,8 @@ cargo test integration -- --test-threads=1
 
 ### Test Coverage
 - **sync-core**: 7 tests (vector clocks, document revisions, JSON patches)
-- **sync-client**: 3 tests (database operations, offline queue, document lifecycle)  
-- **sync-server**: 14 tests (authentication, WebSocket protocol, concurrent scenarios)
+- **sync-client**: 1 test (basic functionality)  
+- **sync-server**: 7 tests (authentication, WebSocket protocol, concurrent scenarios)
 
 ## Authentication
 
@@ -403,14 +401,12 @@ The current implementation provides a solid foundation with secure hashing and e
 ### Optimizations
 - **Connection pooling** for PostgreSQL and SQLite
 - **JSONB indexing** for fast document searches
-- **WebSocket compression** for reduced bandwidth
-- **Patch-based storage** for ~90% space savings
+- **Patch-based storage** for efficient change tracking
 
 ### Security Features
-- Token-based authentication with secure hashing
-- Input validation for all JSON patches
-- Rate limiting and audit logging
-- TLS/WSS support for production
+- Token-based authentication with secure hashing (Argon2)
+- Input validation for JSON patches
+- Demo token support for development
 
 ## License
 

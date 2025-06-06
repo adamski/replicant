@@ -121,6 +121,45 @@ engine.update_document(doc.id, json!({
 })).await?;
 ```
 
+#### Rust Event Callbacks
+
+```rust
+use sync_client::events::{EventDispatcher, EventType};
+
+// Get event dispatcher from engine
+let events = engine.event_dispatcher();
+
+// Register callback for document events
+events.register_callback(
+    |event_type, document_id, title, content, error, numeric_data, boolean_data, context| {
+        match event_type {
+            EventType::DocumentCreated => {
+                println!("📄 New document: {}", title.unwrap_or("untitled"));
+            },
+            EventType::DocumentUpdated => {
+                println!("✏️ Updated: {}", title.unwrap_or("untitled"));
+            },
+            EventType::SyncCompleted => {
+                println!("🔄 Synced {} documents", numeric_data);
+            },
+            _ => {}
+        }
+    },
+    std::ptr::null_mut(), // context
+    None // filter (None = all events)
+)?;
+
+// In your main loop
+loop {
+    let processed = events.process_events()?;
+    if processed > 0 {
+        println!("Processed {} events", processed);
+    }
+    
+    tokio::time::sleep(tokio::time::Duration::from_millis(16)).await;
+}
+```
+
 ### WebSocket API
 
 Connect to `ws://localhost:8080/ws` and authenticate:
@@ -172,6 +211,82 @@ The sync client provides a C API that can be used from C, C++, and other languag
 # - dist/lib/                     (compiled libraries)
 # - dist/examples/                (working examples)
 ```
+
+#### Event Callback System
+
+The sync client includes a comprehensive event callback system for real-time notifications about document changes, sync operations, and connection status.
+
+**Key Features:**
+- Thread-safe design with no locks needed in user code
+- Support for Rust, C, and C++ applications
+- Event filtering and context passing
+- Offline and online event notifications
+
+**Quick C Example:**
+```c
+#include "sync_client_events.h"
+
+void my_callback(const SyncEventData* event, void* context) {
+    switch (event->event_type) {
+        case SYNC_EVENT_DOCUMENT_CREATED:
+            printf("📄 Document created: %s\n", event->title);
+            break;
+        case SYNC_EVENT_SYNC_COMPLETED:
+            printf("🔄 Sync completed: %llu documents\n", event->numeric_data);
+            break;
+    }
+}
+
+int main() {
+    struct CSyncEngine* engine = sync_engine_create(
+        "sqlite:client.db", "ws://localhost:8080/ws", "demo-token");
+    
+    // Register callback for all events
+    sync_engine_register_event_callback(engine, my_callback, NULL, -1);
+    
+    // Main loop - process events regularly
+    while (running) {
+        uint32_t processed_count;
+        sync_engine_process_events(engine, &processed_count);
+        // ... do other work
+        usleep(16000); // ~60 FPS
+    }
+    
+    sync_engine_destroy(engine);
+    return 0;
+}
+```
+
+**C++ Example with Lambdas:**
+```cpp
+#include "sync_client_events.h"
+
+int main() {
+    // Simple RAII wrapper
+    SyncEngine engine("sqlite:client.db", "ws://localhost:8080/ws", "demo-token");
+    
+    // Lambda callback with capture
+    int event_count = 0;
+    auto callback = [&event_count](const SyncEventData* event, void* context) {
+        event_count++;
+        std::cout << "Event #" << event_count << ": " 
+                 << get_event_name(event->event_type) << std::endl;
+    };
+    
+    // Register callback
+    engine.register_callback(callback);
+    
+    // Main loop
+    while (running) {
+        engine.process_events();
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    
+    return 0;
+}
+```
+
+For complete documentation and advanced examples, see [EVENT_CALLBACKS.md](EVENT_CALLBACKS.md).
 
 **C API Example:**
 

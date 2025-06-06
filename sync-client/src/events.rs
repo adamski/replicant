@@ -1,33 +1,114 @@
+//! Event callback system for the sync client
+//! 
+//! This module provides a thread-safe event system that allows applications to receive
+//! real-time notifications about document changes, sync operations, and connection status.
+//! 
+//! # Key Features
+//! 
+//! - **Thread-Safe Design**: Events can be generated from any thread but callbacks are
+//!   only invoked on the thread that registered them
+//! - **Event Filtering**: Subscribe to specific event types or all events
+//! - **Context Passing**: Pass application context data to callbacks
+//! - **Offline/Online Events**: Receive events for both local and synchronized operations
+//! 
+//! # Usage
+//! 
+//! ```rust,no_run
+//! use sync_client::events::{EventDispatcher, EventType};
+//! 
+//! // Create event dispatcher
+//! let dispatcher = EventDispatcher::new();
+//! 
+//! // Register callback for all events
+//! dispatcher.register_callback(
+//!     |event, context| {
+//!         // Handle event
+//!         println!("Event received: {:?}", event.event_type);
+//!     },
+//!     std::ptr::null_mut(),
+//!     None
+//! )?;
+//! 
+//! // In your main loop, process events
+//! loop {
+//!     let processed = dispatcher.process_events()?;
+//!     // ... do other work
+//! }
+//! ```
+//! 
+//! # Thread Safety
+//! 
+//! The event system uses a single-thread callback model:
+//! 1. Events can be generated from any thread
+//! 2. Events are queued for processing
+//! 3. Callbacks are only invoked when `process_events()` is called
+//! 4. All callbacks execute on the thread that registered them
+//! 
+//! This design eliminates the need for complex synchronization in user code.
+
 use std::ffi::{c_char, c_void, CString, CStr};
 use std::sync::{Mutex, mpsc};
 use std::thread::{self, ThreadId};
 use uuid::Uuid;
 
+/// Event types that can be emitted by the sync client
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EventType {
+    /// A new document was created (local or from sync)
     DocumentCreated = 0,
+    /// An existing document was updated (local or from sync)
     DocumentUpdated = 1,
+    /// A document was deleted (local or from sync)
     DocumentDeleted = 2,
+    /// Synchronization process started
     SyncStarted = 3,
+    /// Synchronization completed successfully
     SyncCompleted = 4,
+    /// An error occurred during synchronization
     SyncError = 5,
+    /// A conflict was detected between document versions
     ConflictDetected = 6,
+    /// Connection state changed (connected/disconnected)
     ConnectionStateChanged = 7,
 }
 
+/// Event data structure passed to C/C++ callbacks
+/// 
+/// Contains all relevant information about the event. Not all fields are populated
+/// for all event types - check the event_type to determine which fields are valid.
 #[repr(C)]
 #[derive(Debug)]
 pub struct EventData {
+    /// Type of event that occurred
     pub event_type: EventType,
+    /// Document UUID (may be null for non-document events)
     pub document_id: *const c_char,
+    /// Document title (may be null)
     pub title: *const c_char,
+    /// Document content as JSON string (may be null)
     pub content: *const c_char,
+    /// Error message (only for error events, may be null)
     pub error: *const c_char,
+    /// Numeric data (e.g., sync count for SYNC_COMPLETED)
     pub numeric_data: u64,
+    /// Boolean data (e.g., connection state for CONNECTION_STATE_CHANGED)
     pub boolean_data: bool,
 }
 
+/// C-compatible callback function type for event notifications
+/// 
+/// # Parameters
+/// 
+/// * `event` - Pointer to event data (valid only during callback execution)
+/// * `context` - User-defined context pointer passed during registration
+/// 
+/// # Safety
+/// 
+/// The event pointer is only valid during the callback execution.
+/// Do not store or access it after the callback returns.
+/// String pointers in the event data are temporary and will be freed
+/// after the callback returns. Copy them if you need to retain the data.
 pub type EventCallback = extern "C" fn(event: *const EventData, context: *mut c_void);
 
 #[derive(Debug)]
@@ -51,6 +132,28 @@ struct QueuedEvent {
     boolean_data: bool,
 }
 
+/// Thread-safe event dispatcher for managing callbacks and event processing
+/// 
+/// The EventDispatcher uses a single-thread callback model where events can be
+/// generated from any thread but callbacks are only invoked on the thread that
+/// registered them. This eliminates the need for complex synchronization in user code.
+/// 
+/// # Example
+/// 
+/// ```rust,no_run
+/// use sync_client::events::EventDispatcher;
+/// 
+/// let dispatcher = EventDispatcher::new();
+/// 
+/// // Register callback (sets callback thread to current thread)
+/// dispatcher.register_callback(my_callback, std::ptr::null_mut(), None)?;
+/// 
+/// // In main loop
+/// loop {
+///     let processed = dispatcher.process_events()?;
+///     // ... do other work
+/// }
+/// ```
 pub struct EventDispatcher {
     callbacks: Mutex<Vec<CallbackEntry>>,
     event_queue: Mutex<mpsc::Receiver<QueuedEvent>>,

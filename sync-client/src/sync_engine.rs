@@ -10,6 +10,7 @@ use crate::{
     database::ClientDatabase,
     websocket::WebSocketClient,
     errors::ClientError,
+    events::EventDispatcher,
 };
 
 pub struct SyncEngine {
@@ -19,6 +20,7 @@ pub struct SyncEngine {
     client_id: Uuid,
     node_id: String,
     message_rx: Option<mpsc::Receiver<ServerMessage>>,
+    event_dispatcher: Arc<EventDispatcher>,
 }
 
 impl SyncEngine {
@@ -55,9 +57,14 @@ impl SyncEngine {
             client_id,
             node_id,
             message_rx: Some(rx),
+            event_dispatcher: Arc::new(EventDispatcher::new()),
         };
         
         Ok(engine)
+    }
+    
+    pub fn event_dispatcher(&self) -> Arc<EventDispatcher> {
+        self.event_dispatcher.clone()
     }
     
     pub async fn start(&mut self) -> Result<(), ClientError> {
@@ -67,6 +74,7 @@ impl SyncEngine {
         
         let db = self.db.clone();
         let client_id = self.client_id;
+        let event_dispatcher = self.event_dispatcher.clone();
         
         // Spawn message handler
         tokio::spawn(async move {
@@ -74,7 +82,7 @@ impl SyncEngine {
             tracing::info!("CLIENT {}: Message handler started", client_id);
             while let Some(msg) = rx.recv().await {
                 tracing::info!("CLIENT {}: Processing server message: {:?}", client_id, std::mem::discriminant(&msg));
-                if let Err(e) = Self::handle_server_message(msg, &db, client_id).await {
+                if let Err(e) = Self::handle_server_message(msg, &db, client_id, &event_dispatcher).await {
                     tracing::error!("CLIENT {}: Error handling server message: {}", client_id, e);
                 } else {
                     tracing::info!("CLIENT {}: Successfully processed server message", client_id);
@@ -84,6 +92,7 @@ impl SyncEngine {
         });
         
         // Initial sync
+        self.event_dispatcher.emit_sync_started();
         self.sync_all().await?;
         
         Ok(())
@@ -110,6 +119,9 @@ impl SyncEngine {
         // Save locally first
         tracing::info!("CLIENT: Creating document locally: {} ({})", doc.id, title);
         self.db.save_document(&doc).await?;
+        
+        // Emit event
+        self.event_dispatcher.emit_document_created(&doc.id, &doc.title, &doc.content);
         
         // Send to server
         tracing::info!("CLIENT: Sending CreateDocument to server: {} ({})", doc.id, title);
@@ -138,6 +150,9 @@ impl SyncEngine {
         
         // Save locally
         self.db.save_document(&doc).await?;
+        
+        // Emit event
+        self.event_dispatcher.emit_document_updated(&doc.id, &doc.title, &doc.content);
         
         // Create patch message
         let patch_msg = DocumentPatch {
@@ -168,6 +183,9 @@ impl SyncEngine {
         // Mark as deleted locally
         self.db.delete_document(&id).await?;
         
+        // Emit event
+        self.event_dispatcher.emit_document_deleted(&id);
+        
         Ok(())
     }
     
@@ -180,7 +198,7 @@ impl SyncEngine {
         Ok(docs)
     }
     
-    async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid) -> Result<(), ClientError> {
+    async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid, event_dispatcher: &Arc<EventDispatcher>) -> Result<(), ClientError> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
                 // Apply patch from server
@@ -206,6 +224,9 @@ impl SyncEngine {
                 
                 db.save_document(&doc).await?;
                 db.mark_synced(&doc.id, &doc.revision_id).await?;
+                
+                // Emit event for updated document
+                event_dispatcher.emit_document_updated(&doc.id, &doc.title, &doc.content);
             }
             ServerMessage::DocumentCreated { document } => {
                 // New document from server - check if we already have it to avoid duplicates
@@ -230,16 +251,24 @@ impl SyncEngine {
                         tracing::info!("CLIENT: Document {} is new, saving to local database", document.id);
                         db.save_document(&document).await?;
                         db.mark_synced(&document.id, &document.revision_id).await?;
+                        
+                        // Emit event for new document from server
+                        event_dispatcher.emit_document_created(&document.id, &document.title, &document.content);
                     }
                 }
             }
             ServerMessage::DocumentDeleted { document_id, .. } => {
                 // Document deleted from server
                 db.delete_document(&document_id).await?;
+                
+                // Emit event for deleted document
+                event_dispatcher.emit_document_deleted(&document_id);
             }
             ServerMessage::ConflictDetected { document_id, .. } => {
                 tracing::warn!("Conflict detected for document {}", document_id);
-                // Implement conflict resolution UI callback
+                
+                // Emit conflict event
+                event_dispatcher.emit_conflict_detected(&document_id);
             }
             ServerMessage::SyncDocument { document } => {
                 // Document sync - check if it's newer than what we have
@@ -280,6 +309,9 @@ impl SyncEngine {
             }
             ServerMessage::SyncComplete { synced_count } => {
                 tracing::debug!("Sync complete, received {} documents", synced_count);
+                
+                // Emit sync completed event
+                event_dispatcher.emit_sync_completed(synced_count as u64);
             }
             _ => {}
         }

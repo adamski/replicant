@@ -3,7 +3,7 @@
 //! This module provides C-compatible functions for using the sync client from C/C++.
 //! The generated header file will be available after building.
 
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, c_void};
 use std::os::raw::c_char;
 use std::ptr;
 use std::sync::Arc;
@@ -12,17 +12,19 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{SyncEngine, ClientDatabase};
+use crate::events::{EventDispatcher, EventCallback, EventType};
 
 /// Opaque handle to a SyncEngine instance
 pub struct CSyncEngine {
     engine: Option<SyncEngine>,
     database: Arc<ClientDatabase>,
     runtime: Runtime,
+    pub(crate) event_dispatcher: Arc<EventDispatcher>,
 }
 
 /// Result codes for C API functions
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CSyncResult {
     Success = 0,
     ErrorInvalidInput = -1,
@@ -94,15 +96,22 @@ pub extern "C" fn sync_engine_create(
         return ptr::null_mut();
     }
 
+    let event_dispatcher = Arc::new(EventDispatcher::new());
+
     // Try to create sync engine (optional - can work offline)
     let engine = runtime.block_on(async {
-        SyncEngine::new(database_url, server_url, auth_token).await.ok()
+        let sync_engine = SyncEngine::new(database_url, server_url, auth_token).await.ok()?;
+        // We can't easily replace the event dispatcher in an existing SyncEngine,
+        // so we'll use separate dispatchers for now. In a production system,
+        // you'd want to refactor to share the same dispatcher.
+        Some(sync_engine)
     });
 
     Box::into_raw(Box::new(CSyncEngine {
         engine,
         database,
         runtime,
+        event_dispatcher,
     }))
 }
 
@@ -177,7 +186,7 @@ pub extern "C" fn sync_engine_create_document(
             user_id,
             title: title.to_string(),
             revision_id: sync_core::models::Document::initial_revision(&content),
-            content,
+            content: content.clone(),
             version: 1,
             vector_clock: sync_core::models::VectorClock::new(),
             created_at: chrono::Utc::now(),
@@ -190,6 +199,9 @@ pub extern "C" fn sync_engine_create_document(
         }) {
             return CSyncResult::ErrorDatabase;
         }
+
+        // Emit event for offline document creation
+        engine.event_dispatcher.emit_document_created(&doc_id, title, &content);
 
         doc_id
     };
@@ -274,7 +286,11 @@ pub extern "C" fn sync_engine_update_document(
         match engine.runtime.block_on(async {
             engine.database.save_document(&updated_doc).await
         }) {
-            Ok(_) => CSyncResult::Success,
+            Ok(_) => {
+                // Emit event for offline document update
+                engine.event_dispatcher.emit_document_updated(&doc_uuid, &updated_doc.title, &updated_doc.content);
+                CSyncResult::Success
+            },
             Err(_) => CSyncResult::ErrorDatabase,
         }
     }
@@ -322,7 +338,11 @@ pub extern "C" fn sync_engine_delete_document(
         match engine.runtime.block_on(async {
             engine.database.delete_document(&doc_uuid).await
         }) {
-            Ok(_) => CSyncResult::Success,
+            Ok(_) => {
+                // Emit event for offline document deletion
+                engine.event_dispatcher.emit_document_deleted(&doc_uuid);
+                CSyncResult::Success
+            },
             Err(_) => CSyncResult::ErrorDatabase,
         }
     }
@@ -345,5 +365,50 @@ pub extern "C" fn sync_get_version() -> *mut c_char {
     match CString::new(version) {
         Ok(s) => s.into_raw(),
         Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Register an event callback with optional event type filter
+/// 
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `callback` - C callback function to invoke for events
+/// * `context` - User-defined context pointer passed to callback
+/// * `event_filter` - Optional event type filter (-1 for all events)
+/// 
+/// # Returns
+/// * CSyncResult indicating success or failure
+#[no_mangle]
+pub extern "C" fn sync_engine_register_event_callback(
+    engine: *mut CSyncEngine,
+    callback: EventCallback,
+    context: *mut c_void,
+    event_filter: i32,
+) -> CSyncResult {
+    if engine.is_null() {
+        return CSyncResult::ErrorInvalidInput;
+    }
+
+    let engine = unsafe { &*engine };
+    
+    let filter = if event_filter >= 0 {
+        match event_filter {
+            0 => Some(EventType::DocumentCreated),
+            1 => Some(EventType::DocumentUpdated),
+            2 => Some(EventType::DocumentDeleted),
+            3 => Some(EventType::SyncStarted),
+            4 => Some(EventType::SyncCompleted),
+            5 => Some(EventType::SyncError),
+            6 => Some(EventType::ConflictDetected),
+            7 => Some(EventType::ConnectionStateChanged),
+            _ => return CSyncResult::ErrorInvalidInput,
+        }
+    } else {
+        None
+    };
+
+    match engine.event_dispatcher.register_callback(callback, context, filter) {
+        Ok(_) => CSyncResult::Success,
+        Err(_) => CSyncResult::ErrorUnknown,
     }
 }

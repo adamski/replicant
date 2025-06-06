@@ -4,9 +4,14 @@ pub mod websocket;
 pub mod offline_queue;
 pub mod errors;
 pub mod queries;
+pub mod events;
 
 // C FFI module
 pub mod ffi;
+
+// C FFI test functions (debug builds only)
+#[cfg(debug_assertions)]
+pub mod ffi_test;
 
 pub use database::ClientDatabase;
 pub use sync_engine::SyncEngine;

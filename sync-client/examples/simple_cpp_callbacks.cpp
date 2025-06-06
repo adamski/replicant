@@ -371,7 +371,7 @@ int main()
  *    cargo build --release
  * 
  * 2. Compile this C++ example:
- *    g++ -std=c++11 \
+ *    g++ -std=c++14 \
  *        -I./sync-client/include \
  *        -L./target/release \
  *        -lsync_client \

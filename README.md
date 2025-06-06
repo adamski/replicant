@@ -288,6 +288,17 @@ int main() {
 
 For complete documentation and advanced examples, see [EVENT_CALLBACKS.md](EVENT_CALLBACKS.md).
 
+#### Framework Integration
+
+The event callback system integrates with desktop frameworks via timers:
+
+- **JUCE**: Use `juce::Timer` to call `process_events()` every 16ms
+- **Qt**: Use `QTimer` with Qt's signal/slot system  
+- **GTK**: Use `g_timeout_add()` for periodic processing
+- All callbacks execute on the framework's main thread
+
+See [FRAMEWORK_INTEGRATION.md](FRAMEWORK_INTEGRATION.md) for complete examples.
+
 **C API Example:**
 
 ```c

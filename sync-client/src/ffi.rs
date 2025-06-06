@@ -412,3 +412,39 @@ pub extern "C" fn sync_engine_register_event_callback(
         Err(_) => CSyncResult::ErrorUnknown,
     }
 }
+
+/// Process all queued events on the current thread
+/// 
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `out_processed_count` - Output pointer for number of events processed (optional)
+/// 
+/// # Returns
+/// * CSyncResult indicating success or failure
+/// 
+/// # Important
+/// This function MUST be called on the same thread where callbacks were registered.
+/// Events are queued from any thread but only processed on the callback thread.
+#[no_mangle]
+pub extern "C" fn sync_engine_process_events(
+    engine: *mut CSyncEngine,
+    out_processed_count: *mut u32,
+) -> CSyncResult {
+    if engine.is_null() {
+        return CSyncResult::ErrorInvalidInput;
+    }
+
+    let engine = unsafe { &*engine };
+    
+    match engine.event_dispatcher.process_events() {
+        Ok(count) => {
+            if !out_processed_count.is_null() {
+                unsafe {
+                    *out_processed_count = count as u32;
+                }
+            }
+            CSyncResult::Success
+        },
+        Err(_) => CSyncResult::ErrorUnknown,
+    }
+}

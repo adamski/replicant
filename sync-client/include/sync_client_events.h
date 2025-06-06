@@ -111,6 +111,41 @@ SyncResult sync_engine_register_event_callback(
     int event_filter
 );
 
+/**
+ * @brief Process all queued events on the current thread
+ * 
+ * @param engine Sync engine instance
+ * @param out_processed_count Optional output for number of events processed (can be NULL)
+ * 
+ * @return SYNC_RESULT_SUCCESS on success, error code on failure
+ * 
+ * @note This function MUST be called on the same thread where callbacks were registered.
+ *       Events can be generated on any thread, but callbacks are only invoked on the
+ *       thread that registered them. This ensures thread safety without requiring
+ *       mutexes or locks in user callback code.
+ * 
+ * @note Call this function regularly (e.g., in your main loop) to process pending events.
+ * 
+ * @example
+ * ```c
+ * // In your main loop:
+ * while (running) {
+ *     uint32_t processed_count;
+ *     SyncResult result = sync_engine_process_events(engine, &processed_count);
+ *     if (result == SYNC_RESULT_SUCCESS && processed_count > 0) {
+ *         printf("Processed %u events\n", processed_count);
+ *     }
+ *     
+ *     // Do other work...
+ *     usleep(16000); // ~60 FPS
+ * }
+ * ```
+ */
+SyncResult sync_engine_process_events(
+    struct CSyncEngine* engine,
+    uint32_t* out_processed_count
+);
+
 /* Debug/Testing Functions (only available in debug builds) */
 #ifdef DEBUG
 

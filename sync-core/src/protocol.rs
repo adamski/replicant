@@ -67,6 +67,26 @@ pub enum ServerMessage {
         revision_id: String,  // CouchDB-style
     },
     
+    // Document operation confirmations
+    DocumentCreatedResponse {
+        document_id: Uuid,
+        revision_id: String,
+        success: bool,
+        error: Option<String>,
+    },
+    DocumentUpdatedResponse {
+        document_id: Uuid,
+        revision_id: String,
+        success: bool,
+        error: Option<String>,
+    },
+    DocumentDeletedResponse {
+        document_id: Uuid,
+        revision_id: String,
+        success: bool,
+        error: Option<String>,
+    },
+    
     // Sync responses
     SyncDocument {
         document: Document,

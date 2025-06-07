@@ -49,22 +49,41 @@ impl SyncHandler {
                 }
                 
                 // Save to database
-                self.db.create_document(&document).await?;
-                
-                // Broadcast to all connected clients (including sender for document creation)
-                tracing::info!("Broadcasting DocumentCreated for doc {} to all clients of user {}", document.id, user_id);
-                
-                // Log current client count
-                if let Some(client_ids) = self.app_state.user_clients.get(&user_id) {
-                    tracing::info!("User {} has {} connected clients", user_id, client_ids.len());
-                } else {
-                    tracing::warn!("User {} has no registered clients!", user_id);
+                match self.db.create_document(&document).await {
+                    Ok(_) => {
+                        // Send confirmation to the sender
+                        self.tx.send(ServerMessage::DocumentCreatedResponse {
+                            document_id: document.id,
+                            revision_id: document.revision_id.clone(),
+                            success: true,
+                            error: None,
+                        }).await?;
+                        
+                        // Broadcast to all OTHER connected clients (exclude sender)
+                        tracing::info!("Broadcasting DocumentCreated for doc {} to other clients of user {}", document.id, user_id);
+                        
+                        // Log current client count
+                        if let Some(client_ids) = self.app_state.user_clients.get(&user_id) {
+                            tracing::info!("User {} has {} connected clients", user_id, client_ids.len());
+                        } else {
+                            tracing::warn!("User {} has no registered clients!", user_id);
+                        }
+                        
+                        self.broadcast_to_user(
+                            user_id,
+                            ServerMessage::DocumentCreated { document }
+                        ).await?;
+                    }
+                    Err(e) => {
+                        // Send error response to the sender
+                        self.tx.send(ServerMessage::DocumentCreatedResponse {
+                            document_id: document.id,
+                            revision_id: document.revision_id.clone(),
+                            success: false,
+                            error: Some(e.to_string()),
+                        }).await?;
+                    }
                 }
-                
-                self.broadcast_to_user(
-                    user_id,
-                    ServerMessage::DocumentCreated { document }
-                ).await?;
             }
             
             ClientMessage::UpdateDocument { patch } => {
@@ -155,17 +174,36 @@ impl SyncHandler {
                 doc.updated_at = chrono::Utc::now();
                 
                 // Save to database
-                self.db.update_document(&doc, Some(&patch.patch)).await?;
-                
-                tracing::info!("   Content after normal update: {:?}", doc.content);
-                tracing::info!("   New revision: {}", doc.revision_id);
-                
-                // Broadcast final state to ALL clients to ensure convergence
-                tracing::info!("Broadcasting final document state for doc {} to all clients of user {}", doc.id, user_id);
-                self.broadcast_to_user(
-                    user_id,
-                    ServerMessage::SyncDocument { document: doc.clone() }
-                ).await?;
+                match self.db.update_document(&doc, Some(&patch.patch)).await {
+                    Ok(_) => {
+                        tracing::info!("   Content after normal update: {:?}", doc.content);
+                        tracing::info!("   New revision: {}", doc.revision_id);
+                        
+                        // Send confirmation to the sender
+                        self.tx.send(ServerMessage::DocumentUpdatedResponse {
+                            document_id: doc.id,
+                            revision_id: doc.revision_id.clone(),
+                            success: true,
+                            error: None,
+                        }).await?;
+                        
+                        // Broadcast final state to ALL OTHER clients to ensure convergence
+                        tracing::info!("Broadcasting final document state for doc {} to other clients of user {}", doc.id, user_id);
+                        self.broadcast_to_user(
+                            user_id,
+                            ServerMessage::SyncDocument { document: doc.clone() }
+                        ).await?;
+                    }
+                    Err(e) => {
+                        // Send error response to the sender
+                        self.tx.send(ServerMessage::DocumentUpdatedResponse {
+                            document_id: patch.document_id,
+                            revision_id: patch.revision_id.clone(),
+                            success: false,
+                            error: Some(e.to_string()),
+                        }).await?;
+                    }
+                }
             }
             
             ClientMessage::DeleteDocument { document_id, revision_id } => {
@@ -177,13 +215,32 @@ impl SyncHandler {
                 }
                 
                 // Soft delete
-                self.db.delete_document(&document_id, &user_id, &revision_id).await?;
-                
-                // Broadcast deletion to all connected clients
-                self.broadcast_to_user(
-                    user_id,
-                    ServerMessage::DocumentDeleted { document_id, revision_id }
-                ).await?;
+                match self.db.delete_document(&document_id, &user_id, &revision_id).await {
+                    Ok(_) => {
+                        // Send confirmation to the sender
+                        self.tx.send(ServerMessage::DocumentDeletedResponse {
+                            document_id,
+                            revision_id: revision_id.clone(),
+                            success: true,
+                            error: None,
+                        }).await?;
+                        
+                        // Broadcast deletion to all OTHER connected clients
+                        self.broadcast_to_user(
+                            user_id,
+                            ServerMessage::DocumentDeleted { document_id, revision_id }
+                        ).await?;
+                    }
+                    Err(e) => {
+                        // Send error response to the sender
+                        self.tx.send(ServerMessage::DocumentDeletedResponse {
+                            document_id,
+                            revision_id: revision_id.clone(),
+                            success: false,
+                            error: Some(e.to_string()),
+                        }).await?;
+                    }
+                }
             }
             
             ClientMessage::RequestSync { document_ids } => {

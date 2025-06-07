@@ -152,10 +152,15 @@ type SharedState = Arc<Mutex<AppState>>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter("warn")
-        .init();
+    // Initialize logging with minimal output to avoid interfering with TUI
+    // Use RUST_LOG=off to completely disable logging for clean TUI
+    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "off".to_string());
+    if log_level != "off" {
+        tracing_subscriber::fmt()
+            .with_env_filter(&log_level)
+            .with_writer(std::io::stderr)
+            .init();
+    }
 
     let cli = Cli::parse();
 
@@ -223,96 +228,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Try to connect to server
             match SyncEngine::new(&db_url_clone, &server_url, &token).await {
                 Ok(mut engine) => {
-                    // Register event callbacks
-                    let events = engine.event_dispatcher();
-                    let state_cb = state_clone.clone();
-                    
-                    let _ = events.register_rust_callback(
-                        Box::new(move |event_type, document_id, title, _content, error, numeric_data, boolean_data, _context| {
-                        let mut app_state = state_cb.lock().unwrap();
-                        
-                        match event_type {
-                            sync_client::events::EventType::DocumentCreated => {
-                                app_state.add_activity(
-                                    format!("Task created: {}", title.unwrap_or("Untitled")),
-                                    ActivityType::Created,
-                                );
-                                app_state.needs_refresh = true;
-                            }
-                            sync_client::events::EventType::DocumentUpdated => {
-                                app_state.add_activity(
-                                    format!("Task updated: {}", title.unwrap_or("Untitled")),
-                                    ActivityType::Updated,
-                                );
-                                app_state.needs_refresh = true;
-                            }
-                            sync_client::events::EventType::DocumentDeleted => {
-                                app_state.add_activity(
-                                    format!("Task deleted: {}", document_id.map(|id| &id[..8]).unwrap_or("unknown")),
-                                    ActivityType::Deleted,
-                                );
-                                app_state.needs_refresh = true;
-                            }
-                            sync_client::events::EventType::SyncStarted => {
-                                app_state.add_activity("Sync started".to_string(), ActivityType::SyncStarted);
-                            }
-                            sync_client::events::EventType::SyncCompleted => {
-                                app_state.add_activity(
-                                    format!("Sync completed ({} docs)", numeric_data),
-                                    ActivityType::SyncCompleted,
-                                );
-                                app_state.last_sync = Some(Instant::now());
-                                app_state.needs_refresh = true;
-                            }
-                            sync_client::events::EventType::ConnectionStateChanged => {
-                                if boolean_data {
-                                    app_state.add_activity("Connected to server".to_string(), ActivityType::Connected);
-                                    app_state.sync_status.connected = true;
-                                    app_state.sync_status.connection_state = "Connected".to_string();
-                                } else {
-                                    app_state.add_activity("Disconnected from server".to_string(), ActivityType::Disconnected);
-                                    app_state.sync_status.connected = false;
-                                    app_state.sync_status.connection_state = "Disconnected".to_string();
-                                }
-                            }
-                            sync_client::events::EventType::SyncError => {
-                                app_state.add_activity(
-                                    format!("Sync error: {}", error.unwrap_or("unknown")),
-                                    ActivityType::Error,
-                                );
-                            }
-                            sync_client::events::EventType::ConnectionAttempted => {
-                                app_state.add_activity(
-                                    format!("Connecting to {}", title.unwrap_or("server")),
-                                    ActivityType::SyncStarted,
-                                );
-                                app_state.sync_status.connection_state = "Connecting...".to_string();
-                            }
-                            sync_client::events::EventType::ConnectionSucceeded => {
-                                app_state.add_activity(
-                                    format!("Connected to {}", title.unwrap_or("server")),
-                                    ActivityType::Connected,
-                                );
-                                app_state.sync_status.connected = true;
-                                app_state.sync_status.connection_state = "Connected".to_string();
-                            }
-                            _ => {}
-                        }
-                        }),
-                        std::ptr::null_mut(),
-                        None,
-                    );
+                    // Don't register callbacks here - they will be registered in the main thread
 
                     // Try to start the sync engine
                     match engine.start().await {
                         Ok(_) => {
-                            let mut app_state = state_clone.lock().unwrap();
-                            app_state.sync_status.connected = true;
-                            app_state.sync_status.connection_state = "Connected".to_string();
-                            app_state.add_activity("Successfully connected to server".to_string(), ActivityType::Connected);
+                            {
+                                let mut app_state = state_clone.lock().unwrap();
+                                app_state.sync_status.connected = true;
+                                app_state.sync_status.connection_state = "Connected".to_string();
+                                app_state.add_activity("Successfully connected to server".to_string(), ActivityType::Connected);
+                            }
                             
                             // Store the engine for use
                             *sync_engine_clone.lock().unwrap() = Some(Arc::new(engine));
+                            
+                            // Give initial sync time to complete
+                            sleep(Duration::from_millis(500)).await;
+                            
+                            // Trigger a refresh to show synced documents
+                            {
+                                let mut app_state = state_clone.lock().unwrap();
+                                app_state.needs_refresh = true;
+                            }
                             
                             // Reset retry interval on successful connection
                             retry_interval = Duration::from_secs(5);
@@ -394,27 +332,113 @@ async fn run_app<B: Backend>(
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(250);
     
+    // Flag to track if callbacks are registered
+    let mut callbacks_registered = false;
+    
     loop {
-        // Draw UI
-        terminal.draw(|f| ui(f, &state))?;
-
-        // Handle events with timeout
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
-
-        if crossterm::event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    handle_key_event(key.code, state.clone(), db.clone(), sync_engine.clone(), user_id).await;
-                }
+        // Register callbacks on main thread if we have an engine but haven't registered yet
+        if !callbacks_registered {
+            if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+                let events = engine.event_dispatcher();
+                let state_cb = state.clone();
+                
+                let _ = events.register_rust_callback(
+                    Box::new(move |event_type, document_id, title, _content, error, numeric_data, boolean_data, _context| {
+                        // Use panic protection in the callback
+                        let result = std::panic::catch_unwind(|| {
+                            let mut app_state = state_cb.lock().unwrap();
+                        
+                            match event_type {
+                                sync_client::events::EventType::DocumentCreated => {
+                                    app_state.add_activity(
+                                        format!("Task created: {}", title.unwrap_or("Untitled")),
+                                        ActivityType::Created,
+                                    );
+                                    app_state.needs_refresh = true;
+                                }
+                                sync_client::events::EventType::DocumentUpdated => {
+                                    app_state.add_activity(
+                                        format!("Task updated: {}", title.unwrap_or("Untitled")),
+                                        ActivityType::Updated,
+                                    );
+                                    app_state.needs_refresh = true;
+                                }
+                                sync_client::events::EventType::DocumentDeleted => {
+                                    app_state.add_activity(
+                                        format!("Task deleted: {}", document_id.map(|id| {
+                                            if id.len() >= 8 { &id[..8] } else { id }
+                                        }).unwrap_or("unknown")),
+                                        ActivityType::Deleted,
+                                    );
+                                    app_state.needs_refresh = true;
+                                }
+                                sync_client::events::EventType::SyncStarted => {
+                                    app_state.add_activity("Sync started".to_string(), ActivityType::SyncStarted);
+                                }
+                                sync_client::events::EventType::SyncCompleted => {
+                                    app_state.add_activity(
+                                        format!("Sync completed ({} docs)", numeric_data),
+                                        ActivityType::SyncCompleted,
+                                    );
+                                    app_state.last_sync = Some(Instant::now());
+                                    app_state.needs_refresh = true;
+                                }
+                                sync_client::events::EventType::ConnectionStateChanged => {
+                                    if boolean_data {
+                                        app_state.add_activity("Connected to server".to_string(), ActivityType::Connected);
+                                        app_state.sync_status.connected = true;
+                                        app_state.sync_status.connection_state = "Connected".to_string();
+                                    } else {
+                                        app_state.add_activity("Disconnected from server".to_string(), ActivityType::Disconnected);
+                                        app_state.sync_status.connected = false;
+                                        app_state.sync_status.connection_state = "Disconnected".to_string();
+                                    }
+                                }
+                                sync_client::events::EventType::SyncError => {
+                                    app_state.add_activity(
+                                        format!("Sync error: {}", error.unwrap_or("unknown")),
+                                        ActivityType::Error,
+                                    );
+                                }
+                                sync_client::events::EventType::ConnectionAttempted => {
+                                    app_state.add_activity(
+                                        format!("Connecting to {}", title.unwrap_or("server")),
+                                        ActivityType::SyncStarted,
+                                    );
+                                    app_state.sync_status.connection_state = "Connecting...".to_string();
+                                }
+                                sync_client::events::EventType::ConnectionSucceeded => {
+                                    app_state.add_activity(
+                                        format!("Connected to {}", title.unwrap_or("server")),
+                                        ActivityType::Connected,
+                                    );
+                                    app_state.sync_status.connected = true;
+                                    app_state.sync_status.connection_state = "Connected".to_string();
+                                }
+                                _ => {}
+                            }
+                        });
+                        if result.is_err() {
+                            eprintln!("Panic caught in event callback");
+                        }
+                    }),
+                    std::ptr::null_mut(),
+                    None,
+                );
+                callbacks_registered = true;
             }
         }
-
-        // Process sync events
+        
+        // Process sync events FIRST
         if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
             let dispatcher = engine.event_dispatcher();
-            let _ = dispatcher.process_events();
+            match dispatcher.process_events() {
+                Ok(count) if count > 0 => {
+                    // Events were processed - this might set needs_refresh
+                }
+                Err(e) => eprintln!("Error processing events: {:?}", e),
+                _ => {}
+            }
         }
 
         // Check if we should refresh tasks
@@ -441,11 +465,25 @@ async fn run_app<B: Backend>(
             }
         }
 
+        // Draw UI once per loop iteration
+        terminal.draw(|f| ui(f, &state))?;
+
+        // Handle input with reasonable timeout 
+        let timeout = Duration::from_millis(100);
+        if crossterm::event::poll(timeout)? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    handle_key_event(key.code, state.clone(), db.clone(), sync_engine.clone(), user_id).await;
+                }
+            }
+        }
+
         // Check if we should quit
         if state.lock().unwrap().should_quit {
             return Ok(());
         }
 
+        // Update tick for time tracking
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
         }

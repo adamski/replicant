@@ -140,6 +140,8 @@ impl SyncEngine {
         self.ws_client.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
         tracing::info!("CLIENT: Successfully sent CreateDocument to server: {} ({})", doc.id, title);
         
+        // Note: Document remains 'pending' until we receive DocumentCreatedResponse from server
+        
         Ok(doc)
     }
     
@@ -180,6 +182,8 @@ impl SyncEngine {
         self.ws_client.send(ClientMessage::UpdateDocument { patch: patch_msg }).await?;
         tracing::info!("CLIENT {}: Update sent successfully", self.client_id);
         
+        // Note: Document remains 'pending' until we receive DocumentUpdatedResponse from server
+        
         Ok(())
     }
     
@@ -189,10 +193,10 @@ impl SyncEngine {
         // Send delete to server
         self.ws_client.send(ClientMessage::DeleteDocument {
             document_id: id,
-            revision_id: doc.revision_id,
+            revision_id: doc.revision_id.clone(),
         }).await?;
         
-        // Mark as deleted locally
+        // Mark as deleted locally (will be 'pending' until server confirms)
         self.db.delete_document(&id).await?;
         
         // Emit event
@@ -228,12 +232,12 @@ impl SyncEngine {
                         tracing::info!("CLIENT {}: Syncing pending delete for doc {}", self.client_id, doc_id);
                         self.ws_client.send(ClientMessage::DeleteDocument {
                             document_id: doc_id,
-                            revision_id: doc.revision_id,
+                            revision_id: doc.revision_id.clone(),
                         }).await?;
                     } else {
                         // Handle pending create/update
                         tracing::info!("CLIENT {}: Syncing pending document {}", self.client_id, doc_id);
-                        self.ws_client.send(ClientMessage::CreateDocument { document: doc }).await?;
+                        self.ws_client.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
                     }
                 }
                 Err(e) => {
@@ -290,6 +294,9 @@ impl SyncEngine {
                             // Different revision - update it
                             tracing::info!("CLIENT: Document {} exists locally but has different revision, updating", document.id);
                             db.save_document_with_status(&document, Some("synced")).await?;
+                            
+                            // Emit event for updated document
+                            event_dispatcher.emit_document_updated(&document.id, &document.title, &document.content);
                         }
                     }
                     Err(_) => {
@@ -302,9 +309,21 @@ impl SyncEngine {
                     }
                 }
             }
-            ServerMessage::DocumentDeleted { document_id, .. } => {
+            ServerMessage::DocumentDeleted { document_id, revision_id } => {
                 // Document deleted from server
-                db.delete_document(&document_id).await?;
+                // Check if we have this document locally
+                match db.get_document(&document_id).await {
+                    Ok(_existing_doc) => {
+                        // We have it locally - mark the deletion as synced instead of deleting again
+                        tracing::info!("CLIENT {}: Marking local delete as synced for doc {}", client_id, document_id);
+                        db.mark_synced(&document_id, &revision_id).await?;
+                    }
+                    Err(_) => {
+                        // We don't have it locally - this is a delete from another client
+                        tracing::info!("CLIENT {}: Deleting document {} from another client", client_id, document_id);
+                        db.delete_document(&document_id).await?;
+                    }
+                }
                 
                 // Emit event for deleted document
                 event_dispatcher.emit_document_deleted(&document_id);
@@ -333,6 +352,9 @@ impl SyncEngine {
                                 tracing::info!("CLIENT {}: Updating to newer version (gen {} -> {})", 
                                              client_id, local_gen, sync_gen);
                                 db.save_document_with_status(&document, Some("synced")).await?;
+                                
+                                // Emit event for updated document
+                                event_dispatcher.emit_document_updated(&document.id, &document.title, &document.content);
                             } else {
                                 tracing::info!("CLIENT {}: Skipping older sync (local gen {} > sync gen {})", 
                                              client_id, local_gen, sync_gen);
@@ -340,12 +362,18 @@ impl SyncEngine {
                         } else {
                             // Can't compare, accept the sync
                             db.save_document_with_status(&document, Some("synced")).await?;
+                            
+                            // Emit event for updated document
+                            event_dispatcher.emit_document_updated(&document.id, &document.title, &document.content);
                         }
                     }
                     Err(_) => {
                         // Document doesn't exist locally - save it
                         tracing::info!("CLIENT {}: Document {} is new, saving", client_id, document.id);
                         db.save_document_with_status(&document, Some("synced")).await?;
+                        
+                        // Emit event for new document
+                        event_dispatcher.emit_document_created(&document.id, &document.title, &document.content);
                     }
                 }
             }
@@ -355,6 +383,42 @@ impl SyncEngine {
                 // Emit sync completed event
                 event_dispatcher.emit_sync_completed(synced_count as u64);
             }
+            
+            // Handle document operation confirmations
+            ServerMessage::DocumentCreatedResponse { document_id, revision_id, success, error } => {
+                if success {
+                    tracing::info!("CLIENT {}: Document creation confirmed by server: {}", client_id, document_id);
+                    db.mark_synced(&document_id, &revision_id).await?;
+                } else {
+                    tracing::error!("CLIENT {}: Document creation failed on server: {} - {}", 
+                                  client_id, document_id, error.as_deref().unwrap_or("unknown error"));
+                    // Could emit an error event here
+                    event_dispatcher.emit_sync_error(&format!("Create failed: {}", error.as_deref().unwrap_or("unknown")));
+                }
+            }
+            
+            ServerMessage::DocumentUpdatedResponse { document_id, revision_id, success, error } => {
+                if success {
+                    tracing::info!("CLIENT {}: Document update confirmed by server: {}", client_id, document_id);
+                    db.mark_synced(&document_id, &revision_id).await?;
+                } else {
+                    tracing::error!("CLIENT {}: Document update failed on server: {} - {}", 
+                                  client_id, document_id, error.as_deref().unwrap_or("unknown error"));
+                    event_dispatcher.emit_sync_error(&format!("Update failed: {}", error.as_deref().unwrap_or("unknown")));
+                }
+            }
+            
+            ServerMessage::DocumentDeletedResponse { document_id, revision_id, success, error } => {
+                if success {
+                    tracing::info!("CLIENT {}: Document deletion confirmed by server: {}", client_id, document_id);
+                    db.mark_synced(&document_id, &revision_id).await?;
+                } else {
+                    tracing::error!("CLIENT {}: Document deletion failed on server: {} - {}", 
+                                  client_id, document_id, error.as_deref().unwrap_or("unknown error"));
+                    event_dispatcher.emit_sync_error(&format!("Delete failed: {}", error.as_deref().unwrap_or("unknown")));
+                }
+            }
+            
             _ => {}
         }
         

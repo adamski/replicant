@@ -35,6 +35,14 @@ struct Cli {
     #[arg(short, long, default_value = "tasks")]
     database: String,
 
+    /// Auto-generate unique database name for concurrent testing
+    #[arg(short, long)]
+    auto: bool,
+
+    /// User identifier (email/username) for shared identity across clients
+    #[arg(short, long)]
+    user: Option<String>,
+
     /// Server WebSocket URL
     #[arg(short, long, default_value = "ws://localhost:8080/ws")]
     server: String,
@@ -85,6 +93,7 @@ struct AppState {
     should_quit: bool,
     needs_refresh: bool,
     last_refresh: Option<Instant>,
+    database_name: String,
 }
 
 #[derive(Clone)]
@@ -98,7 +107,7 @@ struct SyncStatus {
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(database_name: String) -> Self {
         Self {
             tasks: Vec::new(),
             selected_task: 0,
@@ -115,6 +124,7 @@ impl AppState {
             should_quit: false,
             needs_refresh: true,
             last_refresh: None,
+            database_name,
         }
     }
 
@@ -166,7 +176,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Setup database
     std::fs::create_dir_all("databases")?;
-    let db_file = format!("databases/{}.sqlite3", cli.database);
+    
+    // Generate database name
+    let db_name = if cli.auto {
+        // Auto-generate unique name with timestamp and random suffix
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let random_suffix = Uuid::new_v4().to_string()[..8].to_string();
+        format!("client_{}_{}", timestamp, random_suffix)
+    } else {
+        cli.database.clone()
+    };
+    
+    let db_file = format!("databases/{}.sqlite3", db_name);
     let db_url = format!("sqlite:{}?mode=rwc", db_file);
     
     let db = Arc::new(ClientDatabase::new(&db_url).await?);
@@ -176,7 +197,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let user_id = match db.get_user_id().await {
         Ok(id) => id,
         Err(_) => {
-            let id = Uuid::new_v4();
+            // Generate deterministic user ID based on user identifier or create random
+            let id = if let Some(user_identifier) = &cli.user {
+                // Use UUID v5 with namespace to create deterministic UUID from username/email
+                // Use a custom namespace for our application
+                let namespace = Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap(); // Using DNS namespace
+                Uuid::new_v5(&namespace, user_identifier.as_bytes())
+            } else {
+                Uuid::new_v4()
+            };
+            
+            // Client ID should always be unique per client instance
             let client_id = Uuid::new_v4();
             setup_user(&db, id, client_id, &cli.server, &cli.token).await?;
             id
@@ -184,7 +215,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Create shared state
-    let state = Arc::new(Mutex::new(AppState::new()));
+    let state = Arc::new(Mutex::new(AppState::new(db_name.clone())));
 
     // Load initial tasks
     load_tasks(&db, user_id, state.clone()).await?;
@@ -200,6 +231,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     {
         let mut app_state = state.lock().unwrap();
         app_state.add_activity("Task Manager starting...".to_string(), ActivityType::SyncStarted);
+        if cli.auto {
+            app_state.add_activity(format!("Created new database: {}", db_name), ActivityType::SyncStarted);
+        } else {
+            app_state.add_activity(format!("Using database: {}", db_name), ActivityType::SyncStarted);
+        }
+        if let Some(user_identifier) = &cli.user {
+            app_state.add_activity(format!("Using shared identity: {}", user_identifier), ActivityType::SyncStarted);
+        }
         app_state.sync_status.connection_state = "Starting...".to_string();
     }
 
@@ -507,16 +546,18 @@ fn ui(f: &mut Frame, state: &SharedState) {
         .borders(Borders::ALL)
         .style(Style::default().fg(Color::Cyan));
     
-    let title_text = if let Some(last_refresh) = app_state.last_refresh {
+    let refresh_indicator = if let Some(last_refresh) = app_state.last_refresh {
         let elapsed = last_refresh.elapsed();
         if elapsed.as_secs() < 2 {
-            "Task Manager ●" // Show indicator for 2 seconds after refresh
+            " ●" // Show indicator for 2 seconds after refresh
         } else {
-            "Task Manager"
+            ""
         }
     } else {
-        "Task Manager"
+        ""
     };
+    
+    let title_text = format!("Task Manager [{}]{}", app_state.database_name, refresh_indicator);
     
     let title_paragraph = Paragraph::new(title_text)
         .block(title)
@@ -612,7 +653,7 @@ fn render_task_list(f: &mut Frame, area: Rect, app_state: &AppState) {
             Span::raw("[n: new] [d: delete] [q: quit]"),
         ]),
         Line::from(vec![
-            Span::raw("Auto-updates via callbacks"),
+            Span::raw("Use --auto for concurrent testing"),
         ]),
     ];
     

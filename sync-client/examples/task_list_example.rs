@@ -27,6 +27,9 @@ use sync_client::{ClientDatabase, SyncEngine};
 use sync_core::models::Document;
 use uuid::Uuid;
 
+// Application identifier for namespace generation
+const APP_ID: &str = "com.example.sync-task-list";
+
 #[derive(Parser)]
 #[command(name = "task-list")]
 #[command(about = "Task list manager with real-time sync", long_about = None)]
@@ -199,10 +202,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Err(_) => {
             // Generate deterministic user ID based on user identifier or create random
             let id = if let Some(user_identifier) = &cli.user {
-                // Use UUID v5 with namespace to create deterministic UUID from username/email
-                // Use a custom namespace for our application
-                let namespace = Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap(); // Using DNS namespace
-                Uuid::new_v5(&namespace, user_identifier.as_bytes())
+                // Use UUID v5 for deterministic ID generation
+                // This creates a two-level namespace hierarchy:
+                // 1. DNS namespace -> Application namespace (using APP_ID)
+                // 2. Application namespace -> User ID (using user identifier)
+                // This ensures our user IDs are unique to our application
+                let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, APP_ID.as_bytes());
+                Uuid::new_v5(&app_namespace, user_identifier.as_bytes())
             } else {
                 Uuid::new_v4()
             };
@@ -828,6 +834,12 @@ fn render_sync_status(f: &mut Frame, area: Rect, app_state: &AppState) {
         last_sync_line,
     ];
     
+    // Add database filename info
+    lines.push(Line::from(vec![
+        Span::raw("💾 Database: "),
+        Span::styled(&app_state.database_name, Style::default().fg(Color::Cyan)),
+    ]));
+    
     // Add retry info if we're offline and have attempted connections
     if !app_state.sync_status.connected && app_state.sync_status.last_attempt.is_some() {
         lines.push(Line::from(vec![
@@ -840,7 +852,9 @@ fn render_sync_status(f: &mut Frame, area: Rect, app_state: &AppState) {
         Span::styled("[n: new task] [q: quit]", Style::default().fg(Color::DarkGray)),
     ]));
 
-    let paragraph = Paragraph::new(lines).block(block);
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
 }
 
@@ -877,7 +891,9 @@ fn render_activity_log(f: &mut Frame, area: Rect, app_state: &AppState) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(items).block(block);
+    let paragraph = Paragraph::new(items)
+        .block(block)
+        .wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
 }
 

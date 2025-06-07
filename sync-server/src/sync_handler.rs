@@ -69,8 +69,9 @@ impl SyncHandler {
                             tracing::warn!("User {} has no registered clients!", user_id);
                         }
                         
-                        self.broadcast_to_user(
+                        self.broadcast_to_user_except(
                             user_id,
+                            self.client_id,
                             ServerMessage::DocumentCreated { document }
                         ).await?;
                     }
@@ -139,8 +140,9 @@ impl SyncHandler {
                     // Broadcast the final state to ALL clients to ensure convergence
                     // This ensures all clients get the authoritative state after conflict resolution
                     tracing::info!("🔸 Broadcasting final document state after conflict resolution");
-                    self.broadcast_to_user(
+                    self.broadcast_to_user_except(
                         user_id,
+                        self.client_id,
                         ServerMessage::SyncDocument { document: doc.clone() }
                     ).await?;
                     
@@ -189,8 +191,9 @@ impl SyncHandler {
                         
                         // Broadcast final state to ALL OTHER clients to ensure convergence
                         tracing::info!("Broadcasting final document state for doc {} to other clients of user {}", doc.id, user_id);
-                        self.broadcast_to_user(
+                        self.broadcast_to_user_except(
                             user_id,
+                            self.client_id,
                             ServerMessage::SyncDocument { document: doc.clone() }
                         ).await?;
                     }
@@ -226,8 +229,9 @@ impl SyncHandler {
                         }).await?;
                         
                         // Broadcast deletion to all OTHER connected clients
-                        self.broadcast_to_user(
+                        self.broadcast_to_user_except(
                             user_id,
+                            self.client_id,
                             ServerMessage::DocumentDeleted { document_id, revision_id }
                         ).await?;
                     }

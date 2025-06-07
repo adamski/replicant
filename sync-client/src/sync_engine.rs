@@ -310,20 +310,14 @@ impl SyncEngine {
                 }
             }
             ServerMessage::DocumentDeleted { document_id, revision_id } => {
-                // Document deleted from server
-                // Check if we have this document locally
-                match db.get_document(&document_id).await {
-                    Ok(_existing_doc) => {
-                        // We have it locally - mark the deletion as synced instead of deleting again
-                        tracing::info!("CLIENT {}: Marking local delete as synced for doc {}", client_id, document_id);
-                        db.mark_synced(&document_id, &revision_id).await?;
-                    }
-                    Err(_) => {
-                        // We don't have it locally - this is a delete from another client
-                        tracing::info!("CLIENT {}: Deleting document {} from another client", client_id, document_id);
-                        db.delete_document(&document_id).await?;
-                    }
-                }
+                // Document deleted from server - we need to delete it locally
+                tracing::info!("CLIENT {}: Received DocumentDeleted for doc {} with revision {}", client_id, document_id, revision_id);
+                
+                // Delete the document locally (soft delete)
+                db.delete_document(&document_id).await?;
+                
+                // Mark it as synced so we don't try to sync the delete again
+                db.mark_synced(&document_id, &revision_id).await?;
                 
                 // Emit event for deleted document
                 event_dispatcher.emit_document_deleted(&document_id);

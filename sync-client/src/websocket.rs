@@ -4,7 +4,9 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 use sync_core::protocol::{ClientMessage, ServerMessage};
 use crate::errors::ClientError;
+use crate::events::EventDispatcher;
 use backoff::{future::retry, ExponentialBackoff};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct WebSocketClient {
@@ -21,8 +23,9 @@ impl WebSocketClient {
         user_id: Uuid,
         client_id: Uuid,
         auth_token: &str,
+        event_dispatcher: Option<Arc<EventDispatcher>>,
     ) -> Result<(Self, WebSocketReceiver), ClientError> {
-        let ws_stream = Self::connect_with_retry(server_url, 3).await?;
+        let ws_stream = Self::connect_with_retry(server_url, 3, event_dispatcher).await?;
         
         let (write, read) = ws_stream.split();
         
@@ -79,7 +82,8 @@ impl WebSocketClient {
     
     async fn connect_with_retry(
         server_url: &str, 
-        max_retries: u32
+        _max_retries: u32,
+        event_dispatcher: Option<Arc<EventDispatcher>>,
     ) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, ClientError> {
         let backoff = ExponentialBackoff {
             initial_interval: std::time::Duration::from_millis(100),
@@ -90,11 +94,26 @@ impl WebSocketClient {
         };
         
         let server_url = server_url.to_string();
+        let dispatcher = event_dispatcher.clone();
         let operation = || async {
+            // Emit connection attempt event
+            if let Some(ref dispatcher) = dispatcher {
+                dispatcher.emit_connection_attempted(&server_url);
+            }
+            
             match connect_async(&server_url).await {
-                Ok((ws_stream, _)) => Ok(ws_stream),
+                Ok((ws_stream, _)) => {
+                    // Emit connection success event
+                    if let Some(ref dispatcher) = dispatcher {
+                        dispatcher.emit_connection_succeeded(&server_url);
+                    }
+                    Ok(ws_stream)
+                },
                 Err(e) => {
-                    tracing::warn!("WebSocket connection failed, will retry: {}", e);
+                    // Emit as sync error instead of tracing warning
+                    if let Some(ref dispatcher) = dispatcher {
+                        dispatcher.emit_sync_error(&format!("Connection failed: {}", e));
+                    }
                     Err(backoff::Error::transient(e))
                 }
             }

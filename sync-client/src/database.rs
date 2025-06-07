@@ -89,7 +89,11 @@ impl ClientDatabase {
     }
     
     pub async fn save_document(&self, doc: &Document) -> Result<(), ClientError> {
-        let params = DbHelpers::document_to_params(doc)?;
+        self.save_document_with_status(doc, None).await
+    }
+    
+    pub(crate) async fn save_document_with_status(&self, doc: &Document, sync_status: Option<&str>) -> Result<(), ClientError> {
+        let params = DbHelpers::document_to_params(doc, sync_status)?;
         
         sqlx::query(Queries::UPSERT_DOCUMENT)
             .bind(params.0)  // id

@@ -175,9 +175,10 @@ impl DbHelpers {
     }
     
     /// Prepare document values for database insertion
-    pub fn document_to_params(doc: &Document) -> Result<(
+    pub fn document_to_params(doc: &Document, sync_status: Option<&str>) -> Result<(
         String, String, String, String, String, i64, String, String, String, Option<String>, String
     ), ClientError> {
+        let status = sync_status.unwrap_or("pending").to_string();
         Ok((
             doc.id.to_string(),
             doc.user_id.to_string(),
@@ -189,7 +190,7 @@ impl DbHelpers {
             doc.created_at.to_rfc3339(),
             doc.updated_at.to_rfc3339(),
             doc.deleted_at.map(|dt| dt.to_rfc3339()),
-            "pending".to_string(),
+            status,
         ))
     }
     

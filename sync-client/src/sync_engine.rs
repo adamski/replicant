@@ -38,7 +38,16 @@ impl SyncEngine {
         let (user_id, client_id) = db.get_user_and_client_id().await?;
         let node_id = format!("client_{}", user_id);
         
-        let (ws_client, ws_receiver) = WebSocketClient::connect(server_url, user_id, client_id, auth_token).await?;
+        // Create the event dispatcher first
+        let event_dispatcher = Arc::new(EventDispatcher::new());
+        
+        let (ws_client, ws_receiver) = WebSocketClient::connect(
+            server_url, 
+            user_id, 
+            client_id, 
+            auth_token,
+            Some(event_dispatcher.clone())
+        ).await?;
         
         // Create a channel for messages
         let (tx, rx) = mpsc::channel(100);
@@ -57,7 +66,7 @@ impl SyncEngine {
             client_id,
             node_id,
             message_rx: Some(rx),
-            event_dispatcher: Arc::new(EventDispatcher::new()),
+            event_dispatcher,
         };
         
         Ok(engine)
@@ -94,6 +103,9 @@ impl SyncEngine {
         // Initial sync
         self.event_dispatcher.emit_sync_started();
         self.sync_all().await?;
+        
+        // Sync any pending documents that were created offline
+        self.sync_pending_documents().await?;
         
         Ok(())
     }
@@ -198,6 +210,41 @@ impl SyncEngine {
         Ok(docs)
     }
     
+    async fn sync_pending_documents(&self) -> Result<(), ClientError> {
+        let pending_doc_ids = self.db.get_pending_documents().await?;
+        
+        if pending_doc_ids.is_empty() {
+            tracing::info!("CLIENT {}: No pending documents to sync", self.client_id);
+            return Ok(());
+        }
+        
+        tracing::info!("CLIENT {}: Syncing {} pending documents", self.client_id, pending_doc_ids.len());
+        
+        for doc_id in pending_doc_ids {
+            match self.db.get_document(&doc_id).await {
+                Ok(doc) => {
+                    if doc.deleted_at.is_some() {
+                        // Handle pending delete
+                        tracing::info!("CLIENT {}: Syncing pending delete for doc {}", self.client_id, doc_id);
+                        self.ws_client.send(ClientMessage::DeleteDocument {
+                            document_id: doc_id,
+                            revision_id: doc.revision_id,
+                        }).await?;
+                    } else {
+                        // Handle pending create/update
+                        tracing::info!("CLIENT {}: Syncing pending document {}", self.client_id, doc_id);
+                        self.ws_client.send(ClientMessage::CreateDocument { document: doc }).await?;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("CLIENT {}: Failed to get pending document {}: {}", self.client_id, doc_id, e);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
     async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid, event_dispatcher: &Arc<EventDispatcher>) -> Result<(), ClientError> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
@@ -242,15 +289,13 @@ impl SyncEngine {
                         } else {
                             // Different revision - update it
                             tracing::info!("CLIENT: Document {} exists locally but has different revision, updating", document.id);
-                            db.save_document(&document).await?;
-                            db.mark_synced(&document.id, &document.revision_id).await?;
+                            db.save_document_with_status(&document, Some("synced")).await?;
                         }
                     }
                     Err(_) => {
                         // Document doesn't exist locally - save it
                         tracing::info!("CLIENT: Document {} is new, saving to local database", document.id);
-                        db.save_document(&document).await?;
-                        db.mark_synced(&document.id, &document.revision_id).await?;
+                        db.save_document_with_status(&document, Some("synced")).await?;
                         
                         // Emit event for new document from server
                         event_dispatcher.emit_document_created(&document.id, &document.title, &document.content);
@@ -287,23 +332,20 @@ impl SyncEngine {
                             if sync_gen >= local_gen {
                                 tracing::info!("CLIENT {}: Updating to newer version (gen {} -> {})", 
                                              client_id, local_gen, sync_gen);
-                                db.save_document(&document).await?;
-                                db.mark_synced(&document.id, &document.revision_id).await?;
+                                db.save_document_with_status(&document, Some("synced")).await?;
                             } else {
                                 tracing::info!("CLIENT {}: Skipping older sync (local gen {} > sync gen {})", 
                                              client_id, local_gen, sync_gen);
                             }
                         } else {
                             // Can't compare, accept the sync
-                            db.save_document(&document).await?;
-                            db.mark_synced(&document.id, &document.revision_id).await?;
+                            db.save_document_with_status(&document, Some("synced")).await?;
                         }
                     }
                     Err(_) => {
                         // Document doesn't exist locally - save it
                         tracing::info!("CLIENT {}: Document {} is new, saving", client_id, document.id);
-                        db.save_document(&document).await?;
-                        db.mark_synced(&document.id, &document.revision_id).await?;
+                        db.save_document_with_status(&document, Some("synced")).await?;
                     }
                 }
             }

@@ -46,7 +46,7 @@
 //! 
 //! This design eliminates the need for complex synchronization in user code.
 
-use std::ffi::{c_char, c_void, CString, CStr};
+use std::ffi::{c_char, c_void, CString};
 use std::sync::{Mutex, mpsc};
 use std::thread::{self, ThreadId};
 use uuid::Uuid;
@@ -71,6 +71,10 @@ pub enum EventType {
     ConflictDetected = 6,
     /// Connection state changed (connected/disconnected)
     ConnectionStateChanged = 7,
+    /// A connection attempt was made to the server
+    ConnectionAttempted = 8,
+    /// Successfully connected to the server
+    ConnectionSucceeded = 9,
 }
 
 /// Event data structure passed to C/C++ callbacks
@@ -111,9 +115,39 @@ pub struct EventData {
 /// after the callback returns. Copy them if you need to retain the data.
 pub type EventCallback = extern "C" fn(event: *const EventData, context: *mut c_void);
 
-#[derive(Debug)]
+/// Rust-native callback function type for event handling
+/// 
+/// This is a more ergonomic callback interface for Rust applications that
+/// passes individual event parameters rather than a C-style struct pointer.
+/// 
+/// # Parameters
+/// 
+/// * `event_type` - The type of event that occurred
+/// * `document_id` - Optional document ID (for document-related events)
+/// * `title` - Optional document title
+/// * `content` - Optional document content as JSON string
+/// * `error` - Optional error message (for error events)
+/// * `numeric_data` - Numeric data (e.g., sync count)
+/// * `boolean_data` - Boolean data (e.g., connection state)
+/// * `context` - User-defined context pointer
+pub type RustEventCallback = Box<dyn Fn(
+    EventType,
+    Option<&str>,    // document_id
+    Option<&str>,    // title
+    Option<&str>,    // content
+    Option<&str>,    // error
+    u64,             // numeric_data
+    bool,            // boolean_data
+    *mut c_void,     // context
+) + Send + Sync>;
+
+enum CallbackType {
+    CFfi(EventCallback),
+    Rust(RustEventCallback),
+}
+
 struct CallbackEntry {
-    callback: EventCallback,
+    callback: CallbackType,
     context: *mut c_void,
     event_filter: Option<EventType>,
 }
@@ -192,7 +226,69 @@ impl EventDispatcher {
             .map_err(|_| "Failed to acquire callback lock")?;
         
         callbacks.push(CallbackEntry {
-            callback,
+            callback: CallbackType::CFfi(callback),
+            context,
+            event_filter,
+        });
+        
+        Ok(())
+    }
+
+    /// Register a Rust-native callback for event notifications
+    /// 
+    /// This is a more ergonomic interface for Rust applications that avoids
+    /// the need to work with C-style function pointers and structs.
+    /// 
+    /// # Parameters
+    /// 
+    /// * `callback` - The callback function to invoke for events
+    /// * `context` - Optional user-defined context pointer
+    /// * `event_filter` - Optional filter to only receive specific event types
+    /// 
+    /// # Example
+    /// 
+    /// ```rust,no_run
+    /// use sync_client::events::{EventDispatcher, EventType};
+    /// 
+    /// let dispatcher = EventDispatcher::new();
+    /// 
+    /// dispatcher.register_rust_callback(
+    ///     Box::new(|event_type, document_id, title, _content, error, numeric_data, boolean_data, _context| {
+    ///         match event_type {
+    ///             EventType::DocumentCreated => {
+    ///                 println!("Document created: {}", title.unwrap_or("untitled"));
+    ///             },
+    ///             EventType::SyncCompleted => {
+    ///                 println!("Sync completed: {} documents", numeric_data);
+    ///             },
+    ///             _ => {}
+    ///         }
+    ///     }),
+    ///     std::ptr::null_mut(),
+    ///     None
+    /// ).unwrap();
+    /// ```
+    pub fn register_rust_callback(
+        &self,
+        callback: RustEventCallback,
+        context: *mut c_void,
+        event_filter: Option<EventType>,
+    ) -> Result<(), &'static str> {
+        // Set the callback thread ID on first registration
+        {
+            let mut thread_id = self.callback_thread_id.lock()
+                .map_err(|_| "Failed to acquire thread ID lock")?;
+            if thread_id.is_none() {
+                *thread_id = Some(thread::current().id());
+                tracing::info!("Event callbacks will be processed on thread: {:?}", thread::current().id());
+            }
+        }
+
+        let mut callbacks = self.callbacks.lock()
+            .map_err(|_| "Failed to acquire callback lock")?;
+        
+        callbacks.push(CallbackEntry {
+            callback: CallbackType::Rust(callback),
             context,
             event_filter,
         });
@@ -230,6 +326,14 @@ impl EventDispatcher {
 
     pub fn emit_connection_state_changed(&self, connected: bool) {
         self.queue_event(EventType::ConnectionStateChanged, None, None, None, None, 0, connected);
+    }
+
+    pub fn emit_connection_attempted(&self, server_url: &str) {
+        self.queue_event(EventType::ConnectionAttempted, None, Some(server_url), None, None, 0, false);
+    }
+
+    pub fn emit_connection_succeeded(&self, server_url: &str) {
+        self.queue_event(EventType::ConnectionSucceeded, None, Some(server_url), None, None, 0, false);
     }
 
     /// Queue an event for later processing on the callback thread
@@ -280,7 +384,7 @@ impl EventDispatcher {
             return Ok(0);
         }
 
-        let mut receiver = self.event_queue.lock()
+        let receiver = self.event_queue.lock()
             .map_err(|_| "Failed to acquire event queue lock")?;
 
         let mut processed_count = 0;
@@ -337,7 +441,23 @@ impl EventDispatcher {
                     }
                 }
 
-                (entry.callback)(&event_data, entry.context);
+                match &entry.callback {
+                    CallbackType::CFfi(callback) => {
+                        callback(&event_data, entry.context);
+                    },
+                    CallbackType::Rust(callback) => {
+                        callback(
+                            queued_event.event_type,
+                            queued_event.document_id.as_deref(),
+                            queued_event.title.as_deref(),
+                            queued_event.content.as_deref(),
+                            queued_event.error.as_deref(),
+                            queued_event.numeric_data,
+                            queued_event.boolean_data,
+                            entry.context,
+                        );
+                    }
+                }
             }
 
             processed_count += 1;

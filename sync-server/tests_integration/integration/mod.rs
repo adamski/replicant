@@ -7,3 +7,4 @@ pub mod concurrent_clients_integration;
 pub mod multi_client_sync_integration;
 pub mod offline_sync_integration;
 pub mod debug_test;
+pub mod simple_event_test;

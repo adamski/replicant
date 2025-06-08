@@ -8,3 +8,4 @@ pub mod multi_client_sync_integration;
 pub mod offline_sync_integration;
 pub mod debug_test;
 pub mod simple_event_test;
+pub mod test_offline_sync_phases;

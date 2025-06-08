@@ -4,4 +4,6 @@ pub mod sync_flow_integration;
 pub mod conflict_resolution_integration;
 pub mod websocket_integration;
 pub mod concurrent_clients_integration;
+pub mod multi_client_sync_integration;
+pub mod offline_sync_integration;
 pub mod debug_test;

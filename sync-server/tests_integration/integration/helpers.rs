@@ -43,7 +43,7 @@ impl TestContext {
         let server_base = self.server_url.replace("ws://", "http://").replace("wss://", "https://");
         
         let response = client
-            .post(&format!("{}/register", server_base))
+            .post(&format!("{}/api/auth/register", server_base))
             .json(&serde_json::json!({
                 "email": email,
                 "password": "test-password"
@@ -310,7 +310,7 @@ impl TestContext {
         Ok(())
     }
     
-    async fn kill_all_sync_servers(&self) {
+    pub async fn kill_all_sync_servers(&self) {
         tracing::debug!("Killing all sync-server processes");
         
         // Kill processes by port
@@ -394,7 +394,7 @@ impl TestContext {
         Ok(())
     }
     
-    async fn start_fresh_server(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn start_fresh_server(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tracing::debug!("Starting fresh sync-server instance");
         
         // Find the project root directory

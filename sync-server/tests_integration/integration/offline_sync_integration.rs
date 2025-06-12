@@ -140,7 +140,6 @@ async fn create_client_with_event_tracking(
 }
 
 #[tokio::test]
-#[ignore = "Test is hanging - needs investigation"]
 async fn test_offline_changes_sync_on_reconnect() {
     if std::env::var("RUN_INTEGRATION_TESTS").is_err() {
         eprintln!("Skipping integration test. Set RUN_INTEGRATION_TESTS=1 to run.");

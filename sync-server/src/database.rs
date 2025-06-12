@@ -92,7 +92,7 @@ impl ServerDatabase {
         // Log the create event
         // For CREATE: forward_patch contains the full document, reverse_patch is null
         let doc_json = serde_json::to_value(doc).map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
-        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Create, &doc.revision_id, Some(&doc_json), None).await?;
+        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Create, &doc.revision_id, Some(&doc_json), None, true).await?;
         
         tx.commit().await?;
         Ok(())
@@ -143,7 +143,7 @@ impl ServerDatabase {
             None
         };
         
-        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Update, &doc.revision_id, forward_patch_json.as_ref(), reverse_patch_json.as_ref()).await?;
+        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Update, &doc.revision_id, forward_patch_json.as_ref(), reverse_patch_json.as_ref(), true).await?;
         
         tx.commit().await?;
         Ok(())
@@ -166,7 +166,7 @@ impl ServerDatabase {
         // Log the delete event
         // For DELETE: forward_patch is null, reverse_patch contains the full document
         let doc_json = serde_json::to_value(&doc_to_delete).map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
-        self.log_change_event(&mut tx, document_id, user_id, ChangeEventType::Delete, revision_id, None, Some(&doc_json)).await?;
+        self.log_change_event(&mut tx, document_id, user_id, ChangeEventType::Delete, revision_id, None, Some(&doc_json), true).await?;
         
         tx.commit().await?;
         Ok(())
@@ -232,6 +232,7 @@ impl ServerDatabase {
         revision_id: &str,
         forward_patch: Option<&serde_json::Value>,
         reverse_patch: Option<&serde_json::Value>,
+        applied: bool,
     ) -> Result<(), sqlx::Error> {
         let event_type_str = match event_type {
             ChangeEventType::Create => "create",
@@ -241,8 +242,8 @@ impl ServerDatabase {
 
         sqlx::query(
             r#"
-            INSERT INTO change_events (user_id, document_id, event_type, revision_id, forward_patch, reverse_patch)
-            VALUES ($1::UUID, $2::UUID, $3::TEXT, $4::TEXT, $5::JSONB, $6::JSONB)
+            INSERT INTO change_events (user_id, document_id, event_type, revision_id, forward_patch, reverse_patch, applied)
+            VALUES ($1::UUID, $2::UUID, $3::TEXT, $4::TEXT, $5::JSONB, $6::JSONB, $7::BOOLEAN)
             "#
         )
         .persistent(false)  // Disable prepared statement caching
@@ -252,6 +253,7 @@ impl ServerDatabase {
         .bind(revision_id)
         .bind(forward_patch)
         .bind(reverse_patch)
+        .bind(applied)
         .execute(&mut **tx)
         .await?;
 

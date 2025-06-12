@@ -41,48 +41,95 @@ impl SyncHandler {
         
         match msg {
             ClientMessage::CreateDocument { document } => {
-                tracing::debug!("Received CreateDocument from user {} for doc {}", user_id, document.id);
+                tracing::info!("🔵 Received CreateDocument from user {} for doc {} (rev: {})", 
+                             user_id, document.id, document.revision_id);
+                
                 // Validate ownership
                 if document.user_id != user_id {
                     self.send_error(ErrorCode::InvalidAuth, "Cannot create document for another user").await?;
                     return Ok(());
                 }
                 
-                // Save to database
-                match self.db.create_document(&document).await {
-                    Ok(_) => {
-                        // Send confirmation to the sender
-                        self.tx.send(ServerMessage::DocumentCreatedResponse {
-                            document_id: document.id,
-                            revision_id: document.revision_id.clone(),
-                            success: true,
-                            error: None,
-                        }).await?;
+                // Check if document already exists (conflict detection)
+                match self.db.get_document(&document.id).await {
+                    Ok(existing_doc) => {
+                        // Document exists! This is a conflict - handle it
+                        tracing::warn!("🔥 CONFLICT DETECTED: Document {} already exists on server", document.id);
+                        tracing::warn!("   Server revision: {} | Client revision: {}", 
+                                     existing_doc.revision_id, document.revision_id);
+                        tracing::warn!("   Server content: {:?}", existing_doc.content);
+                        tracing::warn!("   Client content: {:?}", document.content);
                         
-                        // Broadcast to all OTHER connected clients (exclude sender)
-                        tracing::info!("Broadcasting DocumentCreated for doc {} to other clients of user {}", document.id, user_id);
+                        // Apply last-write-wins strategy (client's version wins)
+                        tracing::info!("🔧 Applying conflict resolution: Client version wins");
                         
-                        // Log current client count
-                        if let Some(client_ids) = self.app_state.user_clients.get(&user_id) {
-                            tracing::info!("User {} has {} connected clients", user_id, client_ids.len());
-                        } else {
-                            tracing::warn!("User {} has no registered clients!", user_id);
+                        // Store the existing server version as unapplied (conflict loser)
+                        // Note: For now, we'll skip storing the conflicted version
+                        // This can be implemented later when we add full conflict history
+                        
+                        // Update the document with client's version
+                        match self.db.update_document(&document, None).await {
+                            Ok(_) => {
+                                tracing::info!("✅ Conflict resolved - Client version applied");
+                                
+                                // Send confirmation to the sender
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: true,
+                                    error: None,
+                                }).await?;
+                                
+                                // Broadcast the final resolved document to ALL clients
+                                tracing::info!("📡 Broadcasting resolved document to all clients");
+                                self.broadcast_to_user(
+                                    user_id,
+                                    ServerMessage::SyncDocument { document: document.clone() }
+                                ).await?;
+                            }
+                            Err(e) => {
+                                tracing::error!("❌ Failed to apply conflict resolution: {}", e);
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: false,
+                                    error: Some(format!("Conflict resolution failed: {}", e)),
+                                }).await?;
+                            }
                         }
-                        
-                        self.broadcast_to_user_except(
-                            user_id,
-                            self.client_id,
-                            ServerMessage::DocumentCreated { document }
-                        ).await?;
                     }
-                    Err(e) => {
-                        // Send error response to the sender
-                        self.tx.send(ServerMessage::DocumentCreatedResponse {
-                            document_id: document.id,
-                            revision_id: document.revision_id.clone(),
-                            success: false,
-                            error: Some(e.to_string()),
-                        }).await?;
+                    Err(_) => {
+                        // Document doesn't exist - this is a true create operation
+                        tracing::info!("📝 Creating new document {} ", document.id);
+                        
+                        match self.db.create_document(&document).await {
+                            Ok(_) => {
+                                // Send confirmation to the sender
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: true,
+                                    error: None,
+                                }).await?;
+                                
+                                // Broadcast to all OTHER connected clients (exclude sender)
+                                tracing::info!("📡 Broadcasting new document to other clients");
+                                self.broadcast_to_user_except(
+                                    user_id,
+                                    self.client_id,
+                                    ServerMessage::DocumentCreated { document }
+                                ).await?;
+                            }
+                            Err(e) => {
+                                // Send error response to the sender
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: false,
+                                    error: Some(e.to_string()),
+                                }).await?;
+                            }
+                        }
                     }
                 }
             }

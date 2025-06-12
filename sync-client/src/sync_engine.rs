@@ -7,7 +7,7 @@ use sync_core::{
     patches::{create_patch, apply_patch, calculate_checksum},
 };
 use crate::{
-    database::ClientDatabase,
+    database::{ClientDatabase, PendingDocumentInfo},
     websocket::WebSocketClient,
     errors::ClientError,
     events::EventDispatcher,
@@ -100,12 +100,16 @@ impl SyncEngine {
             tracing::warn!("CLIENT {}: Message handler terminated", client_id);
         });
         
-        // Initial sync
+        // Upload-first strategy: Upload pending changes before downloading server state
         self.event_dispatcher.emit_sync_started();
-        self.sync_all().await?;
         
-        // Sync any pending documents that were created offline
+        // First: Upload any pending documents that were created/modified offline
+        tracing::info!("CLIENT {}: Starting upload-first sync - uploading pending changes", self.client_id);
         self.sync_pending_documents().await?;
+        
+        // Second: Download current server state (which includes conflict resolution results)
+        tracing::info!("CLIENT {}: Upload complete, now downloading server state", self.client_id);
+        self.sync_all().await?;
         
         Ok(())
     }
@@ -215,33 +219,48 @@ impl SyncEngine {
     }
     
     async fn sync_pending_documents(&self) -> Result<(), ClientError> {
-        let pending_doc_ids = self.db.get_pending_documents().await?;
+        let pending_docs = self.db.get_pending_documents().await?;
         
-        if pending_doc_ids.is_empty() {
+        if pending_docs.is_empty() {
             tracing::info!("CLIENT {}: No pending documents to sync", self.client_id);
             return Ok(());
         }
         
-        tracing::info!("CLIENT {}: Syncing {} pending documents", self.client_id, pending_doc_ids.len());
+        tracing::info!("CLIENT {}: Syncing {} pending documents", self.client_id, pending_docs.len());
         
-        for doc_id in pending_doc_ids {
-            match self.db.get_document(&doc_id).await {
+        for pending_info in pending_docs {
+            match self.db.get_document(&pending_info.id).await {
                 Ok(doc) => {
-                    if doc.deleted_at.is_some() {
+                    if pending_info.is_deleted {
                         // Handle pending delete
-                        tracing::info!("CLIENT {}: Syncing pending delete for doc {}", self.client_id, doc_id);
+                        tracing::info!("CLIENT {}: Syncing pending delete for doc {}", self.client_id, pending_info.id);
                         self.ws_client.send(ClientMessage::DeleteDocument {
-                            document_id: doc_id,
+                            document_id: pending_info.id,
                             revision_id: doc.revision_id.clone(),
                         }).await?;
+                    } else if pending_info.last_synced_revision.is_none() {
+                        // No previous sync revision = new document created offline
+                        tracing::info!("CLIENT {}: Syncing new document {} created offline", self.client_id, pending_info.id);
+                        self.ws_client.send(ClientMessage::CreateDocument { 
+                            document: doc.clone() 
+                        }).await?;
                     } else {
-                        // Handle pending create/update
-                        tracing::info!("CLIENT {}: Syncing pending document {}", self.client_id, doc_id);
-                        self.ws_client.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
+                        // Has previous sync revision = document was updated offline
+                        tracing::info!("CLIENT {}: Syncing document {} updated offline (previous rev: {})", 
+                                     self.client_id, pending_info.id, 
+                                     pending_info.last_synced_revision.as_ref().unwrap());
+                        
+                        // Create a patch from the last synced revision to current state
+                        // For now, we'll send the full document as CreateDocument 
+                        // TODO: Implement proper patch generation for updates
+                        tracing::warn!("CLIENT {}: Sending updated document as CreateDocument (patch generation not yet implemented)", self.client_id);
+                        self.ws_client.send(ClientMessage::CreateDocument { 
+                            document: doc.clone() 
+                        }).await?;
                     }
                 }
                 Err(e) => {
-                    tracing::error!("CLIENT {}: Failed to get pending document {}: {}", self.client_id, doc_id, e);
+                    tracing::error!("CLIENT {}: Failed to get pending document {}: {}", self.client_id, pending_info.id, e);
                 }
             }
         }

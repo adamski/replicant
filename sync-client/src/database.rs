@@ -5,6 +5,13 @@ use crate::errors::ClientError;
 use crate::queries::{Queries, DbHelpers};
 use json_patch;
 
+#[derive(Debug, Clone)]
+pub struct PendingDocumentInfo {
+    pub id: Uuid,
+    pub last_synced_revision: Option<String>,
+    pub is_deleted: bool,
+}
+
 pub struct ClientDatabase {
     pub pool: SqlitePool,
 }
@@ -113,7 +120,7 @@ impl ClientDatabase {
         Ok(())
     }
     
-    pub async fn get_pending_documents(&self) -> Result<Vec<Uuid>, ClientError> {
+    pub async fn get_pending_documents(&self) -> Result<Vec<PendingDocumentInfo>, ClientError> {
         let rows = sqlx::query(Queries::GET_PENDING_DOCUMENTS)
             .fetch_all(&self.pool)
             .await?;
@@ -121,7 +128,14 @@ impl ClientDatabase {
         rows.into_iter()
             .map(|row| {
                 let id: String = row.try_get("id")?;
-                Ok(Uuid::parse_str(&id)?)
+                let last_synced_revision: Option<String> = row.try_get("last_synced_revision")?;
+                let deleted_at: Option<String> = row.try_get("deleted_at")?;
+                
+                Ok(PendingDocumentInfo {
+                    id: Uuid::parse_str(&id)?,
+                    last_synced_revision,
+                    is_deleted: deleted_at.is_some(),
+                })
             })
             .collect()
     }

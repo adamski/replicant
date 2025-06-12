@@ -95,7 +95,7 @@ impl Queries {
     "#;
     
     pub const GET_PENDING_DOCUMENTS: &'static str = r#"
-        SELECT id FROM documents
+        SELECT id, last_synced_revision, deleted_at FROM documents
         WHERE sync_status = 'pending'
         ORDER BY updated_at ASC
     "#;

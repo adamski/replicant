@@ -116,18 +116,15 @@ async fn phase1_initial_sync() {
     tracing::info!("Creating initial documents...");
     
     let doc1 = client1.create_document(
-        "Document 1".to_string(),
-        json!({ "content": "Initial content 1", "phase": "1" })
+        json!({ "title": "Document 1", "content": "Initial content 1", "phase": "1" })
     ).await.expect("Failed to create doc1");
     
     let doc2 = client1.create_document(
-        "Document 2".to_string(),
-        json!({ "content": "Initial content 2", "phase": "1" })
+        json!({ "title": "Document 2", "content": "Initial content 2", "phase": "1" })
     ).await.expect("Failed to create doc2");
     
     let doc3 = client2.create_document(
-        "Document 3".to_string(),
-        json!({ "content": "Initial content 3", "phase": "1" })
+        json!({ "title": "Document 3", "content": "Initial content 3", "phase": "1" })
     ).await.expect("Failed to create doc3");
     
     // Wait for sync
@@ -191,6 +188,7 @@ async fn phase2_offline_changes() {
         match client_db.get_document(&doc1_id).await {
             Ok(mut doc) => {
                 doc.content = json!({ 
+                    "title": "Document 1",
                     "content": "Updated offline in phase 2",
                     "phase": "2",
                     "offline": true
@@ -209,8 +207,8 @@ async fn phase2_offline_changes() {
     let offline_doc = sync_core::models::Document {
         id: Uuid::new_v4(),
         user_id: state.user_id,
-        title: "Offline Document".to_string(),
         content: json!({ 
+            "title": "Offline Document",
             "content": "Created while offline",
             "phase": "2",
             "created_offline": true

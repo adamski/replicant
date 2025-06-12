@@ -117,16 +117,35 @@ async fn conflict_phase1_setup_and_sync() {
     
     let original_content = "This is the original content that will be edited by both clients";
     let doc = client1.create_document(
-        "Conflict Test Document".to_string(),
         json!({ 
+            "title": "Conflict Test Document",
             "content": original_content,
             "field_to_edit": "original_value",
             "metadata": "created_for_conflict_test"
         })
     ).await.expect("Failed to create document");
     
-    // Wait for sync to complete
-    sleep(Duration::from_millis(2000)).await;
+    // Test immediate sync - documents should sync within 2 seconds
+    let start_time = std::time::Instant::now();
+    let max_sync_time = Duration::from_millis(2000);
+    
+    // Wait up to 2 seconds for sync
+    let mut both_synced = false;
+    while start_time.elapsed() < max_sync_time && !both_synced {
+        let docs1 = client1.get_all_documents().await.expect("Failed to get docs from client1");
+        let docs2 = client2.get_all_documents().await.expect("Failed to get docs from client2");
+        
+        if docs1.len() == 1 && docs2.len() == 1 && docs1[0].id == doc.id && docs2[0].id == doc.id {
+            both_synced = true;
+            tracing::info!("✅ Documents synced to both clients in {:?}", start_time.elapsed());
+        } else {
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+    
+    if !both_synced {
+        tracing::error!("❌ Documents failed to sync within {:?}", max_sync_time);
+    }
     
     // Verify both clients see the document
     let docs1 = client1.get_all_documents().await.expect("Failed to get docs from client1");
@@ -189,6 +208,7 @@ async fn conflict_phase2_concurrent_offline_edits() {
     match client1_db.get_document(&document_id).await {
         Ok(mut doc) => {
             doc.content = json!({ 
+                "title": "Conflict Test Document",
                 "content": client1_edit_content,
                 "field_to_edit": "client1_value",
                 "metadata": "edited_by_client1_offline",
@@ -218,6 +238,7 @@ async fn conflict_phase2_concurrent_offline_edits() {
     match client2_db.get_document(&document_id).await {
         Ok(mut doc) => {
             doc.content = json!({ 
+                "title": "Conflict Test Document",
                 "content": client2_edit_content,
                 "field_to_edit": "client2_value", // Same field, different value!
                 "metadata": "edited_by_client2_offline",

@@ -4,12 +4,12 @@ use std::time::Instant;
 use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
 use sync_core::{
-    models::{Document, DocumentPatch, VectorClock},
+    models::{Document, VectorClock},
     protocol::{ClientMessage, ServerMessage},
-    patches::{create_patch, apply_patch, calculate_checksum},
+    patches::{create_patch, apply_patch},
 };
 use crate::{
-    database::{ClientDatabase, PendingDocumentInfo},
+    database::ClientDatabase,
     websocket::WebSocketClient,
     errors::ClientError,
     events::EventDispatcher,
@@ -40,6 +40,7 @@ pub struct SyncEngine {
     pending_uploads: Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
     upload_complete_notifier: Arc<Notify>,
     sync_protection_mode: Arc<AtomicBool>,
+    is_connected: Arc<AtomicBool>,
 }
 
 impl SyncEngine {
@@ -89,6 +90,7 @@ impl SyncEngine {
             pending_uploads: Arc::new(Mutex::new(HashMap::new())),
             upload_complete_notifier: Arc::new(Notify::new()),
             sync_protection_mode: Arc::new(AtomicBool::new(false)),
+            is_connected: Arc::new(AtomicBool::new(true)),
         };
         
         Ok(engine)
@@ -201,18 +203,18 @@ impl SyncEngine {
         };
         
         // Save locally first
-        tracing::info!("CLIENT: Creating document locally: {}", doc.id);
+        tracing::info!("CLIENT {}: Creating document locally: {}", self.client_id, doc.id);
         self.db.save_document(&doc).await?;
         
         // Emit event
         self.event_dispatcher.emit_document_created(&doc.id, &doc.content);
         
-        // Send to server
-        tracing::info!("CLIENT: Sending CreateDocument to server: {}", doc.id);
-        self.ws_client.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
-        tracing::info!("CLIENT: Successfully sent CreateDocument to server: {}", doc.id);
-        
-        // Note: Document remains 'pending' until we receive DocumentCreatedResponse from server
+        // Attempt immediate sync if connected
+        if let Err(e) = self.try_immediate_sync(&doc).await {
+            tracing::warn!("CLIENT {}: Failed to immediately sync new document {}: {}. Will retry later.", 
+                         self.client_id, doc.id, e);
+            // Document stays in "pending" status for next sync attempt
+        }
         
         Ok(doc)
     }
@@ -224,8 +226,8 @@ impl SyncEngine {
         tracing::info!("CLIENT {}: Updating document {} - old content: {:?}, new content: {:?}", 
                      self.client_id, id, old_content, new_content);
         
-        // Create patch
-        let patch = create_patch(&old_content, &new_content)?;
+        // Create patch (for potential future use)
+        let _patch = create_patch(&old_content, &new_content)?;
         
         // Update document
         doc.revision_id = doc.next_revision(&new_content);
@@ -240,21 +242,12 @@ impl SyncEngine {
         // Emit event
         self.event_dispatcher.emit_document_updated(&doc.id, &doc.content);
         
-        // Create patch message
-        let patch_msg = DocumentPatch {
-            document_id: id,
-            revision_id: doc.revision_id.clone(),
-            patch,
-            vector_clock: doc.vector_clock.clone(),
-            checksum: calculate_checksum(&doc.content),
-        };
-        
-        // Send to server
-        tracing::info!("CLIENT {}: Sending update to server for doc {}", self.client_id, id);
-        self.ws_client.send(ClientMessage::UpdateDocument { patch: patch_msg }).await?;
-        tracing::info!("CLIENT {}: Update sent successfully", self.client_id);
-        
-        // Note: Document remains 'pending' until we receive DocumentUpdatedResponse from server
+        // Attempt immediate sync if connected
+        if let Err(e) = self.try_immediate_sync(&doc).await {
+            tracing::warn!("CLIENT {}: Failed to immediately sync updated document {}: {}. Will retry later.", 
+                         self.client_id, doc.id, e);
+            // Document stays in "pending" status for next sync attempt
+        }
         
         Ok(())
     }
@@ -417,15 +410,15 @@ impl SyncEngine {
                 }
                 
                 // Check if document has pending changes
-                if let Ok(local_doc) = db.get_document(&document.id).await {
-                    // Check if this document has pending sync status
+                if let Ok(_local_doc) = db.get_document(&document.id).await {
+                    // Check if this document has an active upload in progress
                     // This is our primary protection mechanism
-                    if Self::has_pending_changes(db, &document.id).await? {
-                        tracing::warn!("CLIENT {}: PROTECTED - Document {} has pending changes, refusing server overwrite", 
+                    if Self::has_pending_upload(pending_uploads, &document.id).await {
+                        tracing::warn!("CLIENT {}: PROTECTED - Document {} has active upload, refusing server overwrite", 
                                       client_id, document.id);
                         
                         event_dispatcher.emit_sync_error(&format!(
-                            "Document {} protected from overwrite (has pending changes)", document.id
+                            "Document {} protected from overwrite (active upload in progress)", document.id
                         ));
                         return Ok(());
                     }
@@ -442,17 +435,10 @@ impl SyncEngine {
         }
     }
 
-    // Check if a document has pending local changes
-    async fn has_pending_changes(db: &Arc<ClientDatabase>, document_id: &Uuid) -> Result<bool, ClientError> {
-        // Query the sync_status to see if it's pending
-        match sqlx::query_scalar::<_, Option<String>>("SELECT sync_status FROM documents WHERE id = ?")
-            .bind(document_id.to_string())
-            .fetch_optional(&db.pool)
-            .await? 
-        {
-            Some(Some(status)) => Ok(status == "pending"),
-            _ => Ok(false),
-        }
+    // Check if a document has an active upload in progress
+    async fn has_pending_upload(pending_uploads: &Arc<Mutex<HashMap<Uuid, PendingUpload>>>, document_id: &Uuid) -> bool {
+        let uploads = pending_uploads.lock().await;
+        uploads.contains_key(document_id)
     }
 
     async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid, event_dispatcher: &Arc<EventDispatcher>) -> Result<(), ClientError> {
@@ -676,6 +662,51 @@ impl SyncEngine {
         self.ws_client.send(ClientMessage::RequestFullSync).await?;
         
         Ok(())
+    }
+    
+    /// Check if the WebSocket connection is active
+    pub fn is_connected(&self) -> bool {
+        self.is_connected.load(Ordering::Relaxed)
+    }
+    
+    /// Attempt to sync a single document immediately if connected
+    async fn try_immediate_sync(&self, document: &Document) -> Result<(), ClientError> {
+        if !self.is_connected() {
+            tracing::debug!("CLIENT {}: Offline, document {} will sync later", self.client_id, document.id);
+            return Ok(());
+        }
+        
+        tracing::info!("CLIENT {}: Attempting immediate sync for document {}", self.client_id, document.id);
+        
+        // Add to pending uploads for tracking
+        {
+            let mut uploads = self.pending_uploads.lock().await;
+            uploads.insert(document.id, PendingUpload {
+                document_id: document.id,
+                operation_type: UploadType::Create, // Server treats all as creates
+                sent_at: Instant::now(),
+            });
+        }
+        
+        // Send to server (using CreateDocument for both creates and updates)
+        match self.ws_client.send(ClientMessage::CreateDocument { 
+            document: document.clone() 
+        }).await {
+            Ok(_) => {
+                tracing::debug!("CLIENT {}: Immediate sync request sent for document {}", self.client_id, document.id);
+                Ok(())
+            }
+            Err(e) => {
+                // Connection failed - mark as disconnected and remove from pending uploads
+                self.is_connected.store(false, Ordering::Relaxed);
+                {
+                    let mut uploads = self.pending_uploads.lock().await;
+                    uploads.remove(&document.id);
+                }
+                tracing::warn!("CLIENT {}: WebSocket send failed, marked as disconnected", self.client_id);
+                Err(e)
+            }
+        }
     }
 }
 

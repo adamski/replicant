@@ -80,17 +80,16 @@ mod tests {
         assert_eq!(retrieved_user_id, user_id);
         
         // Create a test document
+        let content = json!({
+            "title": "Test Document",
+            "text": "Hello, World!",
+            "tags": ["test"]
+        });
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title: "Test Document".to_string(),
-            content: json!({
-                "text": "Hello, World!",
-                "tags": ["test"]
-            }),
-            revision_id: Document::initial_revision(&json!({
-                "text": "Hello, World!"
-            })),
+            content: content.clone(),
+            revision_id: Document::initial_revision(&content),
             version: 1,
             vector_clock: VectorClock::new(),
             created_at: chrono::Utc::now(),
@@ -104,7 +103,7 @@ mod tests {
         // Retrieve document
         let loaded_doc = db.get_document(&doc.id).await.unwrap();
         assert_eq!(loaded_doc.id, doc.id);
-        assert_eq!(loaded_doc.title, doc.title);
+        // Title is now part of content JSON, so just compare the content
         assert_eq!(loaded_doc.content, doc.content);
     }
     
@@ -116,13 +115,13 @@ mod tests {
         let doc_id = Uuid::new_v4();
         
         // Test create message
+        let test_content = json!({"title": "Test"});
         let create_msg = ClientMessage::CreateDocument {
             document: Document {
                 id: doc_id,
                 user_id: Uuid::new_v4(),
-                title: "Test".to_string(),
-                content: json!({}),
-                revision_id: Document::initial_revision(&json!({})),
+                content: test_content.clone(),
+                revision_id: Document::initial_revision(&test_content),
                 version: 1,
                 vector_clock: VectorClock::new(),
                 created_at: chrono::Utc::now(),
@@ -194,16 +193,15 @@ mod tests {
         .unwrap();
         
         // Create a test document
+        let content = json!({
+            "title": "Test Document",
+            "text": "Hello, World!"
+        });
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title: "Test Document".to_string(),
-            content: json!({
-                "text": "Hello, World!"
-            }),
-            revision_id: Document::initial_revision(&json!({
-                "text": "Hello, World!"
-            })),
+            content: content.clone(),
+            revision_id: Document::initial_revision(&content),
             version: 1,
             vector_clock: VectorClock::new(),
             created_at: chrono::Utc::now(),

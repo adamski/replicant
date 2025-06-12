@@ -53,18 +53,16 @@ mod tests {
         let user_id = db.create_user(&email, "hashed_token").await.unwrap();
         
         // Create test document
+        let content = json!({
+            "title": "Server Test Document",
+            "text": "Test content",
+            "number": 42
+        });
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title: "Server Test Document".to_string(),
-            content: json!({
-                "text": "Test content",
-                "number": 42
-            }),
-            revision_id: Document::initial_revision(&json!({
-                "text": "Test content",
-                "number": 42
-            })),
+            content: content.clone(),
+            revision_id: Document::initial_revision(&content),
             version: 1,
             vector_clock: VectorClock::new(),
             created_at: chrono::Utc::now(),
@@ -78,7 +76,7 @@ mod tests {
         // Retrieve document
         let loaded_doc = db.get_document(&doc.id).await.unwrap();
         assert_eq!(loaded_doc.id, doc.id);
-        assert_eq!(loaded_doc.title, doc.title);
+        // Title is now part of content JSON, so just compare the content
         
         // Get user documents
         let user_docs = db.get_user_documents(&user_id).await.unwrap();

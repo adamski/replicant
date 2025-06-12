@@ -39,13 +39,13 @@ pub extern "C" fn sync_engine_emit_test_event(
     match event_type {
         0 => {
             let test_id = Uuid::new_v4();
-            let test_content = serde_json::json!({"test": "data", "created_at": chrono::Utc::now()});
-            engine.event_dispatcher.emit_document_created(&test_id, "Test Document (Created)", &test_content);
+            let test_content = serde_json::json!({"title": "Test Document (Created)", "test": "data", "created_at": chrono::Utc::now()});
+            engine.event_dispatcher.emit_document_created(&test_id, &test_content);
         },
         1 => {
             let test_id = Uuid::new_v4();
-            let test_content = serde_json::json!({"test": "updated", "updated_at": chrono::Utc::now()});
-            engine.event_dispatcher.emit_document_updated(&test_id, "Test Document (Updated)", &test_content);
+            let test_content = serde_json::json!({"title": "Test Document (Updated)", "test": "updated", "updated_at": chrono::Utc::now()});
+            engine.event_dispatcher.emit_document_updated(&test_id, &test_content);
         },
         2 => {
             let test_id = Uuid::new_v4();
@@ -88,11 +88,12 @@ pub extern "C" fn sync_engine_emit_test_event_burst(
     for i in 0..count {
         let test_id = Uuid::new_v4();
         let test_content = serde_json::json!({
+            "title": format!("Burst Test Document {}", i),
             "test": "burst_event",
             "sequence": i,
             "timestamp": chrono::Utc::now()
         });
-        engine.event_dispatcher.emit_document_created(&test_id, &format!("Burst Test Document {}", i), &test_content);
+        engine.event_dispatcher.emit_document_created(&test_id, &test_content);
     }
 
     CSyncResult::Success

@@ -34,13 +34,13 @@ impl Queries {
     // Document queries
     pub const CREATE_DOCUMENT: &'static str = r#"
         INSERT INTO documents (
-            id, user_id, title, content, revision_id, version,
+            id, user_id, content, revision_id, version,
             vector_clock, created_at, updated_at, deleted_at, checksum, size_bytes
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     "#;
     
     pub const GET_DOCUMENT: &'static str = r#"
-        SELECT id, user_id, title, content, revision_id, version,
+        SELECT id, user_id, content, revision_id, version,
                vector_clock, created_at, updated_at, deleted_at
         FROM documents
         WHERE id = $1
@@ -48,14 +48,14 @@ impl Queries {
     
     pub const UPDATE_DOCUMENT: &'static str = r#"
         UPDATE documents
-        SET title = $2, content = $3, revision_id = $4, version = $5,
-            vector_clock = $6, updated_at = $7, deleted_at = $8,
-            checksum = $9, size_bytes = $10
+        SET content = $2, revision_id = $3, version = $4,
+            vector_clock = $5, updated_at = $6, deleted_at = $7,
+            checksum = $8, size_bytes = $9
         WHERE id = $1
     "#;
     
     pub const GET_USER_DOCUMENTS: &'static str = r#"
-        SELECT id, user_id, title, content, revision_id, version,
+        SELECT id, user_id, content, revision_id, version,
                vector_clock, created_at, updated_at, deleted_at
         FROM documents
         WHERE user_id = $1 AND deleted_at IS NULL
@@ -63,7 +63,7 @@ impl Queries {
     "#;
     
     pub const GET_DOCUMENTS_BY_IDS: &'static str = r#"
-        SELECT id, user_id, title, content, revision_id, version,
+        SELECT id, user_id, content, revision_id, version,
                vector_clock, created_at, updated_at, deleted_at
         FROM documents
         WHERE id = ANY($1) AND user_id = $2
@@ -119,7 +119,6 @@ impl DbHelpers {
         Ok(Document {
             id: row.try_get("id")?,
             user_id: row.try_get("user_id")?,
-            title: row.try_get("title")?,
             content: row.try_get("content")?,
             revision_id: row.try_get("revision_id")?,
             version: row.try_get("version")?,
@@ -135,7 +134,6 @@ impl DbHelpers {
     pub fn document_to_params(doc: &Document) -> (
         Uuid,                    // id
         Uuid,                    // user_id
-        String,                  // title
         serde_json::Value,       // content
         String,                  // revision_id
         i64,                     // version
@@ -153,7 +151,6 @@ impl DbHelpers {
         (
             doc.id,
             doc.user_id,
-            doc.title.clone(),
             doc.content.clone(),
             doc.revision_id.clone(),
             doc.version,

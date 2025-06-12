@@ -582,6 +582,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Err(err) = res {
         println!("{err:?}");
     }
+    
+    println!("\n📁 Database file: {}", db_file);
+    println!("   Full path: {}", std::path::Path::new(&db_file).canonicalize().unwrap_or_default().display());
 
     Ok(())
 }
@@ -1474,6 +1477,34 @@ async fn handle_key_event(
                 // Edit task priority
                 state.lock().unwrap().start_edit(EditField::Priority);
             }
+            KeyCode::Char('c') => {
+                // Copy database path to clipboard
+                let (db_name, db_path) = {
+                    let app_state = state.lock().unwrap();
+                    let name = app_state.database_name.clone();
+                    let path = format!("databases/{}.sqlite3", name);
+                    (name, path)
+                };
+                
+                // Try to copy to clipboard based on OS
+                let copy_result = copy_to_clipboard(&db_path);
+                
+                // Add activity log entry
+                {
+                    let mut app_state = state.lock().unwrap();
+                    if copy_result {
+                        app_state.add_activity(
+                            format!("Database path copied: {}", db_path), 
+                            ActivityType::SyncCompleted
+                        );
+                    } else {
+                        app_state.add_activity(
+                            format!("Copy failed - path: {}", db_path), 
+                            ActivityType::Error
+                        );
+                    }
+                }
+            }
             KeyCode::Enter => {
                 // Enter edit mode for task title
                 state.lock().unwrap().start_edit(EditField::Title);
@@ -1490,7 +1521,7 @@ async fn load_tasks(
 ) -> Result<(), Box<dyn Error>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, title, content, sync_status, created_at, updated_at, version
+        SELECT id, content, sync_status, created_at, updated_at, version
         FROM documents 
         WHERE user_id = ?1 AND deleted_at IS NULL
         ORDER BY created_at DESC
@@ -1503,7 +1534,6 @@ async fn load_tasks(
     let mut tasks = Vec::new();
     for row in rows {
         let id = Uuid::parse_str(&row.try_get::<String, _>("id")?)?;
-        let title = row.try_get::<String, _>("title")?;
         let content_str = row.try_get::<String, _>("content")?;
         let sync_status = row.try_get::<Option<String>, _>("sync_status")?;
         let created_at = row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at")?;
@@ -1514,7 +1544,7 @@ async fn load_tasks(
         
         let task = Task {
             id,
-            title: content.get("title").and_then(|v| v.as_str()).unwrap_or(&title).to_string(),
+            title: content.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string(),
             description: content.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             status: content.get("status").and_then(|v| v.as_str()).unwrap_or("pending").to_string(),
             priority: content.get("priority").and_then(|v| v.as_str()).unwrap_or("medium").to_string(),
@@ -1633,13 +1663,12 @@ async fn create_sample_task(
     });
     
     if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
-        let _ = engine.create_document(title, content).await;
+        let _ = engine.create_document(content).await;
     } else {
         // Offline create
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title,
             revision_id: Document::initial_revision(&content),
             content,
             version: 1,
@@ -1776,4 +1805,94 @@ async fn setup_user(
     .execute(&db.pool)
     .await?;
     Ok(())
+}
+
+fn copy_to_clipboard(text: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::{Command, Stdio};
+        use std::io::Write;
+        
+        match Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    if stdin.write_all(text.as_bytes()).is_ok() {
+                        drop(stdin);
+                        return child.wait().map(|s| s.success()).unwrap_or(false);
+                    }
+                }
+                false
+            }
+            Err(_) => false,
+        }
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::{Command, Stdio};
+        use std::io::Write;
+        
+        // Try xclip first
+        if let Ok(mut child) = Command::new("xclip")
+            .arg("-selection")
+            .arg("clipboard")
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    drop(stdin);
+                    return child.wait().map(|s| s.success()).unwrap_or(false);
+                }
+            }
+        }
+        
+        // Try xsel as fallback
+        if let Ok(mut child) = Command::new("xsel")
+            .arg("--clipboard")
+            .arg("--input")
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    drop(stdin);
+                    return child.wait().map(|s| s.success()).unwrap_or(false);
+                }
+            }
+        }
+        
+        false
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::{Command, Stdio};
+        use std::io::Write;
+        
+        match Command::new("cmd")
+            .args(&["/C", "clip"])
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    if stdin.write_all(text.as_bytes()).is_ok() {
+                        drop(stdin);
+                        return child.wait().map(|s| s.success()).unwrap_or(false);
+                    }
+                }
+                false
+            }
+            Err(_) => false,
+        }
+    }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        false
+    }
 }

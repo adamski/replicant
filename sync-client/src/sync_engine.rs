@@ -1,5 +1,7 @@
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::collections::HashMap;
+use std::time::Instant;
+use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
 use sync_core::{
     models::{Document, DocumentPatch, VectorClock},
@@ -13,6 +15,20 @@ use crate::{
     events::EventDispatcher,
 };
 
+#[derive(Debug, Clone)]
+struct PendingUpload {
+    document_id: Uuid,
+    operation_type: UploadType,
+    sent_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+enum UploadType {
+    Create,
+    Update,
+    Delete,
+}
+
 pub struct SyncEngine {
     db: Arc<ClientDatabase>,
     ws_client: Arc<WebSocketClient>,
@@ -21,6 +37,9 @@ pub struct SyncEngine {
     node_id: String,
     message_rx: Option<mpsc::Receiver<ServerMessage>>,
     event_dispatcher: Arc<EventDispatcher>,
+    pending_uploads: Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
+    upload_complete_notifier: Arc<Notify>,
+    sync_protection_mode: Arc<AtomicBool>,
 }
 
 impl SyncEngine {
@@ -67,6 +86,9 @@ impl SyncEngine {
             node_id,
             message_rx: Some(rx),
             event_dispatcher,
+            pending_uploads: Arc::new(Mutex::new(HashMap::new())),
+            upload_complete_notifier: Arc::new(Notify::new()),
+            sync_protection_mode: Arc::new(AtomicBool::new(false)),
         };
         
         Ok(engine)
@@ -84,14 +106,25 @@ impl SyncEngine {
         let db = self.db.clone();
         let client_id = self.client_id;
         let event_dispatcher = self.event_dispatcher.clone();
+        let pending_uploads = self.pending_uploads.clone();
+        let upload_complete_notifier = self.upload_complete_notifier.clone();
+        let sync_protection_mode = self.sync_protection_mode.clone();
         
-        // Spawn message handler
+        // Spawn message handler with upload tracking
         tokio::spawn(async move {
             let mut rx = rx;
             tracing::info!("CLIENT {}: Message handler started", client_id);
             while let Some(msg) = rx.recv().await {
                 tracing::info!("CLIENT {}: Processing server message: {:?}", client_id, std::mem::discriminant(&msg));
-                if let Err(e) = Self::handle_server_message(msg, &db, client_id, &event_dispatcher).await {
+                if let Err(e) = Self::handle_server_message_with_tracking(
+                    msg, 
+                    &db, 
+                    client_id, 
+                    &event_dispatcher,
+                    &pending_uploads,
+                    &upload_complete_notifier,
+                    &sync_protection_mode
+                ).await {
                     tracing::error!("CLIENT {}: Error handling server message: {}", client_id, e);
                 } else {
                     tracing::info!("CLIENT {}: Successfully processed server message", client_id);
@@ -100,25 +133,60 @@ impl SyncEngine {
             tracing::warn!("CLIENT {}: Message handler terminated", client_id);
         });
         
-        // Upload-first strategy: Upload pending changes before downloading server state
+        // Upload-first strategy with protection
         self.event_dispatcher.emit_sync_started();
+        
+        // Enable protection mode during upload phase
+        self.sync_protection_mode.store(true, Ordering::Relaxed);
+        tracing::info!("CLIENT {}: Protection mode ENABLED - blocking server overwrites during upload", self.client_id);
         
         // First: Upload any pending documents that were created/modified offline
         tracing::info!("CLIENT {}: Starting upload-first sync - uploading pending changes", self.client_id);
         self.sync_pending_documents().await?;
         
-        // Second: Download current server state (which includes conflict resolution results)
-        tracing::info!("CLIENT {}: Upload complete, now downloading server state", self.client_id);
+        // Wait for upload confirmations with timeout
+        if !self.pending_uploads.lock().await.is_empty() {
+            let upload_count = self.pending_uploads.lock().await.len();
+            tracing::info!("CLIENT {}: Waiting for {} upload confirmations", self.client_id, upload_count);
+            
+            tokio::select! {
+                _ = self.upload_complete_notifier.notified() => {
+                    tracing::info!("CLIENT {}: All uploads confirmed successfully", self.client_id);
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
+                    let remaining = self.pending_uploads.lock().await.len();
+                    if remaining > 0 {
+                        tracing::warn!("CLIENT {}: Upload timeout - {} uploads still pending", self.client_id, remaining);
+                        
+                        // Enhanced fallback: Retry failed uploads before proceeding
+                        tracing::info!("CLIENT {}: Retrying failed uploads before sync", self.client_id);
+                        if let Err(e) = self.retry_failed_uploads().await {
+                            tracing::error!("CLIENT {}: Retry failed: {}", self.client_id, e);
+                        }
+                    } else {
+                        tracing::info!("CLIENT {}: Upload timeout but all uploads completed", self.client_id);
+                    }
+                }
+            }
+        } else {
+            tracing::info!("CLIENT {}: No pending uploads to wait for", self.client_id);
+        }
+        
+        // Disable protection mode - now safe to receive server sync
+        self.sync_protection_mode.store(false, Ordering::Relaxed);
+        tracing::info!("CLIENT {}: Protection mode DISABLED - server sync now allowed", self.client_id);
+        
+        // Second: Download current server state (which now includes our uploaded documents)
+        tracing::info!("CLIENT {}: Upload phase complete, requesting server state", self.client_id);
         self.sync_all().await?;
         
         Ok(())
     }
     
-    pub async fn create_document(&self, title: String, content: serde_json::Value) -> Result<Document, ClientError> {
+    pub async fn create_document(&self, content: serde_json::Value) -> Result<Document, ClientError> {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id: self.user_id,
-            title: title.clone(),
             revision_id: Document::initial_revision(&content),
             content,
             version: 1,
@@ -133,16 +201,16 @@ impl SyncEngine {
         };
         
         // Save locally first
-        tracing::info!("CLIENT: Creating document locally: {} ({})", doc.id, title);
+        tracing::info!("CLIENT: Creating document locally: {}", doc.id);
         self.db.save_document(&doc).await?;
         
         // Emit event
-        self.event_dispatcher.emit_document_created(&doc.id, &doc.title, &doc.content);
+        self.event_dispatcher.emit_document_created(&doc.id, &doc.content);
         
         // Send to server
-        tracing::info!("CLIENT: Sending CreateDocument to server: {} ({})", doc.id, title);
+        tracing::info!("CLIENT: Sending CreateDocument to server: {}", doc.id);
         self.ws_client.send(ClientMessage::CreateDocument { document: doc.clone() }).await?;
-        tracing::info!("CLIENT: Successfully sent CreateDocument to server: {} ({})", doc.id, title);
+        tracing::info!("CLIENT: Successfully sent CreateDocument to server: {}", doc.id);
         
         // Note: Document remains 'pending' until we receive DocumentCreatedResponse from server
         
@@ -170,7 +238,7 @@ impl SyncEngine {
         self.db.save_document(&doc).await?;
         
         // Emit event
-        self.event_dispatcher.emit_document_updated(&doc.id, &doc.title, &doc.content);
+        self.event_dispatcher.emit_document_updated(&doc.id, &doc.content);
         
         // Create patch message
         let patch_msg = DocumentPatch {
@@ -213,7 +281,7 @@ impl SyncEngine {
         let docs = self.db.get_all_documents().await?;
         tracing::info!("CLIENT: get_all_documents() returning {} documents", docs.len());
         for doc in &docs {
-            tracing::info!("CLIENT:   - Document: {} ({})", doc.id, doc.title);
+            tracing::info!("CLIENT:   - Document: {} (updated: {})", doc.id, doc.updated_at);
         }
         Ok(docs)
     }
@@ -231,24 +299,51 @@ impl SyncEngine {
         for pending_info in pending_docs {
             match self.db.get_document(&pending_info.id).await {
                 Ok(doc) => {
-                    if pending_info.is_deleted {
+                    let upload_type = if pending_info.is_deleted {
                         // Handle pending delete
-                        tracing::info!("CLIENT {}: Syncing pending delete for doc {}", self.client_id, pending_info.id);
+                        tracing::info!("CLIENT {}: Uploading pending delete for doc {}", self.client_id, pending_info.id);
+                        
+                        // Track this upload
+                        self.pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
+                            document_id: pending_info.id,
+                            operation_type: UploadType::Delete,
+                            sent_at: Instant::now(),
+                        });
+                        
                         self.ws_client.send(ClientMessage::DeleteDocument {
                             document_id: pending_info.id,
                             revision_id: doc.revision_id.clone(),
                         }).await?;
+                        
+                        UploadType::Delete
                     } else if pending_info.last_synced_revision.is_none() {
                         // No previous sync revision = new document created offline
-                        tracing::info!("CLIENT {}: Syncing new document {} created offline", self.client_id, pending_info.id);
+                        tracing::info!("CLIENT {}: Uploading new document {} created offline", self.client_id, pending_info.id);
+                        
+                        // Track this upload
+                        self.pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
+                            document_id: pending_info.id,
+                            operation_type: UploadType::Create,
+                            sent_at: Instant::now(),
+                        });
+                        
                         self.ws_client.send(ClientMessage::CreateDocument { 
                             document: doc.clone() 
                         }).await?;
+                        
+                        UploadType::Create
                     } else {
                         // Has previous sync revision = document was updated offline
-                        tracing::info!("CLIENT {}: Syncing document {} updated offline (previous rev: {})", 
+                        tracing::info!("CLIENT {}: Uploading document {} updated offline (previous rev: {})", 
                                      self.client_id, pending_info.id, 
                                      pending_info.last_synced_revision.as_ref().unwrap());
+                        
+                        // Track this upload
+                        self.pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
+                            document_id: pending_info.id,
+                            operation_type: UploadType::Update,
+                            sent_at: Instant::now(),
+                        });
                         
                         // Create a patch from the last synced revision to current state
                         // For now, we'll send the full document as CreateDocument 
@@ -257,7 +352,12 @@ impl SyncEngine {
                         self.ws_client.send(ClientMessage::CreateDocument { 
                             document: doc.clone() 
                         }).await?;
-                    }
+                        
+                        UploadType::Update
+                    };
+                    
+                    tracing::debug!("CLIENT {}: Tracked upload for document {} ({:?})", 
+                                  self.client_id, pending_info.id, upload_type);
                 }
                 Err(e) => {
                     tracing::error!("CLIENT {}: Failed to get pending document {}: {}", self.client_id, pending_info.id, e);
@@ -265,9 +365,96 @@ impl SyncEngine {
             }
         }
         
+        tracing::info!("CLIENT {}: Upload tracking: {} operations pending confirmation", 
+                      self.client_id, self.pending_uploads.lock().await.len());
         Ok(())
     }
     
+    // Enhanced message handler with upload tracking and protection
+    async fn handle_server_message_with_tracking(
+        msg: ServerMessage, 
+        db: &Arc<ClientDatabase>, 
+        client_id: Uuid, 
+        event_dispatcher: &Arc<EventDispatcher>,
+        pending_uploads: &Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
+        upload_complete_notifier: &Arc<Notify>,
+        sync_protection_mode: &Arc<AtomicBool>
+    ) -> Result<(), ClientError> {
+        match &msg {
+            // Handle upload confirmations first
+            ServerMessage::DocumentCreatedResponse { document_id, success, .. } |
+            ServerMessage::DocumentUpdatedResponse { document_id, success, .. } |
+            ServerMessage::DocumentDeletedResponse { document_id, success, .. } => {
+                if *success {
+                    // Remove from pending uploads
+                    let mut uploads = pending_uploads.lock().await;
+                    if let Some(upload) = uploads.remove(document_id) {
+                        let elapsed = upload.sent_at.elapsed();
+                        tracing::info!("CLIENT {}: Upload confirmed for {} ({:?}) in {:?}", 
+                                     client_id, document_id, upload.operation_type, elapsed);
+                        
+                        // If this was the last pending upload, notify
+                        if uploads.is_empty() {
+                            tracing::info!("CLIENT {}: All uploads confirmed - notifying completion", client_id);
+                            upload_complete_notifier.notify_one();
+                        }
+                    }
+                } else {
+                    tracing::error!("CLIENT {}: Upload failed for document {}", client_id, document_id);
+                }
+                
+                // Continue with normal processing
+                return Self::handle_server_message(msg, db, client_id, event_dispatcher).await;
+            }
+            
+            // Apply protection for sync messages during upload phase
+            ServerMessage::SyncDocument { document } => {
+                // Check if we're in protection mode
+                if sync_protection_mode.load(Ordering::Relaxed) {
+                    tracing::warn!("CLIENT {}: PROTECTED - Upload phase active, deferring sync for document {}", 
+                                  client_id, document.id);
+                    return Ok(()); // Defer this message
+                }
+                
+                // Check if document has pending changes
+                if let Ok(local_doc) = db.get_document(&document.id).await {
+                    // Check if this document has pending sync status
+                    // This is our primary protection mechanism
+                    if Self::has_pending_changes(db, &document.id).await? {
+                        tracing::warn!("CLIENT {}: PROTECTED - Document {} has pending changes, refusing server overwrite", 
+                                      client_id, document.id);
+                        
+                        event_dispatcher.emit_sync_error(&format!(
+                            "Document {} protected from overwrite (has pending changes)", document.id
+                        ));
+                        return Ok(());
+                    }
+                }
+                
+                // Safe to proceed with sync
+                return Self::handle_server_message(msg, db, client_id, event_dispatcher).await;
+            }
+            
+            _ => {
+                // For all other messages, use normal handling
+                return Self::handle_server_message(msg, db, client_id, event_dispatcher).await;
+            }
+        }
+    }
+
+    // Check if a document has pending local changes
+    async fn has_pending_changes(db: &Arc<ClientDatabase>, document_id: &Uuid) -> Result<bool, ClientError> {
+        // Query the sync_status to see if it's pending
+        match sqlx::query_scalar::<_, Option<String>>("SELECT sync_status FROM documents WHERE id = ?")
+            .bind(document_id.to_string())
+            .fetch_optional(&db.pool)
+            .await? 
+        {
+            Some(Some(status)) => Ok(status == "pending"),
+            _ => Ok(false),
+        }
+    }
+
     async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid, event_dispatcher: &Arc<EventDispatcher>) -> Result<(), ClientError> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
@@ -296,11 +483,11 @@ impl SyncEngine {
                 db.mark_synced(&doc.id, &doc.revision_id).await?;
                 
                 // Emit event for updated document
-                event_dispatcher.emit_document_updated(&doc.id, &doc.title, &doc.content);
+                event_dispatcher.emit_document_updated(&doc.id, &doc.content);
             }
             ServerMessage::DocumentCreated { document } => {
                 // New document from server - check if we already have it to avoid duplicates
-                tracing::info!("CLIENT: Received DocumentCreated from server: {} ({})", document.id, document.title);
+                tracing::info!("CLIENT: Received DocumentCreated from server: {}", document.id);
                 
                 // Check if we already have this document (e.g., if we were the creator)
                 match db.get_document(&document.id).await {
@@ -315,7 +502,7 @@ impl SyncEngine {
                             db.save_document_with_status(&document, Some("synced")).await?;
                             
                             // Emit event for updated document
-                            event_dispatcher.emit_document_updated(&document.id, &document.title, &document.content);
+                            event_dispatcher.emit_document_updated(&document.id, &document.content);
                         }
                     }
                     Err(_) => {
@@ -324,7 +511,7 @@ impl SyncEngine {
                         db.save_document_with_status(&document, Some("synced")).await?;
                         
                         // Emit event for new document from server
-                        event_dispatcher.emit_document_created(&document.id, &document.title, &document.content);
+                        event_dispatcher.emit_document_created(&document.id, &document.content);
                     }
                 }
             }
@@ -367,7 +554,7 @@ impl SyncEngine {
                                 db.save_document_with_status(&document, Some("synced")).await?;
                                 
                                 // Emit event for updated document
-                                event_dispatcher.emit_document_updated(&document.id, &document.title, &document.content);
+                                event_dispatcher.emit_document_updated(&document.id, &document.content);
                             } else {
                                 tracing::info!("CLIENT {}: Skipping older sync (local gen {} > sync gen {})", 
                                              client_id, local_gen, sync_gen);
@@ -377,7 +564,7 @@ impl SyncEngine {
                             db.save_document_with_status(&document, Some("synced")).await?;
                             
                             // Emit event for updated document
-                            event_dispatcher.emit_document_updated(&document.id, &document.title, &document.content);
+                            event_dispatcher.emit_document_updated(&document.id, &document.content);
                         }
                     }
                     Err(_) => {
@@ -386,7 +573,7 @@ impl SyncEngine {
                         db.save_document_with_status(&document, Some("synced")).await?;
                         
                         // Emit event for new document
-                        event_dispatcher.emit_document_created(&document.id, &document.title, &document.content);
+                        event_dispatcher.emit_document_created(&document.id, &document.content);
                     }
                 }
             }
@@ -433,6 +620,51 @@ impl SyncEngine {
             }
             
             _ => {}
+        }
+        
+        Ok(())
+    }
+    
+    // Retry failed uploads by re-checking pending documents
+    async fn retry_failed_uploads(&self) -> Result<(), ClientError> {
+        tracing::info!("CLIENT {}: Starting upload retry for failed operations", self.client_id);
+        
+        // Get current pending uploads (these are the ones that timed out)
+        let timed_out_uploads: Vec<Uuid> = {
+            let uploads = self.pending_uploads.lock().await;
+            uploads.keys().cloned().collect()
+        };
+        
+        if timed_out_uploads.is_empty() {
+            tracing::info!("CLIENT {}: No timed out uploads to retry", self.client_id);
+            return Ok(());
+        }
+        
+        tracing::info!("CLIENT {}: Retrying {} timed out uploads", self.client_id, timed_out_uploads.len());
+        
+        // Clear the pending uploads (we'll re-add them during retry)
+        self.pending_uploads.lock().await.clear();
+        
+        // Re-run sync_pending_documents to retry uploads
+        // This will re-query the database for documents with pending status
+        // and re-upload them with fresh tracking
+        self.sync_pending_documents().await?;
+        
+        // Quick wait for the retry confirmations (shorter timeout)
+        if !self.pending_uploads.lock().await.is_empty() {
+            let retry_count = self.pending_uploads.lock().await.len();
+            tracing::info!("CLIENT {}: Waiting for {} retry confirmations (short timeout)", self.client_id, retry_count);
+            
+            tokio::select! {
+                _ = self.upload_complete_notifier.notified() => {
+                    tracing::info!("CLIENT {}: All retry uploads confirmed", self.client_id);
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+                    let remaining = self.pending_uploads.lock().await.len();
+                    tracing::warn!("CLIENT {}: Retry timeout - {} uploads still failing", self.client_id, remaining);
+                    // Don't retry again - proceed with partial failure
+                }
+            }
         }
         
         Ok(())

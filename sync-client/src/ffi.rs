@@ -166,7 +166,17 @@ pub extern "C" fn sync_engine_create_document(
     let doc_id = if let Some(ref sync_engine) = engine.engine {
         // Online mode - use sync engine
         match engine.runtime.block_on(async {
-            sync_engine.create_document(title.to_string(), content).await
+            // Ensure title is in the content
+            let mut final_content = content.clone();
+            if let Some(obj) = final_content.as_object_mut() {
+                obj.insert("title".to_string(), serde_json::Value::String(title.to_string()));
+            } else {
+                final_content = serde_json::json!({
+                    "title": title.to_string(),
+                    "data": content
+                });
+            }
+            sync_engine.create_document(final_content).await
         }) {
             Ok(doc) => doc.id,
             Err(_) => return CSyncResult::ErrorConnection,
@@ -181,12 +191,22 @@ pub extern "C" fn sync_engine_create_document(
             Err(_) => return CSyncResult::ErrorDatabase,
         };
 
+        // Ensure title is in the content for offline mode too
+        let mut final_content = content.clone();
+        if let Some(obj) = final_content.as_object_mut() {
+            obj.insert("title".to_string(), serde_json::Value::String(title.to_string()));
+        } else {
+            final_content = serde_json::json!({
+                "title": title.to_string(),
+                "data": content
+            });
+        }
+        
         let doc = sync_core::models::Document {
             id: doc_id,
             user_id,
-            title: title.to_string(),
-            revision_id: sync_core::models::Document::initial_revision(&content),
-            content: content.clone(),
+            revision_id: sync_core::models::Document::initial_revision(&final_content),
+            content: final_content.clone(),
             version: 1,
             vector_clock: sync_core::models::VectorClock::new(),
             created_at: chrono::Utc::now(),
@@ -201,7 +221,7 @@ pub extern "C" fn sync_engine_create_document(
         }
 
         // Emit event for offline document creation
-        engine.event_dispatcher.emit_document_created(&doc_id, title, &content);
+        engine.event_dispatcher.emit_document_created(&doc_id, &final_content);
 
         doc_id
     };
@@ -288,7 +308,7 @@ pub extern "C" fn sync_engine_update_document(
         }) {
             Ok(_) => {
                 // Emit event for offline document update
-                engine.event_dispatcher.emit_document_updated(&doc_uuid, &updated_doc.title, &updated_doc.content);
+                engine.event_dispatcher.emit_document_updated(&doc_uuid, &updated_doc.content);
                 CSyncResult::Success
             },
             Err(_) => CSyncResult::ErrorDatabase,

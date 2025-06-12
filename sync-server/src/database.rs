@@ -76,16 +76,15 @@ impl ServerDatabase {
             .persistent(false)  // Also disable caching
             .bind(params.0)  // id
             .bind(params.1)  // user_id
-            .bind(params.2)  // title
-            .bind(params.3)  // content_json
-            .bind(params.4)  // revision_id
-            .bind(params.5)  // version
-            .bind(params.6)  // vector_clock_json
-            .bind(params.7)  // created_at
-            .bind(params.8)  // updated_at
-            .bind(params.9)  // deleted_at
-            .bind(params.10) // checksum
-            .bind(params.11) // size_bytes
+            .bind(params.2)  // content_json
+            .bind(params.3)  // revision_id
+            .bind(params.4)  // version
+            .bind(params.5)  // vector_clock_json
+            .bind(params.6)  // created_at
+            .bind(params.7)  // updated_at
+            .bind(params.8)  // deleted_at
+            .bind(params.9)  // checksum
+            .bind(params.10) // size_bytes
             .execute(&mut *tx)
             .await?;
         
@@ -119,15 +118,14 @@ impl ServerDatabase {
         // Update the document
         sqlx::query(Queries::UPDATE_DOCUMENT)
             .bind(params.0)  // id
-            .bind(params.2)  // title
-            .bind(params.3)  // content_json
-            .bind(params.4)  // revision_id
-            .bind(params.5)  // version
-            .bind(params.6)  // vector_clock_json
-            .bind(params.8)  // updated_at
-            .bind(params.9)  // deleted_at
-            .bind(params.10) // checksum
-            .bind(params.11) // size_bytes
+            .bind(params.2)  // content_json
+            .bind(params.3)  // revision_id
+            .bind(params.4)  // version
+            .bind(params.5)  // vector_clock_json
+            .bind(params.7)  // updated_at
+            .bind(params.8)  // deleted_at
+            .bind(params.9)  // checksum
+            .bind(params.10) // size_bytes
             .execute(&mut *tx)
             .await?;
         

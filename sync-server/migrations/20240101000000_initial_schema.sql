@@ -14,7 +14,6 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL,
-    title TEXT NOT NULL,
     content JSONB NOT NULL,                       -- JSONB for better performance
     revision_id TEXT NOT NULL,
     version BIGINT NOT NULL DEFAULT 1,

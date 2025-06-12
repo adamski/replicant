@@ -105,15 +105,14 @@ impl ClientDatabase {
         sqlx::query(Queries::UPSERT_DOCUMENT)
             .bind(params.0)  // id
             .bind(params.1)  // user_id
-            .bind(params.2)  // title
-            .bind(params.3)  // content
-            .bind(params.4)  // revision_id
-            .bind(params.5)  // version
-            .bind(params.6)  // vector_clock
-            .bind(params.7)  // created_at
-            .bind(params.8)  // updated_at
-            .bind(params.9)  // deleted_at
-            .bind(params.10) // sync_status
+            .bind(params.2)  // content
+            .bind(params.3)  // revision_id
+            .bind(params.4)  // version
+            .bind(params.5)  // vector_clock
+            .bind(params.6)  // created_at
+            .bind(params.7)  // updated_at
+            .bind(params.8)  // deleted_at
+            .bind(params.9)  // sync_status
             .execute(&self.pool)
             .await?;
         

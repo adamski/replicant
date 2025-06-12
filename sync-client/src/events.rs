@@ -296,11 +296,15 @@ impl EventDispatcher {
         Ok(())
     }
 
-    pub fn emit_document_created(&self, document_id: &Uuid, title: &str, content: &serde_json::Value) {
+    pub fn emit_document_created(&self, document_id: &Uuid, content: &serde_json::Value) {
+        // Extract title from content if present
+        let title = content.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
         self.queue_event(EventType::DocumentCreated, Some(document_id), Some(title), Some(content), None, 0, false);
     }
 
-    pub fn emit_document_updated(&self, document_id: &Uuid, title: &str, content: &serde_json::Value) {
+    pub fn emit_document_updated(&self, document_id: &Uuid, content: &serde_json::Value) {
+        // Extract title from content if present
+        let title = content.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
         self.queue_event(EventType::DocumentUpdated, Some(document_id), Some(title), Some(content), None, 0, false);
     }
 
@@ -522,7 +526,7 @@ mod tests {
         
         // Emit an event
         let doc_id = Uuid::new_v4();
-        dispatcher.emit_document_created(&doc_id, "Test", &serde_json::json!({"test": true}));
+        dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test", "test": true}));
         
         // Process events (should invoke callback)
         let processed = dispatcher.process_events().unwrap();
@@ -561,13 +565,13 @@ mod tests {
         let doc_id = Uuid::new_v4();
         
         // Emit created event
-        dispatcher.emit_document_created(&doc_id, "Test", &serde_json::json!({}));
+        dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test"}));
         dispatcher.process_events().unwrap();
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
         assert_eq!(updated_count.load(Ordering::SeqCst), 0);
         
         // Emit updated event
-        dispatcher.emit_document_updated(&doc_id, "Test", &serde_json::json!({}));
+        dispatcher.emit_document_updated(&doc_id, &serde_json::json!({"title": "Test"}));
         dispatcher.process_events().unwrap();
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
         assert_eq!(updated_count.load(Ordering::SeqCst), 1);
@@ -633,8 +637,8 @@ mod tests {
         
         // Emit multiple events
         let doc_id = Uuid::new_v4();
-        dispatcher.emit_document_created(&doc_id, "Test1", &serde_json::json!({}));
-        dispatcher.emit_document_updated(&doc_id, "Test2", &serde_json::json!({}));
+        dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test1"}));
+        dispatcher.emit_document_updated(&doc_id, &serde_json::json!({"title": "Test2"}));
         dispatcher.emit_document_deleted(&doc_id);
         dispatcher.emit_sync_started();
         dispatcher.emit_sync_completed(5);

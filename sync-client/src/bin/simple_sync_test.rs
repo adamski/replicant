@@ -99,20 +99,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting simple_sync_test: action={}, database={}, user={}", 
           action, database_path, user_email);
     
-    // Create and start sync engine
+    // Create sync engine (auto-starts with built-in reconnection)
     debug!("Creating sync engine for database: {}", database_path);
-    let mut engine = SyncEngine::new(
+    let engine = SyncEngine::new(
         &database_path,
         "ws://localhost:8080/ws",
         "test-token",
         &user_email
     ).await?;
-    
-    // Only start the engine for sync operations (not for offline CRUD)
-    if matches!(action.as_str(), "sync") {
-        debug!("Starting sync engine for action: {}", action);
-        engine.start().await?;
-    }
     
     match action.as_str() {
         "create" => {

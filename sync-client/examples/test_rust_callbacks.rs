@@ -47,8 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     // Try to connect to server (will fail, but we want to test offline callbacks)
-    let sync_engine = match SyncEngine::new(&db_url, "ws://nonexistent:8080/ws", "test-token").await {
-        Ok(mut engine) => {
+    let sync_engine = match SyncEngine::new(&db_url, "ws://nonexistent:8080/ws", "test-token", "test-user@example.com").await {
+        Ok(engine) => {
             // Register event callbacks
             let events = engine.event_dispatcher();
             let state_clone = state.clone();
@@ -94,7 +94,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None,
             )?;
 
-            engine.start().await?;
             Some(Arc::new(engine))
         }
         Err(e) => {

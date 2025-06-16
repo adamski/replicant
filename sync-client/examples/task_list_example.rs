@@ -467,108 +467,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app_state.sync_status.connection_state = "Starting...".to_string();
     }
 
-    // Start connection attempt in background
-    let state_clone = state.clone();
-    let server_url = cli.server.clone();
-    let token = cli.token.clone();
-    let db_url_clone = db_url.clone();
-    let user_email_clone = cli.user.clone().unwrap_or_else(|| "anonymous".to_string());
+    // Create sync engine - automatic reconnection is now built-in
+    let user_email = cli.user.clone().unwrap_or_else(|| "anonymous".to_string());
     
-    let sync_engine = Arc::new(Mutex::new(None::<Arc<SyncEngine>>));
-    let sync_engine_clone = sync_engine.clone();
-    
-    // Spawn background task for connection with periodic retry
-    tokio::spawn(async move {
-        // Show connection attempt
-        {
-            let mut app_state = state_clone.lock().unwrap();
-            app_state.add_activity(format!("Connecting to {}", server_url), ActivityType::SyncStarted);
-            app_state.sync_status.connection_state = "Connecting...".to_string();
-        }
-        
-        let mut retry_interval = Duration::from_secs(5); // Start with 5 seconds
-        let max_retry_interval = Duration::from_secs(30); // Cap at 30 seconds
-        
-        loop {
-            // Try to connect to server
-            match SyncEngine::new(&db_url_clone, &server_url, &token, &user_email_clone).await {
-                Ok(mut engine) => {
-                    // Don't register callbacks here - they will be registered in the main thread
-
-                    // Try to start the sync engine
-                    match engine.start().await {
-                        Ok(_) => {
-                            {
-                                let mut app_state = state_clone.lock().unwrap();
-                                app_state.sync_status.connected = true;
-                                app_state.sync_status.connection_state = "Connected".to_string();
-                                app_state.add_activity("Successfully connected to server".to_string(), ActivityType::Connected);
-                            }
-                            
-                            // Store the engine for use
-                            *sync_engine_clone.lock().unwrap() = Some(Arc::new(engine));
-                            
-                            // Give initial sync time to complete
-                            sleep(Duration::from_millis(500)).await;
-                            
-                            // Trigger a refresh to show synced documents
-                            {
-                                let mut app_state = state_clone.lock().unwrap();
-                                app_state.needs_refresh = true;
-                            }
-                            
-                            // Reset retry interval on successful connection
-                            retry_interval = Duration::from_secs(5);
-                            
-                            // Connection successful, break out of retry loop
-                            break;
-                        }
-                        Err(e) => {
-                            let mut app_state = state_clone.lock().unwrap();
-                            app_state.sync_status.connected = false;
-                            app_state.sync_status.connection_state = "Offline (connection failed)".to_string();
-                            app_state.add_activity(format!("Connection failed: {}", e), ActivityType::Error);
-                            
-                            // Still store the engine for offline use
-                            *sync_engine_clone.lock().unwrap() = Some(Arc::new(engine));
-                            
-                            // Don't retry immediately on start failure - this typically means protocol issues
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    let now = Instant::now();
-                    {
-                        let mut app_state = state_clone.lock().unwrap();
-                        app_state.sync_status.connected = false;
-                        app_state.sync_status.connection_state = format!("Offline (retry in {}s)", retry_interval.as_secs());
-                        app_state.sync_status.last_attempt = Some(now);
-                        app_state.sync_status.next_retry = Some(now + retry_interval);
-                        app_state.add_activity(format!("Connection attempt failed: {}", e), ActivityType::Error);
-                    }
-                    
-                    // Wait before retrying
-                    sleep(retry_interval).await;
-                    
-                    // Exponential backoff with cap
-                    retry_interval = std::cmp::min(retry_interval * 2, max_retry_interval);
-                    
-                    // Show retry attempt
-                    {
-                        let mut app_state = state_clone.lock().unwrap();
-                        app_state.add_activity(format!("Retrying connection to {}", server_url), ActivityType::SyncStarted);
-                        app_state.sync_status.connection_state = "Connecting...".to_string();
-                    }
-                    
-                    // Continue the loop to retry
-                    continue;
-                }
+    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.token, &user_email).await {
+        Ok(engine) => {
+            {
+                let mut app_state = state.lock().unwrap();
+                app_state.add_activity("Sync engine initialized".to_string(), ActivityType::SyncStarted);
+                app_state.sync_status.connection_state = "Auto-connecting...".to_string();
             }
+            Arc::new(Mutex::new(Some(Arc::new(engine))))
         }
-    });
+        Err(e) => {
+            {
+                let mut app_state = state.lock().unwrap();
+                app_state.add_activity(format!("Engine initialization failed: {}", e), ActivityType::Error);
+                app_state.sync_status.connection_state = "Initialization failed".to_string();
+            }
+            Arc::new(Mutex::new(None))
+        }
+    };
 
-    // Run app (UI will start immediately while connection happens in background)
+    // Run app
     let res = run_app(&mut terminal, state.clone(), db.clone(), sync_engine, user_id).await;
 
     // Restore terminal

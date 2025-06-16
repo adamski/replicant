@@ -74,21 +74,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🌐 Server: {}", cli.server.blue());
     println!();
 
-    // Try to connect to server
-    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.token).await {
-        Ok(mut engine) => {
-            println!("✅ Connected to sync server!");
-            
-            // Start the sync engine
-            if let Err(e) = engine.start().await {
-                println!("⚠️  Failed to start sync engine: {}", e.to_string().yellow());
-                None
-            } else {
-                Some(engine)
-            }
+    // Create sync engine (auto-starts with built-in reconnection)
+    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.token, &user_id.to_string()).await {
+        Ok(engine) => {
+            println!("✅ Sync engine initialized (auto-connecting)!");
+            Some(engine)
         }
         Err(e) => {
-            println!("⚠️  Offline mode: {}", e.to_string().yellow());
+            println!("⚠️  Failed to initialize sync engine: {}", e.to_string().yellow());
             None
         }
     };

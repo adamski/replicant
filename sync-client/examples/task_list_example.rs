@@ -18,17 +18,26 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use std::{
     error::Error,
-    io,
+    io::{self, Write},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::time::sleep;
 use sync_client::{ClientDatabase, SyncEngine};
 use sync_core::models::Document;
 use uuid::Uuid;
 
 // Application identifier for namespace generation
 const APP_ID: &str = "com.example.sync-task-list";
+
+fn debug_log(msg: &str) {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/task_list_debug.log")
+        .unwrap();
+    let timestamp = chrono::Utc::now().format("%H:%M:%S%.3f");
+    writeln!(file, "[{}] {}", timestamp, msg).unwrap();
+}
 
 #[derive(Parser)]
 #[command(name = "task-list")]
@@ -384,6 +393,10 @@ type SharedState = Arc<Mutex<AppState>>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Clear the debug log file and start logging
+    std::fs::write("/tmp/task_list_debug.log", "").unwrap();
+    debug_log("=== Task List Example Starting ===");
+    
     // Initialize logging with minimal output to avoid interfering with TUI
     // Use RUST_LOG=off to completely disable logging for clean TUI
     let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "off".to_string());
@@ -395,6 +408,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let cli = Cli::parse();
+    debug_log(&format!("CLI args - database: {}, auto: {}, user: {:?}", cli.database, cli.auto, cli.user));
 
     // Setup database
     std::fs::create_dir_all("databases")?;
@@ -443,14 +457,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = Arc::new(Mutex::new(AppState::new(db_name.clone())));
 
     // Load initial tasks
-    load_tasks(&db, user_id, state.clone()).await?;
+    {
+        let mut app_state = state.lock().unwrap();
+        app_state.add_activity(format!("Loading tasks for user: {}", user_id), ActivityType::SyncStarted);
+    }
+    
+    match load_tasks(&db, user_id, state.clone()).await {
+        Ok(_) => {
+            let task_count = state.lock().unwrap().tasks.len();
+            let mut app_state = state.lock().unwrap();
+            app_state.add_activity(format!("Loaded {} tasks", task_count), ActivityType::SyncCompleted);
+        }
+        Err(e) => {
+            let mut app_state = state.lock().unwrap();
+            app_state.add_activity(format!("Failed to load initial tasks: {}", e), ActivityType::Error);
+            // Don't propagate the error - let the UI start anyway
+        }
+    }
 
     // Setup terminal first - we want to show the UI immediately
+    debug_log("Enabling raw mode...");
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    debug_log("Setting up terminal...");
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    debug_log(&format!("Terminal initialized, size: {:?}", terminal.size()?));
 
     // Initialize UI with startup message
     {
@@ -490,7 +523,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Run app
+    debug_log("Starting run_app...");
     let res = run_app(&mut terminal, state.clone(), db.clone(), sync_engine, user_id).await;
+    debug_log(&format!("run_app finished with result: {:?}", res.is_ok()));
 
     // Restore terminal
     disable_raw_mode()?;
@@ -518,12 +553,18 @@ async fn run_app<B: Backend>(
     sync_engine: Arc<Mutex<Option<Arc<SyncEngine>>>>,
     user_id: Uuid,
 ) -> io::Result<()> {
+    debug_log(&format!("run_app started for user: {}", user_id));
+    
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(250);
     
     // Flag to track if callbacks are registered
     let mut callbacks_registered = false;
     
+    // Track the last known connection state
+    let mut last_connection_state: Option<bool> = None;
+    
+    debug_log("Starting main loop...");
     loop {
         // Register callbacks on main thread if we have an engine but haven't registered yet
         if !callbacks_registered {
@@ -628,6 +669,36 @@ async fn run_app<B: Backend>(
                 Err(e) => eprintln!("Error processing events: {:?}", e),
                 _ => {}
             }
+            
+            // Check connection state and emit event if it changed
+            let current_connected = engine.is_connected();
+            match last_connection_state {
+                Some(last_connected) if last_connected != current_connected => {
+                    // Connection state changed
+                    let mut app_state = state.lock().unwrap();
+                    if current_connected {
+                        app_state.add_activity("Connected to server".to_string(), ActivityType::Connected);
+                        app_state.sync_status.connected = true;
+                        app_state.sync_status.connection_state = "Connected".to_string();
+                    } else {
+                        app_state.add_activity("Disconnected from server".to_string(), ActivityType::Disconnected);
+                        app_state.sync_status.connected = false;
+                        app_state.sync_status.connection_state = "Disconnected".to_string();
+                    }
+                }
+                None => {
+                    // First time checking - set initial state
+                    let mut app_state = state.lock().unwrap();
+                    app_state.sync_status.connected = current_connected;
+                    app_state.sync_status.connection_state = if current_connected { 
+                        "Connected".to_string() 
+                    } else { 
+                        "Disconnected".to_string() 
+                    };
+                }
+                _ => {} // No change
+            }
+            last_connection_state = Some(current_connected);
         }
 
         // Check if we should refresh tasks
@@ -643,14 +714,20 @@ async fn run_app<B: Backend>(
             };
             
             if should_refresh {
-                let _ = load_tasks(&db, user_id, state.clone()).await;
-                update_sync_status(&db, state.clone()).await;
-                
-                // Mark refresh time for visual feedback
-                {
+                // Load tasks with error handling
+                if let Err(e) = load_tasks(&db, user_id, state.clone()).await {
+                    let mut app_state = state.lock().unwrap();
+                    app_state.add_activity(
+                        format!("Failed to load tasks: {}", e),
+                        ActivityType::Error,
+                    );
+                } else {
+                    // Mark refresh time for visual feedback only on success
                     let mut app_state = state.lock().unwrap();
                     app_state.last_refresh = Some(Instant::now());
                 }
+                
+                update_sync_status(&db, state.clone()).await;
             }
         }
 
@@ -681,6 +758,8 @@ async fn run_app<B: Backend>(
 
 fn ui(f: &mut Frame, state: &SharedState) {
     let app_state = state.lock().unwrap();
+    
+    debug_log(&format!("Drawing UI - {} tasks loaded", app_state.tasks.len()));
     
     // Main layout - title bar and content
     let main_chunks = Layout::default()
@@ -1401,7 +1480,7 @@ async fn handle_key_event(
             }
             KeyCode::Char('c') => {
                 // Copy database path to clipboard
-                let (db_name, db_path) = {
+                let (_db_name, db_path) = {
                     let app_state = state.lock().unwrap();
                     let name = app_state.database_name.clone();
                     let path = format!("databases/{}.sqlite3", name);
@@ -1441,6 +1520,9 @@ async fn load_tasks(
     user_id: Uuid,
     state: SharedState,
 ) -> Result<(), Box<dyn Error>> {
+    // Log the query we're about to execute
+    debug_log(&format!("Loading tasks for user_id: {}", user_id));
+    
     let rows = sqlx::query(
         r#"
         SELECT id, content, sync_status, created_at, updated_at, version
@@ -1452,6 +1534,8 @@ async fn load_tasks(
     .bind(user_id.to_string())
     .fetch_all(&db.pool)
     .await?;
+    
+    debug_log(&format!("Found {} documents", rows.len()));
 
     let mut tasks = Vec::new();
     for row in rows {
@@ -1564,7 +1648,13 @@ async fn toggle_task_completion(
     
     // Also reload tasks immediately for responsive UI
     if let Ok(user_id) = db.get_user_id().await {
-        let _ = load_tasks(db, user_id, state).await;
+        if let Err(e) = load_tasks(db, user_id, state.clone()).await {
+            let mut app_state = state.lock().unwrap();
+            app_state.add_activity(
+                format!("Failed to reload tasks: {}", e),
+                ActivityType::Error,
+            );
+        }
     }
 }
 
@@ -1706,7 +1796,13 @@ async fn save_task_edit(
     
     // Also reload tasks immediately for responsive UI
     if let Ok(user_id) = db.get_user_id().await {
-        let _ = load_tasks(db, user_id, state).await;
+        if let Err(e) = load_tasks(db, user_id, state.clone()).await {
+            let mut app_state = state.lock().unwrap();
+            app_state.add_activity(
+                format!("Failed to reload tasks: {}", e),
+                ActivityType::Error,
+            );
+        }
     }
 }
 

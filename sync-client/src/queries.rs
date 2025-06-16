@@ -1,7 +1,7 @@
 use sqlx::{SqlitePool, Row, sqlite::SqliteRow};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use sync_core::models::Document;
+use sync_core::models::{Document, SyncStatus};
 use crate::errors::ClientError;
 
 /// SQL queries for client database operations
@@ -94,15 +94,15 @@ impl Queries {
     
     pub const GET_PENDING_DOCUMENTS: &'static str = r#"
         SELECT id, last_synced_revision, deleted_at FROM documents
-        WHERE sync_status = 'pending'
+        WHERE sync_status = ?
         ORDER BY updated_at ASC
     "#;
     
     pub const MARK_DOCUMENT_SYNCED: &'static str = r#"
         UPDATE documents
-        SET sync_status = 'synced',
-            last_synced_revision = ?2
-        WHERE id = ?1
+        SET sync_status = ?,
+            last_synced_revision = ?
+        WHERE id = ?
     "#;
     
     pub const UPDATE_SYNC_STATUS: &'static str = 
@@ -171,10 +171,10 @@ impl DbHelpers {
     }
     
     /// Prepare document values for database insertion
-    pub fn document_to_params(doc: &Document, sync_status: Option<&str>) -> Result<(
+    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> Result<(
         String, String, String, String, i64, String, String, String, Option<String>, String
     ), ClientError> {
-        let status = sync_status.unwrap_or("pending").to_string();
+        let status = sync_status.unwrap_or(SyncStatus::Pending).to_string();
         Ok((
             doc.id.to_string(),
             doc.user_id.to_string(),
@@ -192,10 +192,10 @@ impl DbHelpers {
     /// Get count of documents by sync status
     pub async fn count_by_status(
         pool: &SqlitePool,
-        status: &str,
+        status: SyncStatus,
     ) -> Result<i64, ClientError> {
         let row = sqlx::query(Queries::COUNT_BY_SYNC_STATUS)
-            .bind(status)
+            .bind(status.to_string())
             .fetch_one(pool)
             .await?;
         

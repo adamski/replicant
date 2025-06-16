@@ -4,7 +4,7 @@ use std::time::Instant;
 use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
 use sync_core::{
-    models::{Document, VectorClock},
+    models::{Document, VectorClock, SyncStatus},
     protocol::{ClientMessage, ServerMessage},
     patches::{create_patch, apply_patch},
 };
@@ -203,9 +203,9 @@ impl SyncEngine {
             deleted_at: None,
         };
         
-        // Save locally first
+        // Save locally first with explicit "pending" status
         tracing::info!("CLIENT {}: Creating document locally: {}", self.client_id, doc.id);
-        self.db.save_document(&doc).await?;
+        self.db.save_document_with_status(&doc, Some(SyncStatus::Pending)).await?;
         
         // Emit event
         self.event_dispatcher.emit_document_created(&doc.id, &doc.content);
@@ -243,8 +243,8 @@ impl SyncEngine {
         tracing::info!("CLIENT {}: 💾 SAVING LOCALLY: revision={}, marking as pending", 
                      self.client_id, doc.revision_id);
         
-        // Save locally - document should be marked as "pending" by default
-        self.db.save_document(&doc).await?;
+        // Save locally with explicit "pending" status for sync
+        self.db.save_document_with_status(&doc, Some(SyncStatus::Pending)).await?;
         
         // Verify it was saved correctly
         let saved_doc = self.db.get_document(&id).await?;
@@ -506,7 +506,7 @@ impl SyncEngine {
                         } else {
                             // Different revision - update it
                             tracing::info!("CLIENT: Document {} exists locally but has different revision, updating", document.id);
-                            db.save_document_with_status(&document, Some("synced")).await?;
+                            db.save_document_with_status(&document, Some(SyncStatus::Synced)).await?;
                             
                             // Emit event for updated document
                             event_dispatcher.emit_document_updated(&document.id, &document.content);
@@ -515,7 +515,7 @@ impl SyncEngine {
                     Err(_) => {
                         // Document doesn't exist locally - save it
                         tracing::info!("CLIENT: Document {} is new, saving to local database", document.id);
-                        db.save_document_with_status(&document, Some("synced")).await?;
+                        db.save_document_with_status(&document, Some(SyncStatus::Synced)).await?;
                         
                         // Emit event for new document from server
                         event_dispatcher.emit_document_created(&document.id, &document.content);
@@ -570,7 +570,7 @@ impl SyncEngine {
                                 
                                 tracing::info!("CLIENT {}: 🔄 Updating to newer version (gen {} -> {})", 
                                              client_id, local_gen, sync_gen);
-                                db.save_document_with_status(&document, Some("synced")).await?;
+                                db.save_document_with_status(&document, Some(SyncStatus::Synced)).await?;
                                 
                                 // Emit event for updated document
                                 event_dispatcher.emit_document_updated(&document.id, &document.content);
@@ -580,7 +580,7 @@ impl SyncEngine {
                             }
                         } else {
                             // Can't compare, accept the sync
-                            db.save_document_with_status(&document, Some("synced")).await?;
+                            db.save_document_with_status(&document, Some(SyncStatus::Synced)).await?;
                             
                             // Emit event for updated document
                             event_dispatcher.emit_document_updated(&document.id, &document.content);
@@ -589,7 +589,7 @@ impl SyncEngine {
                     Err(_) => {
                         // Document doesn't exist locally - save it
                         tracing::info!("CLIENT {}: Document {} is new, saving", client_id, document.id);
-                        db.save_document_with_status(&document, Some("synced")).await?;
+                        db.save_document_with_status(&document, Some(SyncStatus::Synced)).await?;
                         
                         // Emit event for new document
                         event_dispatcher.emit_document_created(&document.id, &document.content);

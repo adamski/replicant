@@ -303,3 +303,26 @@ pub enum SyncStatus {
     Pending,
     Conflict,
 }
+
+impl std::fmt::Display for SyncStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncStatus::Synced => write!(f, "synced"),
+            SyncStatus::Pending => write!(f, "pending"),
+            SyncStatus::Conflict => write!(f, "conflict"),
+        }
+    }
+}
+
+impl std::str::FromStr for SyncStatus {
+    type Err = String;
+    
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "synced" => Ok(SyncStatus::Synced),
+            "pending" => Ok(SyncStatus::Pending),
+            "conflict" => Ok(SyncStatus::Conflict),
+            _ => Err(format!("Invalid sync status: {}", s)),
+        }
+    }
+}

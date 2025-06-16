@@ -1,6 +1,6 @@
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row};
 use uuid::Uuid;
-use sync_core::models::Document;
+use sync_core::models::{Document, SyncStatus};
 use crate::errors::ClientError;
 use crate::queries::{Queries, DbHelpers};
 use json_patch;
@@ -136,7 +136,7 @@ impl ClientDatabase {
         self.save_document_with_status(doc, None).await
     }
     
-    pub(crate) async fn save_document_with_status(&self, doc: &Document, sync_status: Option<&str>) -> Result<(), ClientError> {
+    pub(crate) async fn save_document_with_status(&self, doc: &Document, sync_status: Option<SyncStatus>) -> Result<(), ClientError> {
         let params = DbHelpers::document_to_params(doc, sync_status)?;
         
         sqlx::query(Queries::UPSERT_DOCUMENT)
@@ -158,6 +158,7 @@ impl ClientDatabase {
     
     pub async fn get_pending_documents(&self) -> Result<Vec<PendingDocumentInfo>, ClientError> {
         let rows = sqlx::query(Queries::GET_PENDING_DOCUMENTS)
+            .bind(SyncStatus::Pending.to_string())
             .fetch_all(&self.pool)
             .await?;
         
@@ -178,8 +179,9 @@ impl ClientDatabase {
     
     pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &str) -> Result<(), ClientError> {
         sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
-            .bind(document_id.to_string())
+            .bind(SyncStatus::Synced.to_string())
             .bind(revision_id)
+            .bind(document_id.to_string())
             .execute(&self.pool)
             .await?;
         
@@ -187,7 +189,8 @@ impl ClientDatabase {
     }
     
     pub async fn delete_document(&self, document_id: &Uuid) -> Result<(), ClientError> {
-        sqlx::query("UPDATE documents SET deleted_at = datetime('now'), sync_status = 'pending' WHERE id = ?")
+        sqlx::query("UPDATE documents SET deleted_at = datetime('now'), sync_status = ? WHERE id = ?")
+            .bind(SyncStatus::Pending.to_string())
             .bind(document_id.to_string())
             .execute(&self.pool)
             .await?;

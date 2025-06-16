@@ -31,7 +31,7 @@ enum UploadType {
 
 pub struct SyncEngine {
     db: Arc<ClientDatabase>,
-    ws_client: Arc<WebSocketClient>,
+    ws_client: Arc<Mutex<Option<WebSocketClient>>>,
     user_id: Uuid,
     client_id: Uuid,
     node_id: String,
@@ -41,6 +41,8 @@ pub struct SyncEngine {
     upload_complete_notifier: Arc<Notify>,
     sync_protection_mode: Arc<AtomicBool>,
     is_connected: Arc<AtomicBool>,
+    server_url: String,
+    auth_token: String,
 }
 
 impl SyncEngine {
@@ -62,27 +64,35 @@ impl SyncEngine {
         // Create the event dispatcher first
         let event_dispatcher = Arc::new(EventDispatcher::new());
         
-        let (ws_client, ws_receiver) = WebSocketClient::connect(
+        // Create a channel for messages
+        let (tx, rx) = mpsc::channel(100);
+        
+        // Try to connect to WebSocket, but don't fail if offline
+        let (ws_client, is_connected) = match WebSocketClient::connect(
             server_url, 
             user_id, 
             client_id, 
             auth_token,
             Some(event_dispatcher.clone())
-        ).await?;
-        
-        // Create a channel for messages
-        let (tx, rx) = mpsc::channel(100);
-        
-        // Start forwarding WebSocket messages to our channel
-        tokio::spawn(async move {
-            if let Err(e) = ws_receiver.forward_to(tx).await {
-                tracing::error!("WebSocket receiver error: {}", e);
+        ).await {
+            Ok((client, receiver)) => {
+                // Start forwarding WebSocket messages to our channel
+                tokio::spawn(async move {
+                    if let Err(e) = receiver.forward_to(tx).await {
+                        tracing::error!("WebSocket receiver error: {}", e);
+                    }
+                });
+                (Some(client), true)
             }
-        });
+            Err(e) => {
+                tracing::warn!("Failed to connect to server (will retry): {}", e);
+                (None, false)
+            }
+        };
         
         let engine = Self {
             db,
-            ws_client: Arc::new(ws_client),
+            ws_client: Arc::new(Mutex::new(ws_client)),
             user_id,
             client_id,
             node_id,
@@ -91,7 +101,9 @@ impl SyncEngine {
             pending_uploads: Arc::new(Mutex::new(HashMap::new())),
             upload_complete_notifier: Arc::new(Notify::new()),
             sync_protection_mode: Arc::new(AtomicBool::new(false)),
-            is_connected: Arc::new(AtomicBool::new(true)),
+            is_connected: Arc::new(AtomicBool::new(is_connected)),
+            server_url: server_url.to_string(),
+            auth_token: auth_token.to_string(),
         };
         
         Ok(engine)
@@ -112,6 +124,11 @@ impl SyncEngine {
         let pending_uploads = self.pending_uploads.clone();
         let upload_complete_notifier = self.upload_complete_notifier.clone();
         let sync_protection_mode = self.sync_protection_mode.clone();
+        
+        // Start reconnection monitor if not connected
+        if !self.is_connected.load(Ordering::Relaxed) {
+            self.start_reconnection_loop();
+        }
         
         // Spawn message handler with upload tracking
         tokio::spawn(async move {
@@ -136,16 +153,21 @@ impl SyncEngine {
             tracing::warn!("CLIENT {}: Message handler terminated", client_id);
         });
         
-        // Upload-first strategy with protection
-        self.event_dispatcher.emit_sync_started();
-        
-        // Enable protection mode during upload phase
-        self.sync_protection_mode.store(true, Ordering::Relaxed);
-        tracing::info!("CLIENT {}: Protection mode ENABLED - blocking server overwrites during upload", self.client_id);
-        
-        // First: Upload any pending documents that were created/modified offline
-        tracing::info!("CLIENT {}: Starting upload-first sync - uploading pending changes", self.client_id);
-        self.sync_pending_documents().await?;
+        // Only perform initial sync if connected
+        if self.is_connected.load(Ordering::Relaxed) {
+            // Upload-first strategy with protection
+            self.event_dispatcher.emit_sync_started();
+            
+            // Enable protection mode during upload phase
+            self.sync_protection_mode.store(true, Ordering::Relaxed);
+            tracing::info!("CLIENT {}: Protection mode ENABLED - blocking server overwrites during upload", self.client_id);
+            
+            // First: Upload any pending documents that were created/modified offline
+            tracing::info!("CLIENT {}: Starting upload-first sync - uploading pending changes", self.client_id);
+            self.sync_pending_documents().await?;
+        } else {
+            tracing::info!("CLIENT {}: Starting in offline mode - will sync when connection available", self.client_id);
+        }
         
         // Wait for upload confirmations with timeout
         if !self.pending_uploads.lock().await.is_empty() {
@@ -267,17 +289,27 @@ impl SyncEngine {
     pub async fn delete_document(&self, id: Uuid) -> Result<(), ClientError> {
         let doc = self.db.get_document(&id).await?;
         
-        // Send delete to server
-        self.ws_client.send(ClientMessage::DeleteDocument {
-            document_id: id,
-            revision_id: doc.revision_id.clone(),
-        }).await?;
-        
-        // Mark as deleted locally (will be 'pending' until server confirms)
+        // Mark as deleted locally first
         self.db.delete_document(&id).await?;
         
         // Emit event
         self.event_dispatcher.emit_document_deleted(&id);
+        
+        // Try to send delete to server if connected
+        let ws_client = self.ws_client.lock().await;
+        if let Some(client) = ws_client.as_ref() {
+            if let Err(e) = client.send(ClientMessage::DeleteDocument {
+                document_id: id,
+                revision_id: doc.revision_id.clone(),
+            }).await {
+                tracing::warn!("CLIENT {}: Failed to send delete to server: {}. Will sync later.", self.client_id, e);
+                self.is_connected.store(false, Ordering::Relaxed);
+                drop(ws_client);
+                self.start_reconnection_loop();
+            }
+        } else {
+            tracing::info!("CLIENT {}: Offline - delete will sync when connection available", self.client_id);
+        }
         
         Ok(())
     }
@@ -324,10 +356,15 @@ impl SyncEngine {
                             sent_at: Instant::now(),
                         });
                         
-                        self.ws_client.send(ClientMessage::DeleteDocument {
-                            document_id: pending_info.id,
-                            revision_id: doc.revision_id.clone(),
-                        }).await?;
+                        let ws_client = self.ws_client.lock().await;
+                        if let Some(client) = ws_client.as_ref() {
+                            client.send(ClientMessage::DeleteDocument {
+                                document_id: pending_info.id,
+                                revision_id: doc.revision_id.clone(),
+                            }).await?;
+                        } else {
+                            return Err(ClientError::WebSocket("Not connected".to_string()));
+                        }
                         
                         UploadType::Delete
                     } else if pending_info.last_synced_revision.is_none() {
@@ -341,9 +378,14 @@ impl SyncEngine {
                             sent_at: Instant::now(),
                         });
                         
-                        self.ws_client.send(ClientMessage::CreateDocument { 
-                            document: doc.clone() 
-                        }).await?;
+                        let ws_client = self.ws_client.lock().await;
+                        if let Some(client) = ws_client.as_ref() {
+                            client.send(ClientMessage::CreateDocument { 
+                                document: doc.clone() 
+                            }).await?;
+                        } else {
+                            return Err(ClientError::WebSocket("Not connected".to_string()));
+                        }
                         
                         UploadType::Create
                     } else {
@@ -363,9 +405,14 @@ impl SyncEngine {
                         // For now, we'll send the full document as CreateDocument 
                         // TODO: Implement proper patch generation for updates
                         tracing::warn!("CLIENT {}: Sending updated document as CreateDocument (patch generation not yet implemented)", self.client_id);
-                        self.ws_client.send(ClientMessage::CreateDocument { 
-                            document: doc.clone() 
-                        }).await?;
+                        let ws_client = self.ws_client.lock().await;
+                        if let Some(client) = ws_client.as_ref() {
+                            client.send(ClientMessage::CreateDocument { 
+                                document: doc.clone() 
+                            }).await?;
+                        } else {
+                            return Err(ClientError::WebSocket("Not connected".to_string()));
+                        }
                         
                         UploadType::Update
                     };
@@ -692,7 +739,14 @@ impl SyncEngine {
     pub async fn sync_all(&self) -> Result<(), ClientError> {
         // Request full sync on startup to get all documents
         tracing::debug!("Requesting full sync from server");
-        self.ws_client.send(ClientMessage::RequestFullSync).await?;
+        
+        let ws_client = self.ws_client.lock().await;
+        if let Some(client) = ws_client.as_ref() {
+            client.send(ClientMessage::RequestFullSync).await?;
+        } else {
+            tracing::warn!("CLIENT {}: Cannot sync - not connected", self.client_id);
+            return Err(ClientError::WebSocket("Not connected".to_string()));
+        }
         
         Ok(())
     }
@@ -722,24 +776,149 @@ impl SyncEngine {
         }
         
         // Send to server (using CreateDocument for both creates and updates)
-        match self.ws_client.send(ClientMessage::CreateDocument { 
-            document: document.clone() 
-        }).await {
-            Ok(_) => {
-                tracing::debug!("CLIENT {}: Immediate sync request sent for document {}", self.client_id, document.id);
-                Ok(())
+        let ws_client = self.ws_client.lock().await;
+        match ws_client.as_ref() {
+            Some(client) => {
+                match client.send(ClientMessage::CreateDocument { 
+                    document: document.clone() 
+                }).await {
+                    Ok(_) => {
+                        tracing::debug!("CLIENT {}: Immediate sync request sent for document {}", self.client_id, document.id);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // Connection failed - mark as disconnected and remove from pending uploads
+                        self.is_connected.store(false, Ordering::Relaxed);
+                        {
+                            let mut uploads = self.pending_uploads.lock().await;
+                            uploads.remove(&document.id);
+                        }
+                        tracing::warn!("CLIENT {}: WebSocket send failed, marked as disconnected", self.client_id);
+                        // Start reconnection loop if not already running
+                        drop(ws_client); // Release lock before starting reconnection
+                        self.start_reconnection_loop();
+                        Err(e)
+                    }
+                }
             }
-            Err(e) => {
-                // Connection failed - mark as disconnected and remove from pending uploads
-                self.is_connected.store(false, Ordering::Relaxed);
+            None => {
+                tracing::warn!("CLIENT {}: No WebSocket connection available for immediate sync", self.client_id);
                 {
                     let mut uploads = self.pending_uploads.lock().await;
                     uploads.remove(&document.id);
                 }
-                tracing::warn!("CLIENT {}: WebSocket send failed, marked as disconnected", self.client_id);
-                Err(e)
+                Err(ClientError::WebSocket("Not connected".to_string()))
             }
         }
+    }
+    
+    /// Start the reconnection loop if not already running
+    fn start_reconnection_loop(&self) {
+        let is_connected = self.is_connected.clone();
+        let ws_client = self.ws_client.clone();
+        let server_url = self.server_url.clone();
+        let auth_token = self.auth_token.clone();
+        let user_id = self.user_id;
+        let client_id = self.client_id;
+        let event_dispatcher = self.event_dispatcher.clone();
+        let db = self.db.clone();
+        let pending_uploads = self.pending_uploads.clone();
+        let upload_complete_notifier = self.upload_complete_notifier.clone();
+        let sync_protection_mode = self.sync_protection_mode.clone();
+        
+        tokio::spawn(async move {
+            let mut retry_delay = std::time::Duration::from_secs(1);
+            const MAX_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+            
+            loop {
+                if is_connected.load(Ordering::Relaxed) {
+                    // Already connected, exit loop
+                    break;
+                }
+                
+                tracing::info!("CLIENT {}: Attempting to reconnect...", client_id);
+                
+                // Try to connect
+                match WebSocketClient::connect(
+                    &server_url,
+                    user_id,
+                    client_id,
+                    &auth_token,
+                    Some(event_dispatcher.clone())
+                ).await {
+                    Ok((new_client, receiver)) => {
+                        tracing::info!("CLIENT {}: Reconnection successful!", client_id);
+                        
+                        // Update the client
+                        *ws_client.lock().await = Some(new_client);
+                        is_connected.store(true, Ordering::Relaxed);
+                        
+                        // Start message receiver forwarding
+                        let (tx, mut rx) = mpsc::channel(100);
+                        tokio::spawn(async move {
+                            if let Err(e) = receiver.forward_to(tx).await {
+                                tracing::error!("WebSocket receiver error: {}", e);
+                            }
+                        });
+                        
+                        // Process messages in background
+                        let db_clone = db.clone();
+                        let event_dispatcher_clone = event_dispatcher.clone();
+                        let pending_uploads_clone = pending_uploads.clone();
+                        let upload_complete_notifier_clone = upload_complete_notifier.clone();
+                        let sync_protection_mode_clone = sync_protection_mode.clone();
+                        tokio::spawn(async move {
+                            while let Some(msg) = rx.recv().await {
+                                if let Err(e) = Self::handle_server_message_with_tracking(
+                                    msg,
+                                    &db_clone,
+                                    client_id,
+                                    &event_dispatcher_clone,
+                                    &pending_uploads_clone,
+                                    &upload_complete_notifier_clone,
+                                    &sync_protection_mode_clone
+                                ).await {
+                                    tracing::error!("CLIENT {}: Error handling server message: {}", client_id, e);
+                                }
+                            }
+                        });
+                        
+                        // Sync pending documents
+                        tracing::info!("CLIENT {}: Syncing pending documents after reconnection", client_id);
+                        if let Ok(pending_docs) = db.get_pending_documents().await {
+                            if !pending_docs.is_empty() {
+                                tracing::info!("CLIENT {}: Found {} pending documents to sync", client_id, pending_docs.len());
+                                
+                                // Trigger upload of pending documents
+                                // We can't call sync_pending_documents directly, so we'll send the documents manually
+                                for pending_info in pending_docs {
+                                    if let Ok(doc) = db.get_document(&pending_info.id).await {
+                                        if let Some(client) = ws_client.lock().await.as_ref() {
+                                            let _ = client.send(ClientMessage::CreateDocument { 
+                                                document: doc 
+                                            }).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Reset retry delay
+                        retry_delay = std::time::Duration::from_secs(1);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!("CLIENT {}: Reconnection failed: {}. Retrying in {:?}", client_id, e, retry_delay);
+                        
+                        // Wait before next retry
+                        tokio::time::sleep(retry_delay).await;
+                        
+                        // Exponential backoff
+                        retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+                    }
+                }
+            }
+        });
     }
 }
 

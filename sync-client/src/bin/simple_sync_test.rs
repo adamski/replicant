@@ -108,8 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &user_email
     ).await?;
     
-    // Only start the engine for sync operations
-    if matches!(action.as_str(), "sync" | "create" | "update" | "delete") {
+    // Only start the engine for sync operations (not for offline CRUD)
+    if matches!(action.as_str(), "sync") {
         debug!("Starting sync engine for action: {}", action);
         engine.start().await?;
     }

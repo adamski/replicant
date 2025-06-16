@@ -29,7 +29,7 @@
 // Forward declarations for the main sync client functions
 extern "C" {
     struct CSyncEngine;
-    extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token);
+    extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token, const char* user_identifier);
     extern void sync_engine_destroy(struct CSyncEngine* engine);
     extern SyncResult sync_engine_create_document(struct CSyncEngine* engine, const char* title, const char* content_json, char* out_document_id);
     extern SyncResult sync_engine_update_document(struct CSyncEngine* engine, const char* document_id, const char* content_json);
@@ -55,8 +55,9 @@ private:
 public:
     explicit SyncEngine(const std::string& database_url, 
                        const std::string& server_url, 
-                       const std::string& auth_token)
-        : engine_(sync_engine_create(database_url.c_str(), server_url.c_str(), auth_token.c_str()),
+                       const std::string& auth_token,
+                       const std::string& user_identifier)
+        : engine_(sync_engine_create(database_url.c_str(), server_url.c_str(), auth_token.c_str(), user_identifier.c_str()),
                   sync_engine_destroy)
     {
         if (!engine_)
@@ -305,7 +306,7 @@ void test_lambda_callbacks()
     try
     {
         // Create sync engine with RAII
-        SyncClient::SyncEngine engine("sqlite::memory:", "ws://localhost:8080/ws", "test-token");
+        SyncClient::SyncEngine engine("sqlite::memory:", "ws://localhost:8080/ws", "test-token", "lambda-test@example.com");
         std::cout << "✓ Sync engine created\n";
         
         // Create event statistics collector
@@ -446,7 +447,7 @@ void test_advanced_cpp_patterns() {
     std::cout << "\n=== Advanced C++ Patterns Test ===\n";
     
     try {
-        SyncClient::SyncEngine engine("sqlite::memory:", "ws://localhost:8080/ws", "advanced-test");
+        SyncClient::SyncEngine engine("sqlite::memory:", "ws://localhost:8080/ws", "advanced-test", "advanced-test@example.com");
         SyncClient::CallbackManager callbacks;
         
         // Test with shared_ptr instead of unique_ptr for lambdas (easier to copy)

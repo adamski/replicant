@@ -57,7 +57,8 @@ crate::integration_test!(test_invalid_token_rejection, |ctx: TestContext| async 
     let result = sync_client::SyncEngine::new(
         &db_path,
         &ctx.server_url,
-        "wrong-token"
+        "wrong-token",
+        "test-user@example.com"
     ).await;
     
     // Connection should fail or subsequent operations should fail

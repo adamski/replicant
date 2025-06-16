@@ -56,7 +56,7 @@ async fn create_client_with_event_tracking(
     .await?;
     
     // Create sync engine
-    let mut engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), token).await?;
+    let mut engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), token, "test-user@example.com").await?;
     
     // Start the engine first
     engine.start().await?;

@@ -13,7 +13,7 @@
 #include "../include/sync_client_events.h"
 
 /* Forward declarations for the main sync client functions */
-extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token);
+extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token, const char* user_identifier);
 extern void sync_engine_destroy(struct CSyncEngine* engine);
 extern SyncResult sync_engine_create_document(struct CSyncEngine* engine, const char* title, const char* content_json, char* out_document_id);
 
@@ -52,7 +52,8 @@ int main() {
     struct CSyncEngine* engine = sync_engine_create(
         "sqlite::memory:",
         "ws://localhost:8080/ws",
-        "test-token"
+        "test-token",
+        "simple-test@example.com"
     );
     
     if (!engine) {

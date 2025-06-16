@@ -49,6 +49,7 @@ pub struct CDocument {
 /// * `database_url` - SQLite database URL (e.g., "sqlite:client.db?mode=rwc")
 /// * `server_url` - WebSocket server URL (e.g., "ws://localhost:8080/ws")  
 /// * `auth_token` - Authentication token
+/// * `user_identifier` - User identifier (email or username)
 /// 
 /// # Returns
 /// * Pointer to CSyncEngine on success, null on failure
@@ -57,8 +58,9 @@ pub extern "C" fn sync_engine_create(
     database_url: *const c_char,
     server_url: *const c_char,
     auth_token: *const c_char,
+    user_identifier: *const c_char,
 ) -> *mut CSyncEngine {
-    if database_url.is_null() || server_url.is_null() || auth_token.is_null() {
+    if database_url.is_null() || server_url.is_null() || auth_token.is_null() || user_identifier.is_null() {
         return ptr::null_mut();
     }
 
@@ -73,6 +75,11 @@ pub extern "C" fn sync_engine_create(
     };
 
     let auth_token = match unsafe { CStr::from_ptr(auth_token) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let user_identifier = match unsafe { CStr::from_ptr(user_identifier) }.to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
@@ -100,7 +107,7 @@ pub extern "C" fn sync_engine_create(
 
     // Try to create sync engine (optional - can work offline)
     let engine = runtime.block_on(async {
-        let sync_engine = SyncEngine::new(database_url, server_url, auth_token).await.ok()?;
+        let sync_engine = SyncEngine::new(database_url, server_url, auth_token, user_identifier).await.ok()?;
         // We can't easily replace the event dispatcher in an existing SyncEngine,
         // so we'll use separate dispatchers for now. In a production system,
         // you'd want to refactor to share the same dispatcher.

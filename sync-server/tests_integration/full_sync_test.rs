@@ -162,7 +162,8 @@ mod full_sync_tests {
         let sync_engine = sync_client::SyncEngine::new(
             client_db,
             &server_url,
-            "test-token"
+            "test-token",
+            "test-user@example.com"
         )
         .await
         .expect("Failed to create sync engine");

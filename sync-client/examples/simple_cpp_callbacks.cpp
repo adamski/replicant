@@ -25,7 +25,7 @@
 // Forward declarations for the main sync client functions
 extern "C" {
     struct CSyncEngine;
-    extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token);
+    extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token, const char* user_identifier);
     extern void sync_engine_destroy(struct CSyncEngine* engine);
     extern SyncResult sync_engine_create_document(struct CSyncEngine* engine, const char* title, const char* content_json, char* out_document_id);
     extern SyncResult sync_engine_update_document(struct CSyncEngine* engine, const char* document_id, const char* content_json);
@@ -177,9 +177,10 @@ private:
 public:
     simple_sync_engine(const std::string& database_url, 
                       const std::string& server_url, 
-                      const std::string& auth_token)
+                      const std::string& auth_token,
+                      const std::string& user_identifier)
     {
-        engine_ = sync_engine_create(database_url.c_str(), server_url.c_str(), auth_token.c_str());
+        engine_ = sync_engine_create(database_url.c_str(), server_url.c_str(), auth_token.c_str(), user_identifier.c_str());
         if (!engine_)
         {
             throw std::runtime_error("Failed to create sync engine");
@@ -252,7 +253,7 @@ int main()
     try
     {
         // Create sync engine
-        simple_sync_engine engine("sqlite::memory:", "ws://localhost:8080/ws", "simple-test-token");
+        simple_sync_engine engine("sqlite::memory:", "ws://localhost:8080/ws", "simple-test-token", "simple-cpp-test@example.com");
         std::cout << "✓ Sync engine created\n";
         
         // Register callback - this sets the callback thread to the current thread

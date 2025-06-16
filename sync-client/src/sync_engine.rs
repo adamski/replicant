@@ -48,12 +48,13 @@ impl SyncEngine {
         database_url: &str,
         server_url: &str,
         auth_token: &str,
+        user_identifier: &str,
     ) -> Result<Self, ClientError> {
         let db = Arc::new(ClientDatabase::new(database_url).await?);
         db.run_migrations().await?;
         
-        // Ensure user_config exists before trying to get user/client IDs
-        db.ensure_user_config(server_url, auth_token).await?;
+        // Ensure user_config exists with deterministic user ID based on identifier
+        db.ensure_user_config_with_identifier(server_url, auth_token, user_identifier).await?;
         
         let (user_id, client_id) = db.get_user_and_client_id().await?;
         let node_id = format!("client_{}", user_id);
@@ -222,29 +223,40 @@ impl SyncEngine {
     pub async fn update_document(&self, id: Uuid, new_content: serde_json::Value) -> Result<(), ClientError> {
         let mut doc = self.db.get_document(&id).await?;
         let old_content = doc.content.clone();
+        let old_revision = doc.revision_id.clone();
         
-        tracing::info!("CLIENT {}: Updating document {} - old content: {:?}, new content: {:?}", 
-                     self.client_id, id, old_content, new_content);
+        tracing::info!("CLIENT {}: 📝 UPDATING DOCUMENT {}", self.client_id, id);
+        tracing::info!("CLIENT {}: OLD: content={:?}, revision={}", 
+                     self.client_id, old_content, old_revision);
+        tracing::info!("CLIENT {}: NEW: content={:?}", self.client_id, new_content);
         
         // Create patch (for potential future use)
         let _patch = create_patch(&old_content, &new_content)?;
         
         // Update document
         doc.revision_id = doc.next_revision(&new_content);
-        doc.content = new_content;
+        doc.content = new_content.clone();
         doc.version += 1;
         doc.vector_clock.increment(&self.node_id);
         doc.updated_at = chrono::Utc::now();
         
-        // Save locally
+        tracing::info!("CLIENT {}: 💾 SAVING LOCALLY: revision={}, marking as pending", 
+                     self.client_id, doc.revision_id);
+        
+        // Save locally - document should be marked as "pending" by default
         self.db.save_document(&doc).await?;
+        
+        // Verify it was saved correctly
+        let saved_doc = self.db.get_document(&id).await?;
+        tracing::info!("CLIENT {}: ✅ SAVED: content={:?}, revision={}", 
+                     self.client_id, saved_doc.content, saved_doc.revision_id);
         
         // Emit event
         self.event_dispatcher.emit_document_updated(&doc.id, &doc.content);
         
         // Attempt immediate sync if connected
         if let Err(e) = self.try_immediate_sync(&doc).await {
-            tracing::warn!("CLIENT {}: Failed to immediately sync updated document {}: {}. Will retry later.", 
+            tracing::warn!("CLIENT {}: ⚠️  OFFLINE EDIT - Failed to immediately sync updated document {}: {}. Changes saved locally for later sync.", 
                          self.client_id, doc.id, e);
             // Document stays in "pending" status for next sync attempt
         }
@@ -287,7 +299,16 @@ impl SyncEngine {
             return Ok(());
         }
         
-        tracing::info!("CLIENT {}: Syncing {} pending documents", self.client_id, pending_docs.len());
+        tracing::info!("CLIENT {}: 📤 UPLOADING {} PENDING DOCUMENTS", self.client_id, pending_docs.len());
+        
+        // Show details of each pending document
+        for (i, pending_info) in pending_docs.iter().enumerate() {
+            if let Ok(doc) = self.db.get_document(&pending_info.id).await {
+                tracing::info!("CLIENT {}: PENDING {}/{}: doc_id={}, content={:?}, revision={}", 
+                             self.client_id, i+1, pending_docs.len(), 
+                             pending_info.id, doc.content, doc.revision_id);
+            }
+        }
         
         for pending_info in pending_docs {
             match self.db.get_document(&pending_info.id).await {
@@ -522,10 +543,15 @@ impl SyncEngine {
             }
             ServerMessage::SyncDocument { document } => {
                 // Document sync - check if it's newer than what we have
-                tracing::info!("CLIENT {}: Received SyncDocument: {} (rev: {})", client_id, document.id, document.revision_id);
+                tracing::info!("CLIENT {}: 📥 RECEIVED SyncDocument: {} (rev: {})", client_id, document.id, document.revision_id);
                 
                 match db.get_document(&document.id).await {
                     Ok(local_doc) => {
+                        tracing::info!("CLIENT {}: LOCAL  DOCUMENT: content={:?}, revision={}", 
+                                     client_id, local_doc.content, local_doc.revision_id);
+                        tracing::info!("CLIENT {}: SERVER DOCUMENT: content={:?}, revision={}", 
+                                     client_id, document.content, document.revision_id);
+                        
                         // Compare revisions
                         let local_rev_parts: Vec<&str> = local_doc.revision_id.split('-').collect();
                         let sync_rev_parts: Vec<&str> = document.revision_id.split('-').collect();
@@ -535,7 +561,14 @@ impl SyncEngine {
                             let sync_gen: u32 = sync_rev_parts[0].parse().unwrap_or(0);
                             
                             if sync_gen >= local_gen {
-                                tracing::info!("CLIENT {}: Updating to newer version (gen {} -> {})", 
+                                // Check if this might be overwriting local changes by comparing content
+                                if local_doc.content != document.content {
+                                    tracing::warn!("CLIENT {}: ⚠️  SERVER OVERWRITING LOCAL CHANGES!", client_id);
+                                    tracing::warn!("CLIENT {}: LOCAL: {:?} → SERVER: {:?}", 
+                                                 client_id, local_doc.content, document.content);
+                                }
+                                
+                                tracing::info!("CLIENT {}: 🔄 Updating to newer version (gen {} -> {})", 
                                              client_id, local_gen, sync_gen);
                                 db.save_document_with_status(&document, Some("synced")).await?;
                                 

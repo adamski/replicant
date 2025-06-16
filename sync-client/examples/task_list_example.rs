@@ -472,6 +472,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let server_url = cli.server.clone();
     let token = cli.token.clone();
     let db_url_clone = db_url.clone();
+    let user_email_clone = cli.user.clone().unwrap_or_else(|| "anonymous".to_string());
     
     let sync_engine = Arc::new(Mutex::new(None::<Arc<SyncEngine>>));
     let sync_engine_clone = sync_engine.clone();
@@ -490,7 +491,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         
         loop {
             // Try to connect to server
-            match SyncEngine::new(&db_url_clone, &server_url, &token).await {
+            match SyncEngine::new(&db_url_clone, &server_url, &token, &user_email_clone).await {
                 Ok(mut engine) => {
                     // Don't register callbacks here - they will be registered in the main thread
 

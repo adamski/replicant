@@ -53,7 +53,8 @@ async fn create_persistent_client(
     let mut engine = SyncEngine::new(
         db_path,
         &format!("{}/ws", server_url),
-        token
+        token,
+        "test-user@example.com"
     ).await?;
     
     // Start the engine

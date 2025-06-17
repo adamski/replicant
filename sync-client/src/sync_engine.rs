@@ -4,6 +4,7 @@ use std::time::Instant;
 use std::io::Write;
 use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
+use sqlx::Row;
 use sync_core::{
     models::{Document, VectorClock, SyncStatus},
     protocol::{ClientMessage, ServerMessage},
@@ -284,22 +285,64 @@ impl SyncEngine {
         
         // Store patch in sync_queue for offline sync
         use sync_core::protocol::ChangeEventType;
-        self.db.queue_sync_operation(&doc.id, ChangeEventType::Update, Some(&patch)).await?;
-        tracing::info!("CLIENT {}: 📋 Stored update patch in sync_queue", self.client_id);
+        tracing::info!("CLIENT {}: 📋 About to call queue_sync_operation for doc {}", self.client_id, doc.id);
+        let queue_result = self.db.queue_sync_operation(&doc.id, ChangeEventType::Update, Some(&patch)).await;
+        match &queue_result {
+            Ok(_) => tracing::info!("CLIENT {}: 📋 Successfully stored update patch in sync_queue", self.client_id),
+            Err(e) => tracing::error!("CLIENT {}: 📋 FAILED to store patch in sync_queue: {}", self.client_id, e),
+        }
+        queue_result?;
         
-        // Verify it was saved correctly
+        // Verify it was saved correctly and check its sync status
         let saved_doc = self.db.get_document(&id).await?;
         tracing::info!("CLIENT {}: ✅ SAVED: content={:?}, revision={}", 
                      self.client_id, saved_doc.content, saved_doc.revision_id);
+        
+        // Check sync status after save
+        let sync_status_result = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&self.db.pool)
+            .await;
+        
+        match sync_status_result {
+            Ok(row) => {
+                let sync_status: String = row.try_get("sync_status").unwrap_or_else(|_| "unknown".to_string());
+                tracing::info!("CLIENT {}: 📊 Document {} sync_status after save: {}", 
+                             self.client_id, id, sync_status);
+            }
+            Err(e) => {
+                tracing::error!("CLIENT {}: Failed to check sync_status: {}", self.client_id, e);
+            }
+        }
         
         // Emit event
         self.event_dispatcher.emit_document_updated(&doc.id, &doc.content);
         
         // Attempt immediate sync if connected
+        tracing::info!("CLIENT {}: 🚀 Attempting immediate sync for updated document {}", self.client_id, doc.id);
         if let Err(e) = self.try_immediate_sync(&doc).await {
             tracing::warn!("CLIENT {}: ⚠️  OFFLINE EDIT - Failed to immediately sync updated document {}: {}. Changes saved locally for later sync.", 
                          self.client_id, doc.id, e);
             // Document stays in "pending" status for next sync attempt
+            
+            // Double-check sync status after failed immediate sync
+            let sync_status_result = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_one(&self.db.pool)
+                .await;
+            
+            match sync_status_result {
+                Ok(row) => {
+                    let sync_status: String = row.try_get("sync_status").unwrap_or_else(|_| "unknown".to_string());
+                    tracing::warn!("CLIENT {}: 📊 Document {} sync_status after FAILED immediate sync: {}", 
+                                 self.client_id, id, sync_status);
+                }
+                Err(e) => {
+                    tracing::error!("CLIENT {}: Failed to check sync_status after failed sync: {}", self.client_id, e);
+                }
+            }
+        } else {
+            tracing::info!("CLIENT {}: ✅ Immediate sync successful for document {}", self.client_id, doc.id);
         }
         
         Ok(())
@@ -344,6 +387,43 @@ impl SyncEngine {
     
     async fn sync_pending_documents(&self) -> Result<(), ClientError> {
         let pending_docs = self.db.get_pending_documents().await?;
+        
+        // Also check sync_queue for debugging
+        let sync_queue_result = sqlx::query("SELECT COUNT(*) as count FROM sync_queue")
+            .fetch_one(&self.db.pool)
+            .await;
+        
+        match sync_queue_result {
+            Ok(row) => {
+                let count: i64 = row.try_get("count").unwrap_or(0);
+                tracing::info!("CLIENT {}: 📋 sync_queue contains {} entries", self.client_id, count);
+                
+                if count > 0 {
+                    // Show what's in the sync_queue
+                    let queue_entries = sqlx::query("SELECT document_id, operation_type, created_at FROM sync_queue")
+                        .fetch_all(&self.db.pool)
+                        .await;
+                    
+                    match queue_entries {
+                        Ok(rows) => {
+                            for row in rows {
+                                let doc_id: String = row.try_get("document_id").unwrap_or_else(|_| "unknown".to_string());
+                                let op_type: String = row.try_get("operation_type").unwrap_or_else(|_| "unknown".to_string());
+                                let created_at: String = row.try_get("created_at").unwrap_or_else(|_| "unknown".to_string());
+                                tracing::info!("CLIENT {}: 📋 sync_queue entry: doc_id={}, op_type={}, created_at={}", 
+                                             self.client_id, doc_id, op_type, created_at);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("CLIENT {}: Failed to query sync_queue entries: {}", self.client_id, e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("CLIENT {}: Failed to count sync_queue: {}", self.client_id, e);
+            }
+        }
         
         if pending_docs.is_empty() {
             tracing::info!("CLIENT {}: No pending documents to sync", self.client_id);
@@ -835,9 +915,13 @@ impl SyncEngine {
     
     /// Attempt to sync a single document immediately if connected
     async fn try_immediate_sync(&self, document: &Document) -> Result<(), ClientError> {
-        if !self.is_connected() {
-            tracing::info!("CLIENT {}: 📴 OFFLINE - Document {} will sync later", self.client_id, document.id);
-            return Ok(());
+        let connected = self.is_connected();
+        tracing::info!("CLIENT {}: 🔍 Connection status check: connected={}", self.client_id, connected);
+        
+        if !connected {
+            tracing::warn!("CLIENT {}: 📴 OFFLINE - Document {} cannot sync immediately, returning error to mark as pending", 
+                         self.client_id, document.id);
+            return Err(ClientError::WebSocket("Client is offline - document should remain pending".to_string()));
         }
         
         tracing::info!("CLIENT {}: 🚀 IMMEDIATE SYNC attempt for document {}", self.client_id, document.id);

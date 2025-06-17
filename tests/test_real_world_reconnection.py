@@ -365,29 +365,119 @@ def main():
         colored_print("📊 Client2 after server recovery:", "cyan")
         print(read_client_log(client2, 10))
         
-        # Check final document counts
-        colored_print("🔍 Final verification - checking document counts...", "blue")
+        # Check final document counts and content
+        colored_print("🔍 Final verification - checking document sync...", "blue")
+        
+        shared_doc_content = {}
+        test_passed = True
         
         for client in clients:
             ret, out, err = run_command([
                 "cargo", "run", "--bin", "simple_sync_test", "--",
-                "status",
+                "list",
                 "--database", client.database,
                 "--user", client.user
             ], timeout=15)
             
             if ret == 0:
                 doc_count = out.count("| Rev:")
-                colored_print(f"✅ {client.name}: {doc_count} documents in database", "green")
+                colored_print(f"📄 {client.name}: {doc_count} documents in database", "green")
+                
+                # Extract the shared document's content
+                for line in out.split('\n'):
+                    if shared_doc_id in line:
+                        # Parse the line to get title and revision
+                        # Format: "Document: <id> | Title: <title> | Description: <desc> | Rev: <rev>"
+                        parts = line.split('|')
+                        if len(parts) >= 4:
+                            title = parts[1].split(':')[1].strip() if ':' in parts[1] else "Unknown"
+                            revision = parts[3].split(':')[1].strip() if ':' in parts[3] else "Unknown"
+                            shared_doc_content[client.name] = {
+                                "title": title,
+                                "revision": revision,
+                                "full_line": line
+                            }
+                            colored_print(f"   {client.name} shared doc: Title='{title}', Rev={revision}", "cyan")
+                            break
             else:
-                colored_print(f"❌ {client.name}: Failed to check status: {err}", "red")
+                colored_print(f"❌ {client.name}: Failed to list documents: {err}", "red")
+                test_passed = False
+        
+        # Verify both clients have the same content for the shared document
+        if len(shared_doc_content) == 2:
+            client1_content = shared_doc_content.get("Client1", {})
+            client2_content = shared_doc_content.get("Client2", {})
+            
+            if client1_content.get("title") == client2_content.get("title") and \
+               client1_content.get("revision") == client2_content.get("revision"):
+                colored_print(f"✅ Both clients have synchronized content!", "green")
+                colored_print(f"   Shared document title: '{client1_content.get('title')}'", "cyan")
+                colored_print(f"   Shared document revision: {client1_content.get('revision')}", "cyan")
+                
+                # Check if it's one of the offline edits
+                if "Offline Edit" in client1_content.get("title", ""):
+                    colored_print("✅ Offline edit successfully propagated between clients!", "green")
+                else:
+                    colored_print("⚠️ WARNING: Shared document doesn't contain offline edit", "yellow")
+                    test_passed = False
+            else:
+                colored_print("❌ SYNC FAILURE: Clients have different content for shared document!", "red")
+                colored_print(f"   Client1: {client1_content}", "red")
+                colored_print(f"   Client2: {client2_content}", "red")
+                test_passed = False
+        else:
+            colored_print("❌ Could not extract shared document content from both clients", "red")
+            test_passed = False
+        
+        # Check server logs for proper message types
+        colored_print("", "white")
+        colored_print("🔍 Checking server logs for message types...", "blue")
+        try:
+            with open("/tmp/reconnection_server.log", "r") as f:
+                server_logs = f.read()
+                
+                # Count message types
+                create_count = server_logs.count("Received CreateDocument")
+                update_count = server_logs.count("Received UpdateDocument")
+                conflict_count = server_logs.count("CONFLICT DETECTED")
+                
+                colored_print(f"📊 Server message statistics:", "cyan")
+                colored_print(f"   CreateDocument messages: {create_count}", "cyan")
+                colored_print(f"   UpdateDocument messages: {update_count}", "cyan")
+                colored_print(f"   Conflicts detected: {conflict_count}", "cyan")
+                
+                # Check for improper CreateDocument usage on updates
+                improper_creates = 0
+                for line in server_logs.split('\n'):
+                    if "Received CreateDocument" in line and "rev:" in line:
+                        # Extract revision from log line
+                        rev_start = line.find("rev:") + 4
+                        rev_end = line.find(")", rev_start)
+                        if rev_start > 3 and rev_end > rev_start:
+                            revision = line[rev_start:rev_end].strip()
+                            # Check if revision > 1 (indicating an update, not create)
+                            if revision and revision.split('-')[0] != '1':
+                                improper_creates += 1
+                                colored_print(f"   ⚠️ Found CreateDocument for revision {revision} (should be UpdateDocument)", "yellow")
+                
+                if improper_creates > 0:
+                    colored_print(f"❌ Found {improper_creates} improper CreateDocument messages for updates!", "red")
+                    test_passed = False
+                elif update_count > 0:
+                    colored_print("✅ Server properly using UpdateDocument for updates", "green")
+                
+        except Exception as e:
+            colored_print(f"⚠️ Could not analyze server logs: {e}", "yellow")
         
         colored_print("", "white")
-        if all(c.process and c.process.poll() is None for c in clients):
-            colored_print("✅ TEST PASSED: All clients survived server restart and are still running", "green")
-            colored_print("🔄 Reconnection logic appears to be working correctly", "green")
+        if all(c.process and c.process.poll() is None for c in clients) and test_passed:
+            colored_print("✅ TEST PASSED: All clients survived server restart and offline edits synced correctly", "green")
+            colored_print("🔄 Reconnection and sync logic working correctly", "green")
         else:
-            colored_print("❌ TEST FAILED: Some clients died during server restart", "red")
+            if not all(c.process and c.process.poll() is None for c in clients):
+                colored_print("❌ TEST FAILED: Some clients died during server restart", "red")
+            if not test_passed:
+                colored_print("❌ TEST FAILED: Offline edits did not sync correctly between clients", "red")
         
     except KeyboardInterrupt:
         colored_print("🛑 Test interrupted by user", "yellow")

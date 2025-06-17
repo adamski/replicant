@@ -238,12 +238,35 @@ impl ClientDatabase {
             ChangeEventType::Delete => "delete",
         };
         
-        sqlx::query(Queries::INSERT_SYNC_QUEUE)
+        tracing::info!("DATABASE: queue_sync_operation called: doc_id={}, op_type={}, patch_size={}", 
+                     document_id, operation_type_str, 
+                     patch_json.as_ref().map(|p| p.len()).unwrap_or(0));
+        
+        let result = sqlx::query(Queries::INSERT_SYNC_QUEUE)
             .bind(document_id.to_string())
             .bind(operation_type_str)
-            .bind(patch_json)
+            .bind(patch_json.clone())
             .execute(&self.pool)
             .await?;
+        
+        tracing::info!("DATABASE: sync_queue insert successful: rows_affected={}, doc_id={}", 
+                     result.rows_affected(), document_id);
+        
+        // Verify the insert by immediately querying
+        let count_result = sqlx::query("SELECT COUNT(*) as count FROM sync_queue WHERE document_id = ?")
+            .bind(document_id.to_string())
+            .fetch_one(&self.pool)
+            .await;
+        
+        match count_result {
+            Ok(row) => {
+                let count: i64 = row.try_get("count").unwrap_or(0);
+                tracing::info!("DATABASE: sync_queue verification: {} entries for doc_id={}", count, document_id);
+            }
+            Err(e) => {
+                tracing::error!("DATABASE: Failed to verify sync_queue insert: {}", e);
+            }
+        }
         
         Ok(())
     }

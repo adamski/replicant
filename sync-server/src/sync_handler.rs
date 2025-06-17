@@ -314,6 +314,10 @@ impl SyncHandler {
                 
                 for doc in &documents {
                     tracing::debug!("Sending SyncDocument for doc {}", doc.id);
+                    tracing::info!("📤 SENDING SyncDocument: {} | Title: {} | Rev: {}", 
+                                 doc.id, 
+                                 doc.content.get("title").and_then(|v| v.as_str()).unwrap_or("N/A"),
+                                 doc.revision_id);
                     self.tx.send(ServerMessage::SyncDocument { document: doc.clone() }).await?;
                 }
                 

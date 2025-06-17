@@ -468,6 +468,10 @@ impl SyncEngine {
                         UploadType::Delete
                     } else if pending_info.last_synced_revision.is_none() {
                         // No previous sync revision = new document created offline
+                        tracing::warn!("CLIENT {}: 🔍 PENDING DOCUMENT ANALYSIS for {}", self.client_id, pending_info.id);
+                        tracing::warn!("CLIENT {}: last_synced_revision is NONE - treating as new document", self.client_id);
+                        tracing::warn!("CLIENT {}: Document revision: {}", self.client_id, doc.revision_id);
+                        tracing::warn!("CLIENT {}: This will use CreateDocument instead of UpdateDocument", self.client_id);
                         tracing::info!("CLIENT {}: Uploading new document {} created offline", self.client_id, pending_info.id);
                         
                         // Track this upload

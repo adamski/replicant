@@ -194,12 +194,32 @@ impl ClientDatabase {
     }
     
     pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &str) -> Result<(), ClientError> {
-        sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
+        tracing::info!("DATABASE: 🔄 Marking document {} as synced with revision {}", document_id, revision_id);
+        
+        let result = sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
             .bind(SyncStatus::Synced.to_string())
             .bind(revision_id)
             .bind(document_id.to_string())
             .execute(&self.pool)
             .await?;
+            
+        tracing::info!("DATABASE: ✅ Marked {} as synced, rows affected: {}", document_id, result.rows_affected());
+        
+        // Verify the update worked
+        let verify_result = sqlx::query("SELECT last_synced_revision FROM documents WHERE id = ?")
+            .bind(document_id.to_string())
+            .fetch_one(&self.pool)
+            .await;
+            
+        match verify_result {
+            Ok(row) => {
+                let stored_revision: Option<String> = row.try_get("last_synced_revision").unwrap_or(None);
+                tracing::info!("DATABASE: 🔍 Verification: last_synced_revision = {:?}", stored_revision);
+            }
+            Err(e) => {
+                tracing::error!("DATABASE: ❌ Failed to verify mark_synced: {}", e);
+            }
+        }
         
         Ok(())
     }

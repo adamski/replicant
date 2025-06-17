@@ -1,6 +1,7 @@
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row};
 use uuid::Uuid;
 use sync_core::models::{Document, SyncStatus};
+use sync_core::protocol::ChangeEventType;
 use crate::errors::ClientError;
 use crate::queries::{Queries, DbHelpers};
 use json_patch;
@@ -137,6 +138,10 @@ impl ClientDatabase {
     }
     
     pub(crate) async fn save_document_with_status(&self, doc: &Document, sync_status: Option<SyncStatus>) -> Result<(), ClientError> {
+        let status_str = sync_status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "synced".to_string());
+        tracing::info!("DATABASE: 💾 Saving document {} with status: {}, revision: {}", 
+                     doc.id, status_str, doc.revision_id);
+        
         let params = DbHelpers::document_to_params(doc, sync_status)?;
         
         sqlx::query(Queries::UPSERT_DOCUMENT)
@@ -153,28 +158,39 @@ impl ClientDatabase {
             .execute(&self.pool)
             .await?;
         
+        tracing::info!("DATABASE: ✅ Document {} saved successfully", doc.id);
         Ok(())
     }
     
     pub async fn get_pending_documents(&self) -> Result<Vec<PendingDocumentInfo>, ClientError> {
+        tracing::info!("DATABASE: 🔍 Querying for pending documents...");
+        
         let rows = sqlx::query(Queries::GET_PENDING_DOCUMENTS)
             .bind(SyncStatus::Pending.to_string())
             .fetch_all(&self.pool)
             .await?;
         
-        rows.into_iter()
-            .map(|row| {
-                let id: String = row.try_get("id")?;
-                let last_synced_revision: Option<String> = row.try_get("last_synced_revision")?;
-                let deleted_at: Option<String> = row.try_get("deleted_at")?;
-                
-                Ok(PendingDocumentInfo {
-                    id: Uuid::parse_str(&id)?,
-                    last_synced_revision,
-                    is_deleted: deleted_at.is_some(),
-                })
-            })
-            .collect()
+        tracing::info!("DATABASE: Found {} pending documents", rows.len());
+        
+        let mut pending_docs = Vec::new();
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            let last_synced_revision: Option<String> = row.try_get("last_synced_revision")?;
+            let deleted_at: Option<String> = row.try_get("deleted_at")?;
+            
+            let doc_info = PendingDocumentInfo {
+                id: Uuid::parse_str(&id)?,
+                last_synced_revision: last_synced_revision.clone(),
+                is_deleted: deleted_at.is_some(),
+            };
+            
+            tracing::info!("DATABASE: Pending doc: {} | Last synced rev: {:?} | Deleted: {}", 
+                         doc_info.id, last_synced_revision, doc_info.is_deleted);
+            
+            pending_docs.push(doc_info);
+        }
+        
+        Ok(pending_docs)
     }
     
     pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &str) -> Result<(), ClientError> {
@@ -211,18 +227,52 @@ impl ClientDatabase {
     pub async fn queue_sync_operation(
         &self,
         document_id: &Uuid,
-        operation_type: &str,
+        operation_type: ChangeEventType,
         patch: Option<&json_patch::Patch>,
     ) -> Result<(), ClientError> {
         let patch_json = patch.map(|p| serde_json::to_string(p)).transpose()?;
         
+        let operation_type_str = match operation_type {
+            ChangeEventType::Create => "create",
+            ChangeEventType::Update => "update",
+            ChangeEventType::Delete => "delete",
+        };
+        
         sqlx::query(Queries::INSERT_SYNC_QUEUE)
             .bind(document_id.to_string())
-            .bind(operation_type)
+            .bind(operation_type_str)
             .bind(patch_json)
             .execute(&self.pool)
             .await?;
         
+        Ok(())
+    }
+    
+    pub async fn get_queued_patch(&self, document_id: &Uuid) -> Result<Option<json_patch::Patch>, ClientError> {
+        let row = sqlx::query(
+            "SELECT patch FROM sync_queue WHERE document_id = ? AND operation_type = 'update' ORDER BY created_at DESC LIMIT 1"
+        )
+        .bind(document_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        
+        match row {
+            Some(row) => {
+                let patch_json: Option<String> = row.try_get("patch")?;
+                match patch_json {
+                    Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+                    None => Ok(None),
+                }
+            }
+            None => Ok(None),
+        }
+    }
+    
+    pub async fn remove_from_sync_queue(&self, document_id: &Uuid) -> Result<(), ClientError> {
+        sqlx::query("DELETE FROM sync_queue WHERE document_id = ?")
+            .bind(document_id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }

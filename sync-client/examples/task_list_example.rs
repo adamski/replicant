@@ -397,15 +397,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     std::fs::write("/tmp/task_list_debug.log", "").unwrap();
     debug_log("=== Task List Example Starting ===");
     
-    // Initialize logging with minimal output to avoid interfering with TUI
-    // Use RUST_LOG=off to completely disable logging for clean TUI
-    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "off".to_string());
-    if log_level != "off" {
-        tracing_subscriber::fmt()
-            .with_env_filter(&log_level)
-            .with_writer(std::io::stderr)
-            .init();
-    }
+    // Initialize comprehensive logging to file for debugging
+    tracing_subscriber::fmt()
+        .with_env_filter("sync_client=info,sync_core=info,task_list_example=info")
+        .with_writer(std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("/tmp/sync_debug.log")
+            .unwrap())
+        .init();
 
     let cli = Cli::parse();
     debug_log(&format!("CLI args - database: {}, auto: {}, user: {:?}", cli.database, cli.auto, cli.user));
@@ -758,8 +759,6 @@ async fn run_app<B: Backend>(
 
 fn ui(f: &mut Frame, state: &SharedState) {
     let app_state = state.lock().unwrap();
-    
-    debug_log(&format!("Drawing UI - {} tasks loaded", app_state.tasks.len()));
     
     // Main layout - title bar and content
     let main_chunks = Layout::default()

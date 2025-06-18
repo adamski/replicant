@@ -24,9 +24,13 @@ elseif(WIN32)
     set(PLATFORM_LIBS ws2_32 userenv bcrypt)
 endif()
 
-# C++ example
+# C++ examples
 add_executable(simple_example simple_example.cpp)
 target_link_libraries(simple_example ${SYNC_CLIENT_LIB} ${PLATFORM_LIBS})
+
+add_executable(callback_example callback_example.cpp)
+target_link_libraries(callback_example ${SYNC_CLIENT_LIB} ${PLATFORM_LIBS})
+
 
 # Print build information
 message(STATUS "Building C++ example against SDK:")

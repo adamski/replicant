@@ -23,7 +23,9 @@ use crate::ffi::{CSyncEngine, CSyncResult};
 /// * 4 - SyncCompleted
 /// * 5 - SyncError
 /// * 6 - ConflictDetected
-/// * 7 - ConnectionStateChanged
+/// * 7 - ConnectionLost
+/// * 8 - ConnectionAttempted
+/// * 9 - ConnectionSucceeded
 #[cfg(debug_assertions)]
 #[no_mangle]
 pub extern "C" fn sync_engine_emit_test_event(
@@ -58,7 +60,9 @@ pub extern "C" fn sync_engine_emit_test_event(
             let test_id = Uuid::new_v4();
             engine.event_dispatcher.emit_conflict_detected(&test_id);
         },
-        7 => engine.event_dispatcher.emit_connection_state_changed(true),
+        7 => engine.event_dispatcher.emit_connection_lost("test-server"),
+        8 => engine.event_dispatcher.emit_connection_attempted("test-server"),
+        9 => engine.event_dispatcher.emit_connection_succeeded("test-server"),
         _ => return CSyncResult::ErrorInvalidInput,
     }
 

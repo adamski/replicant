@@ -427,7 +427,9 @@ pub extern "C" fn sync_engine_register_event_callback(
             4 => Some(EventType::SyncCompleted),
             5 => Some(EventType::SyncError),
             6 => Some(EventType::ConflictDetected),
-            7 => Some(EventType::ConnectionStateChanged),
+            7 => Some(EventType::ConnectionLost),
+            8 => Some(EventType::ConnectionAttempted),
+            9 => Some(EventType::ConnectionSucceeded),
             _ => return CSyncResult::ErrorInvalidInput,
         }
     } else {

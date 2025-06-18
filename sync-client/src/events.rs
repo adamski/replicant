@@ -69,8 +69,8 @@ pub enum EventType {
     SyncError = 5,
     /// A conflict was detected between document versions
     ConflictDetected = 6,
-    /// Connection state changed (connected/disconnected)
-    ConnectionStateChanged = 7,
+    /// Connection to server was lost
+    ConnectionLost = 7,
     /// A connection attempt was made to the server
     ConnectionAttempted = 8,
     /// Successfully connected to the server
@@ -328,8 +328,8 @@ impl EventDispatcher {
         self.queue_event(EventType::ConflictDetected, Some(document_id), None, None, None, 0, false);
     }
 
-    pub fn emit_connection_state_changed(&self, connected: bool) {
-        self.queue_event(EventType::ConnectionStateChanged, None, None, None, None, 0, connected);
+    pub fn emit_connection_lost(&self, server_url: &str) {
+        self.queue_event(EventType::ConnectionLost, None, Some(server_url), None, None, 0, false);
     }
 
     pub fn emit_connection_attempted(&self, server_url: &str) {

@@ -614,16 +614,14 @@ async fn run_app<B: Backend>(
                                     app_state.last_sync = Some(Instant::now());
                                     app_state.needs_refresh = true;
                                 }
-                                sync_client::events::EventType::ConnectionStateChanged => {
-                                    if boolean_data {
-                                        app_state.add_activity("Connected to server".to_string(), ActivityType::Connected);
-                                        app_state.sync_status.connected = true;
-                                        app_state.sync_status.connection_state = "Connected".to_string();
-                                    } else {
-                                        app_state.add_activity("Disconnected from server".to_string(), ActivityType::Disconnected);
-                                        app_state.sync_status.connected = false;
-                                        app_state.sync_status.connection_state = "Disconnected".to_string();
-                                    }
+                                sync_client::events::EventType::ConnectionLost => {
+                                    app_state.add_activity(
+                                        format!("Lost connection to {}", title.unwrap_or("server")),
+                                        ActivityType::Disconnected,
+                                    );
+                                    app_state.sync_status.connected = false;
+                                    app_state.sync_status.connection_state = "Disconnected".to_string();
+                                    app_state.needs_refresh = true;
                                 }
                                 sync_client::events::EventType::SyncError => {
                                     app_state.add_activity(

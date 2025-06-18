@@ -204,6 +204,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                 println!("  {} | {} | Rev: {}", doc.id, title, doc.revision_id);
             }
+            
+            // Allow extra time for potential incoming sync messages (like auto-sync after reconnection)
+            info!("Waiting for potential incoming sync updates...");
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         }
         
         _ => {

@@ -11,12 +11,12 @@ use tokio::runtime::Runtime;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{SyncEngine, ClientDatabase};
+use crate::{SyncEngine as CoreSyncEngine, ClientDatabase};
 use crate::events::{EventDispatcher, EventCallback, EventType};
 
 /// Opaque handle to a SyncEngine instance
-pub struct CSyncEngine {
-    engine: Option<SyncEngine>,
+pub struct SyncEngine {
+    engine: Option<CoreSyncEngine>,
     database: Arc<ClientDatabase>,
     runtime: Runtime,
     pub(crate) event_dispatcher: Arc<EventDispatcher>,
@@ -25,7 +25,7 @@ pub struct CSyncEngine {
 /// Result codes for C API functions
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CSyncResult {
+pub enum SyncResult {
     Success = 0,
     ErrorInvalidInput = -1,
     ErrorConnection = -2,
@@ -36,7 +36,7 @@ pub enum CSyncResult {
 
 /// Document structure for C API
 #[repr(C)]
-pub struct CDocument {
+pub struct Document {
     pub id: *mut c_char,
     pub title: *mut c_char,
     pub content: *mut c_char,
@@ -52,14 +52,14 @@ pub struct CDocument {
 /// * `user_identifier` - User identifier (email or username)
 /// 
 /// # Returns
-/// * Pointer to CSyncEngine on success, null on failure
+/// * Pointer to SyncEngine on success, null on failure
 #[no_mangle]
 pub extern "C" fn sync_engine_create(
     database_url: *const c_char,
     server_url: *const c_char,
     auth_token: *const c_char,
     user_identifier: *const c_char,
-) -> *mut CSyncEngine {
+) -> *mut SyncEngine {
     if database_url.is_null() || server_url.is_null() || auth_token.is_null() || user_identifier.is_null() {
         return ptr::null_mut();
     }
@@ -107,14 +107,14 @@ pub extern "C" fn sync_engine_create(
 
     // Try to create sync engine (optional - can work offline)
     let engine = runtime.block_on(async {
-        let sync_engine = SyncEngine::new(database_url, server_url, auth_token, user_identifier).await.ok()?;
+        let sync_engine = CoreSyncEngine::new(database_url, server_url, auth_token, user_identifier).await.ok()?;
         // We can't easily replace the event dispatcher in an existing SyncEngine,
         // so we'll use separate dispatchers for now. In a production system,
         // you'd want to refactor to share the same dispatcher.
         Some(sync_engine)
     });
 
-    Box::into_raw(Box::new(CSyncEngine {
+    Box::into_raw(Box::new(SyncEngine {
         engine,
         database,
         runtime,
@@ -124,7 +124,7 @@ pub extern "C" fn sync_engine_create(
 
 /// Destroy a sync engine instance and free memory
 #[no_mangle]
-pub extern "C" fn sync_engine_destroy(engine: *mut CSyncEngine) {
+pub extern "C" fn sync_engine_destroy(engine: *mut SyncEngine) {
     if !engine.is_null() {
         unsafe {
             let _ = Box::from_raw(engine);
@@ -144,30 +144,30 @@ pub extern "C" fn sync_engine_destroy(engine: *mut CSyncEngine) {
 /// * CSyncResult indicating success or failure
 #[no_mangle]
 pub extern "C" fn sync_engine_create_document(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     title: *const c_char,
     content_json: *const c_char,
     out_document_id: *mut c_char,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() || title.is_null() || content_json.is_null() || out_document_id.is_null() {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &mut *engine };
 
     let title = match unsafe { CStr::from_ptr(title) }.to_str() {
         Ok(s) => s,
-        Err(_) => return CSyncResult::ErrorInvalidInput,
+        Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
     let content_json = match unsafe { CStr::from_ptr(content_json) }.to_str() {
         Ok(s) => s,
-        Err(_) => return CSyncResult::ErrorInvalidInput,
+        Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
     let content: Value = match serde_json::from_str(content_json) {
         Ok(c) => c,
-        Err(_) => return CSyncResult::ErrorSerialization,
+        Err(_) => return SyncResult::ErrorSerialization,
     };
 
     let doc_id = if let Some(ref sync_engine) = engine.engine {
@@ -186,7 +186,7 @@ pub extern "C" fn sync_engine_create_document(
             sync_engine.create_document(final_content).await
         }) {
             Ok(doc) => doc.id,
-            Err(_) => return CSyncResult::ErrorConnection,
+            Err(_) => return SyncResult::ErrorConnection,
         }
     } else {
         // Offline mode - create locally
@@ -195,7 +195,7 @@ pub extern "C" fn sync_engine_create_document(
             engine.database.get_user_id().await
         }) {
             Ok(id) => id,
-            Err(_) => return CSyncResult::ErrorDatabase,
+            Err(_) => return SyncResult::ErrorDatabase,
         };
 
         // Ensure title is in the content for offline mode too
@@ -224,7 +224,7 @@ pub extern "C" fn sync_engine_create_document(
         if let Err(_) = engine.runtime.block_on(async {
             engine.database.save_document(&doc).await
         }) {
-            return CSyncResult::ErrorDatabase;
+            return SyncResult::ErrorDatabase;
         }
 
         // Emit event for offline document creation
@@ -243,7 +243,7 @@ pub extern "C" fn sync_engine_create_document(
         }
     }
 
-    CSyncResult::Success
+    SyncResult::Success
 }
 
 /// Update an existing document
@@ -257,34 +257,34 @@ pub extern "C" fn sync_engine_create_document(
 /// * CSyncResult indicating success or failure
 #[no_mangle]
 pub extern "C" fn sync_engine_update_document(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     document_id: *const c_char,
     content_json: *const c_char,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() || document_id.is_null() || content_json.is_null() {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &mut *engine };
 
     let document_id = match unsafe { CStr::from_ptr(document_id) }.to_str() {
         Ok(s) => s,
-        Err(_) => return CSyncResult::ErrorInvalidInput,
+        Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
     let doc_uuid = match Uuid::parse_str(document_id) {
         Ok(id) => id,
-        Err(_) => return CSyncResult::ErrorInvalidInput,
+        Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
     let content_json = match unsafe { CStr::from_ptr(content_json) }.to_str() {
         Ok(s) => s,
-        Err(_) => return CSyncResult::ErrorInvalidInput,
+        Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
     let content: Value = match serde_json::from_str(content_json) {
         Ok(c) => c,
-        Err(_) => return CSyncResult::ErrorSerialization,
+        Err(_) => return SyncResult::ErrorSerialization,
     };
 
     if let Some(ref sync_engine) = engine.engine {
@@ -292,8 +292,8 @@ pub extern "C" fn sync_engine_update_document(
         match engine.runtime.block_on(async {
             sync_engine.update_document(doc_uuid, content).await
         }) {
-            Ok(_) => CSyncResult::Success,
-            Err(_) => CSyncResult::ErrorConnection,
+            Ok(_) => SyncResult::Success,
+            Err(_) => SyncResult::ErrorConnection,
         }
     } else {
         // Offline mode - update locally
@@ -301,7 +301,7 @@ pub extern "C" fn sync_engine_update_document(
             engine.database.get_document(&doc_uuid).await
         }) {
             Ok(d) => d,
-            Err(_) => return CSyncResult::ErrorDatabase,
+            Err(_) => return SyncResult::ErrorDatabase,
         };
 
         let mut updated_doc = doc;
@@ -316,9 +316,9 @@ pub extern "C" fn sync_engine_update_document(
             Ok(_) => {
                 // Emit event for offline document update
                 engine.event_dispatcher.emit_document_updated(&doc_uuid, &updated_doc.content);
-                CSyncResult::Success
+                SyncResult::Success
             },
-            Err(_) => CSyncResult::ErrorDatabase,
+            Err(_) => SyncResult::ErrorDatabase,
         }
     }
 }
@@ -333,23 +333,23 @@ pub extern "C" fn sync_engine_update_document(
 /// * CSyncResult indicating success or failure
 #[no_mangle]
 pub extern "C" fn sync_engine_delete_document(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     document_id: *const c_char,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() || document_id.is_null() {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &mut *engine };
 
     let document_id = match unsafe { CStr::from_ptr(document_id) }.to_str() {
         Ok(s) => s,
-        Err(_) => return CSyncResult::ErrorInvalidInput,
+        Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
     let doc_uuid = match Uuid::parse_str(document_id) {
         Ok(id) => id,
-        Err(_) => return CSyncResult::ErrorInvalidInput,
+        Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
     if let Some(ref sync_engine) = engine.engine {
@@ -357,8 +357,8 @@ pub extern "C" fn sync_engine_delete_document(
         match engine.runtime.block_on(async {
             sync_engine.delete_document(doc_uuid).await
         }) {
-            Ok(_) => CSyncResult::Success,
-            Err(_) => CSyncResult::ErrorConnection,
+            Ok(_) => SyncResult::Success,
+            Err(_) => SyncResult::ErrorConnection,
         }
     } else {
         // Offline mode
@@ -368,9 +368,9 @@ pub extern "C" fn sync_engine_delete_document(
             Ok(_) => {
                 // Emit event for offline document deletion
                 engine.event_dispatcher.emit_document_deleted(&doc_uuid);
-                CSyncResult::Success
+                SyncResult::Success
             },
-            Err(_) => CSyncResult::ErrorDatabase,
+            Err(_) => SyncResult::ErrorDatabase,
         }
     }
 }
@@ -407,13 +407,13 @@ pub extern "C" fn sync_get_version() -> *mut c_char {
 /// * CSyncResult indicating success or failure
 #[no_mangle]
 pub extern "C" fn sync_engine_register_event_callback(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     callback: EventCallback,
     context: *mut c_void,
     event_filter: i32,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &*engine };
@@ -430,15 +430,15 @@ pub extern "C" fn sync_engine_register_event_callback(
             7 => Some(EventType::ConnectionLost),
             8 => Some(EventType::ConnectionAttempted),
             9 => Some(EventType::ConnectionSucceeded),
-            _ => return CSyncResult::ErrorInvalidInput,
+            _ => return SyncResult::ErrorInvalidInput,
         }
     } else {
         None
     };
 
     match engine.event_dispatcher.register_callback(callback, context, filter) {
-        Ok(_) => CSyncResult::Success,
-        Err(_) => CSyncResult::ErrorUnknown,
+        Ok(_) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorUnknown,
     }
 }
 
@@ -456,11 +456,11 @@ pub extern "C" fn sync_engine_register_event_callback(
 /// Events are queued from any thread but only processed on the callback thread.
 #[no_mangle]
 pub extern "C" fn sync_engine_process_events(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     out_processed_count: *mut u32,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &*engine };
@@ -472,8 +472,8 @@ pub extern "C" fn sync_engine_process_events(
                     *out_processed_count = count as u32;
                 }
             }
-            CSyncResult::Success
+            SyncResult::Success
         },
-        Err(_) => CSyncResult::ErrorUnknown,
+        Err(_) => SyncResult::ErrorUnknown,
     }
 }

@@ -10,7 +10,7 @@
 #include <string.h>
 
 /* Include the main sync client header */
-#include "../../dist/include/sync_client.h"
+#include "sync_client.h"
 
 /* Simple callback function */
 void simple_callback(const EventData* event, void* context) {

@@ -4,7 +4,7 @@
 //! These functions are only available in debug builds.
 
 use uuid::Uuid;
-use crate::ffi::{CSyncEngine, CSyncResult};
+use crate::ffi::{SyncEngine, SyncResult};
 
 /// Trigger a test event (for development/testing purposes)
 /// 
@@ -13,7 +13,7 @@ use crate::ffi::{CSyncEngine, CSyncResult};
 /// * `event_type` - Event type to emit (0-7)
 /// 
 /// # Returns
-/// * CSyncResult indicating success or failure
+/// * SyncResult indicating success or failure
 /// 
 /// # Event Types
 /// * 0 - DocumentCreated
@@ -29,11 +29,11 @@ use crate::ffi::{CSyncEngine, CSyncResult};
 #[cfg(debug_assertions)]
 #[no_mangle]
 pub extern "C" fn sync_engine_emit_test_event(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     event_type: i32,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &*engine };
@@ -63,10 +63,10 @@ pub extern "C" fn sync_engine_emit_test_event(
         7 => engine.event_dispatcher.emit_connection_lost("test-server"),
         8 => engine.event_dispatcher.emit_connection_attempted("test-server"),
         9 => engine.event_dispatcher.emit_connection_succeeded("test-server"),
-        _ => return CSyncResult::ErrorInvalidInput,
+        _ => return SyncResult::ErrorInvalidInput,
     }
 
-    CSyncResult::Success
+    SyncResult::Success
 }
 
 /// Trigger multiple test events in sequence (for stress testing callbacks)
@@ -76,15 +76,15 @@ pub extern "C" fn sync_engine_emit_test_event(
 /// * `count` - Number of events to emit (1-100)
 /// 
 /// # Returns
-/// * CSyncResult indicating success or failure
+/// * SyncResult indicating success or failure
 #[cfg(debug_assertions)]
 #[no_mangle]
 pub extern "C" fn sync_engine_emit_test_event_burst(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     count: i32,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() || count < 1 || count > 100 {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &*engine };
@@ -100,5 +100,5 @@ pub extern "C" fn sync_engine_emit_test_event_burst(
         engine.event_dispatcher.emit_document_created(&test_id, &test_content);
     }
 
-    CSyncResult::Success
+    SyncResult::Success
 }

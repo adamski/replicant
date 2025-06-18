@@ -31,7 +31,3 @@ cbindgen = "0.26"
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
-
-[[bin]]
-name = "test_offline_conflict_real"
-path = "../test_offline_conflict_real.rs"

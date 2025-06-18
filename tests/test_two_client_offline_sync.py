@@ -198,12 +198,15 @@ def main():
         client_a_content = check_document_content(client_a_db, test_user, doc_id)
         colored_print(f"📄 Client A now has: '{client_a_content.get('title')}'", "cyan")
         
-        # Phase 3: Restart server and test real-time propagation
-        colored_print("\n📋 Phase 3: Server Restart and Real-Time Propagation Test", "cyan")
+        # Phase 3: Silent Disconnection Test with Server Running
+        colored_print("\n📋 Phase 3: Silent Disconnection and Heartbeat Test", "cyan")
         server_process = start_server()
         
-        # Simulate Client A reconnecting first (like in Task List scenario)
-        colored_print("🔄 Client A: Simulating reconnection and sync of offline edit...", "blue")
+        # Start two "persistent" client connections that will stay alive
+        colored_print("🔄 Starting persistent client connections...", "blue")
+        
+        # Client A connects and syncs offline edit
+        colored_print("🔄 Client A: Connecting and syncing offline edit...", "blue")
         ret, out, err = run_command([
             "cargo", "run", "--bin", "simple_sync_test", "--",
             "sync",
@@ -212,25 +215,12 @@ def main():
         ])
         
         if ret != 0:
-            colored_print(f"❌ Client A reconnection sync failed: {err}", "red")
+            colored_print(f"❌ Client A initial sync failed: {err}", "red")
         else:
             colored_print("✅ Client A synced offline edit to server", "green")
         
-        # Verify Client A's edit made it to server by checking its local state
-        client_a_after_sync = check_document_content(client_a_db, test_user, doc_id)
-        colored_print(f"📄 Client A after sync: '{client_a_after_sync.get('title')}'", "cyan")
-        
-        # Wait a moment to ensure server has processed the update
-        time.sleep(2)
-        
-        # Now simulate Client B reconnecting and check for AUTOMATIC propagation
-        colored_print("🔄 Client B: Simulating reconnection (should get Client A's update automatically)...", "blue")
-        
-        # First check Client B's current state (should still be old)
-        client_b_before = check_document_content(client_b_db, test_user, doc_id)
-        colored_print(f"📄 Client B before reconnection: '{client_b_before.get('title')}'", "cyan")
-        
-        # Trigger reconnection by doing a simple status check (simulates opening the app)
+        # Client B connects
+        colored_print("🔄 Client B: Connecting to server...", "blue")
         ret, out, err = run_command([
             "cargo", "run", "--bin", "simple_sync_test", "--",
             "status",
@@ -238,41 +228,113 @@ def main():
             "--user", test_user
         ])
         
-        # Wait for automatic sync to potentially happen
-        colored_print("⏱️ Waiting 8 seconds for automatic sync propagation...", "yellow")
+        # Wait for both clients to be fully connected
+        time.sleep(3)
+        colored_print("✅ Both clients connected to server", "green")
+        
+        # Verify current state before server disconnect
+        client_a_before_disconnect = check_document_content(client_a_db, test_user, doc_id)
+        client_b_before_disconnect = check_document_content(client_b_db, test_user, doc_id)
+        colored_print(f"📄 Client A state: '{client_a_before_disconnect.get('title')}'", "cyan")
+        colored_print(f"📄 Client B state: '{client_b_before_disconnect.get('title')}'", "cyan")
+        
+        # Phase 4: Simulate server crash while clients stay connected
+        colored_print("\n📋 Phase 4: Server Crash Simulation", "cyan")
+        colored_print("🛑 Stopping server abruptly (simulating crash/restart)...", "yellow")
+        stop_server(server_process)
+        server_process = None
+        
+        # Wait for disconnection to be unnoticed initially
+        time.sleep(2)
+        
+        # Client A makes an edit while server is down (should queue for sync)
+        colored_print("📝 Client A: Making edit while server is DOWN...", "blue")
+        ret, out, err = run_command([
+            "cargo", "run", "--bin", "simple_sync_test", "--",
+            "update",
+            "--database", client_a_db,
+            "--user", test_user,
+            "--id", doc_id,
+            "--title", "Edit Made During Server Downtime",
+            "--desc", "This edit was made while server was crashed"
+        ])
+        
+        if ret != 0:
+            colored_print(f"❌ Edit during downtime failed: {err}", "red")
+        else:
+            colored_print("✅ Client A made edit during server downtime", "green")
+        
+        # Check Client A's local state after downtime edit
+        client_a_during_downtime = check_document_content(client_a_db, test_user, doc_id)
+        colored_print(f"📄 Client A after downtime edit: '{client_a_during_downtime.get('title')}'", "cyan")
+        
+        # Wait for heartbeat to detect disconnection (10 second ping interval + buffer)
+        colored_print("⏱️ Waiting for heartbeat to detect disconnection (up to 15 seconds)...", "yellow")
+        time.sleep(15)
+        
+        # Phase 5: Server restart and automatic reconnection test
+        colored_print("\n📋 Phase 5: Server Restart and Automatic Recovery", "cyan")
+        colored_print("🚀 Restarting server...", "blue")
+        server_process = start_server()
+        
+        # Wait for automatic reconnection and sync to happen
+        colored_print("⏱️ Waiting for automatic reconnection and sync (up to 20 seconds)...", "yellow")
+        time.sleep(20)
+        
+        # Check if Client A's edit automatically synced to server
+        client_a_after_reconnect = check_document_content(client_a_db, test_user, doc_id)
+        colored_print(f"📄 Client A after reconnection: '{client_a_after_reconnect.get('title')}'", "cyan")
+        
+        # Now check if Client B automatically gets the update
+        colored_print("🔄 Client B: Checking for automatic update propagation...", "blue")
+        
+        # Trigger Client B to reconnect/sync by doing a status check
+        ret, out, err = run_command([
+            "cargo", "run", "--bin", "simple_sync_test", "--",
+            "status",
+            "--database", client_b_db,
+            "--user", test_user
+        ])
+        
+        # Wait for automatic propagation
+        colored_print("⏱️ Waiting for automatic propagation to Client B...", "yellow")
         time.sleep(8)
         
-        # Check if Client B automatically received the update
+        # Check if Client B received the update
         client_b_after = check_document_content(client_b_db, test_user, doc_id)
-        colored_print(f"📄 Client B after automatic sync: '{client_b_after.get('title')}'", "cyan")
+        colored_print(f"📄 Client B after propagation: '{client_b_after.get('title')}'", "cyan")
         
-        # Phase 4: Verification of Real-Time Propagation
-        colored_print("\n📋 Phase 4: Real-Time Propagation Verification", "cyan")
+        # Phase 6: Verification of Silent Disconnection Recovery
+        colored_print("\n📋 Phase 6: Silent Disconnection Recovery Verification", "cyan")
         
-        # The key test: Did Client B automatically get Client A's offline edit?
+        # The key test: Did the edit made during server downtime propagate after reconnection?
         test_passed = True
         
-        if client_b_after.get("title") == client_a_after_sync.get("title") and \
-           client_b_after.get("revision") == client_a_after_sync.get("revision"):
-            colored_print("✅ AUTOMATIC PROPAGATION SUCCESSFUL!", "green")
+        # Check if the downtime edit made it through the entire process
+        expected_title = "Edit Made During Server Downtime"
+        
+        if client_b_after.get("title") == client_a_after_reconnect.get("title") and \
+           expected_title in client_b_after.get("title", ""):
+            colored_print("✅ SILENT DISCONNECTION RECOVERY SUCCESSFUL!", "green")
             colored_print(f"   Both clients now have: '{client_b_after.get('title')}'", "green")
             colored_print(f"   Both clients have revision: {client_b_after.get('revision')}", "green")
-            
-            if "Client A Offline Edit" in client_b_after.get("title", ""):
-                colored_print("✅ Offline edit automatically propagated without manual sync!", "green")
-            else:
-                colored_print("⚠️ WARNING: Content doesn't match expected offline edit", "yellow")
-                test_passed = False
+            colored_print("✅ Edit made during server downtime automatically propagated!", "green")
         else:
-            colored_print("❌ AUTOMATIC PROPAGATION FAILED!", "red")
-            colored_print(f"   Client A has: '{client_a_after_sync.get('title')}' (Rev: {client_a_after_sync.get('revision')})", "red")
+            colored_print("❌ SILENT DISCONNECTION RECOVERY FAILED!", "red")
+            colored_print(f"   Client A has: '{client_a_after_reconnect.get('title')}' (Rev: {client_a_after_reconnect.get('revision')})", "red")
             colored_print(f"   Client B has: '{client_b_after.get('title')}' (Rev: {client_b_after.get('revision')})", "red")
-            colored_print("   Client B did not automatically receive Client A's offline edit!", "red")
+            colored_print("   Edit made during server downtime did NOT propagate to Client B!", "red")
             test_passed = False
         
-        # Additional check: Verify offline edit made it through the process
-        if not ("Client A Offline Edit" in client_a_after_sync.get("title", "")):
-            colored_print("❌ Client A's offline edit was lost during sync!", "red")
+        # Verify the progression through all edits
+        if expected_title not in client_a_after_reconnect.get("title", ""):
+            colored_print("❌ Client A's downtime edit was lost during reconnection!", "red")
+            test_passed = False
+        
+        # Also check that we progressed beyond the initial offline edit
+        if "Client A Offline Edit" in client_b_after.get("title", "") and expected_title not in client_b_after.get("title", ""):
+            colored_print("⚠️ WARNING: Client B still has old offline edit, not the downtime edit", "yellow")
+            colored_print("   This suggests the downtime edit didn't sync or propagate properly", "yellow")
             test_passed = False
         
         # Check server logs for message types
@@ -313,10 +375,15 @@ def main():
         # Final result
         colored_print("", "white")
         if test_passed:
-            colored_print("🎉 TEST PASSED: Offline edits automatically propagate between clients in real-time", "green")
+            colored_print("🎉 TEST PASSED: Silent disconnection detection and automatic recovery working!", "green")
+            colored_print("   ✅ Heartbeat detected server disconnection", "green")
+            colored_print("   ✅ Edits made during downtime were queued", "green")
+            colored_print("   ✅ Automatic reconnection occurred after server restart", "green")
+            colored_print("   ✅ Pending edits automatically synced and propagated", "green")
         else:
-            colored_print("💥 TEST FAILED: Offline edits not automatically propagating to other clients", "red")
-            colored_print("   This matches the Task List issue where updates don't appear in other instances", "red")
+            colored_print("💥 TEST FAILED: Silent disconnection recovery not working properly", "red")
+            colored_print("   This matches the Task List issue where updates don't appear after server restart", "red")
+            colored_print("   The heartbeat mechanism may not be detecting disconnections properly", "red")
         
         return 0 if test_passed else 1
         

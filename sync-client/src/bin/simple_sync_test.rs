@@ -1,4 +1,5 @@
 use std::env;
+use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 use sync_client::SyncEngine;
@@ -25,6 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("  list --database <path> --user <email>");
         eprintln!("  sync --database <path> --user <email>");
         eprintln!("  status --database <path> --user <email>");
+        eprintln!("  daemon --database <path> --user <email>");
         std::process::exit(1);
     }
     
@@ -208,6 +210,144 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Allow extra time for potential incoming sync messages (like auto-sync after reconnection)
             info!("Waiting for potential incoming sync updates...");
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+        
+        "daemon" => {
+            // Daemon mode - keep sync engine alive and process commands from stdin
+            info!("Starting daemon mode - sync engine will stay alive");
+            
+            // Create a shared engine reference that can be used across async tasks
+            let engine = Arc::new(engine);
+            let engine_for_stdin = engine.clone();
+            
+            println!("DAEMON_READY");
+            
+            // Process stdin commands in a separate async task
+            let stdin_task = tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                
+                let stdin = tokio::io::stdin();
+                let reader = BufReader::new(stdin);
+                let mut lines = reader.lines();
+                
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let line = line.trim().to_string();
+                    
+                    if line.is_empty() {
+                        continue;
+                    }
+                    
+                    if line == "QUIT" {
+                        info!("Received QUIT command, exiting daemon");
+                        break;
+                    }
+                    
+                    let parts: Vec<&str> = line.split(':').collect();
+                    match parts.get(0) {
+                        Some(&"CREATE") => {
+                            if parts.len() >= 3 {
+                                let title = parts[1];
+                                let desc = parts.get(2).unwrap_or(&"");
+                                let content = json!({
+                                    "title": title,
+                                    "description": desc,
+                                    "priority": "medium",
+                                    "tags": ["daemon"]
+                                });
+                                
+                                let create_future = engine_for_stdin.create_document(content);
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5), 
+                                    create_future
+                                ).await {
+                                    Ok(Ok(doc)) => println!("RESPONSE:CREATED:{}", doc.id),
+                                    Ok(Err(e)) => println!("RESPONSE:ERROR:Create failed: {}", e),
+                                    Err(_) => println!("RESPONSE:ERROR:Create timeout"),
+                                }
+                            } else {
+                                println!("RESPONSE:ERROR:CREATE requires title:description");
+                            }
+                        }
+                        Some(&"UPDATE") => {
+                            if parts.len() >= 4 {
+                                let doc_id_str = parts[1];
+                                let title = parts[2];
+                                let desc = parts.get(3).unwrap_or(&"");
+                                
+                                match Uuid::parse_str(doc_id_str) {
+                                    Ok(doc_id) => {
+                                        let content = json!({
+                                            "title": title,
+                                            "description": desc,
+                                            "updated": true
+                                        });
+                                        
+                                        let update_future = engine_for_stdin.update_document(doc_id, content);
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(5), 
+                                            update_future
+                                        ).await {
+                                            Ok(Ok(_)) => println!("RESPONSE:UPDATED:{}", doc_id),
+                                            Ok(Err(e)) => println!("RESPONSE:ERROR:Update failed: {}", e),
+                                            Err(_) => println!("RESPONSE:ERROR:Update timeout"),
+                                        }
+                                    }
+                                    Err(_) => println!("RESPONSE:ERROR:Invalid document ID"),
+                                }
+                            } else {
+                                println!("RESPONSE:ERROR:UPDATE requires doc_id:title:description");
+                            }
+                        }
+                        Some(&"STATUS") => {
+                            // Use timeouts to prevent blocking during reconnection
+                            let doc_count_future = engine_for_stdin.count_documents();
+                            let pending_count_future = engine_for_stdin.count_pending_sync();
+                            
+                            let doc_count = match tokio::time::timeout(
+                                std::time::Duration::from_millis(500), 
+                                doc_count_future
+                            ).await {
+                                Ok(Ok(count)) => count,
+                                _ => 0, // Return 0 on timeout or error
+                            };
+                            
+                            let pending_count = match tokio::time::timeout(
+                                std::time::Duration::from_millis(500), 
+                                pending_count_future
+                            ).await {
+                                Ok(Ok(count)) => count,
+                                _ => 0, // Return 0 on timeout or error
+                            };
+                            
+                            let connected = engine_for_stdin.is_connected();
+                            println!("RESPONSE:STATUS:{}:{}:{}", doc_count, pending_count, connected);
+                        }
+                        Some(&"LIST") => {
+                            match engine_for_stdin.get_all_documents().await {
+                                Ok(docs) => {
+                                    for doc in docs {
+                                        let title = doc.content.get("title")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("No title");
+                                        println!("RESPONSE:DOC:{}:{}:{}", doc.id, title, doc.revision_id);
+                                    }
+                                    println!("RESPONSE:LIST_END");
+                                }
+                                Err(e) => println!("RESPONSE:ERROR:List failed: {}", e),
+                            }
+                        }
+                        _ => {
+                            println!("RESPONSE:ERROR:Unknown command: {}", line);
+                        }
+                    }
+                }
+                
+                info!("Stdin processing task exiting");
+            });
+            
+            // Wait for the stdin task to complete
+            let _ = stdin_task.await;
+            info!("Daemon mode exiting");
         }
         
         _ => {

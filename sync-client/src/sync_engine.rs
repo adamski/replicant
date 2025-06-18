@@ -1,6 +1,6 @@
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::io::Write;
 use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
@@ -26,6 +26,9 @@ fn debug_log(msg: &str) {
     let timestamp = chrono::Utc::now().format("%H:%M:%S%.3f");
     writeln!(file, "[{}] SYNC: {}", timestamp, msg).unwrap();
 }
+
+// Ping intervals for heartbeat detection
+const PING_INTERVAL: Duration = Duration::from_secs(10);  // Send ping every 10 seconds
 
 #[derive(Debug, Clone)]
 struct PendingUpload {
@@ -53,8 +56,12 @@ pub struct SyncEngine {
     upload_complete_notifier: Arc<Notify>,
     sync_protection_mode: Arc<AtomicBool>,
     is_connected: Arc<AtomicBool>,
+    last_ping_time: Arc<Mutex<Option<Instant>>>,
     server_url: String,
     auth_token: String,
+    // Channel for triggering pending sync after reconnection
+    reconnect_sync_tx: mpsc::Sender<()>,
+    reconnect_sync_rx: Option<mpsc::Receiver<()>>,
 }
 
 impl SyncEngine {
@@ -79,8 +86,11 @@ impl SyncEngine {
         // Create a channel for messages
         let (tx, rx) = mpsc::channel(100);
         
+        // Create a channel for reconnection sync triggers
+        let (reconnect_sync_tx, reconnect_sync_rx) = mpsc::channel(10);
+        
         // Try to connect to WebSocket, but don't fail if offline
-        let (ws_client, is_connected) = match WebSocketClient::connect(
+        let (ws_client, is_connected, initial_ping_time) = match WebSocketClient::connect(
             server_url, 
             user_id, 
             client_id, 
@@ -94,11 +104,11 @@ impl SyncEngine {
                         tracing::error!("WebSocket receiver error: {}", e);
                     }
                 });
-                (Some(client), true)
+                (Some(client), true, Some(Instant::now()))
             }
             Err(e) => {
                 tracing::warn!("Failed to connect to server (will retry): {}", e);
-                (None, false)
+                (None, false, None)
             }
         };
         
@@ -114,8 +124,11 @@ impl SyncEngine {
             upload_complete_notifier: Arc::new(Notify::new()),
             sync_protection_mode: Arc::new(AtomicBool::new(false)),
             is_connected: Arc::new(AtomicBool::new(is_connected)),
+            last_ping_time: Arc::new(Mutex::new(initial_ping_time)),
             server_url: server_url.to_string(),
             auth_token: auth_token.to_string(),
+            reconnect_sync_tx,
+            reconnect_sync_rx: Some(reconnect_sync_rx),
         };
         
         // Automatically start background tasks
@@ -133,12 +146,24 @@ impl SyncEngine {
         let rx = self.message_rx.take()
             .ok_or_else(|| ClientError::WebSocket("SyncEngine already started".to_string()))?;
         
+        // Take the reconnect sync receiver
+        let reconnect_sync_rx = self.reconnect_sync_rx.take()
+            .ok_or_else(|| ClientError::WebSocket("SyncEngine reconnect sync already started".to_string()))?;
+        
         let db = self.db.clone();
         let client_id = self.client_id;
         let event_dispatcher = self.event_dispatcher.clone();
         let pending_uploads = self.pending_uploads.clone();
         let upload_complete_notifier = self.upload_complete_notifier.clone();
         let sync_protection_mode = self.sync_protection_mode.clone();
+        let ws_client = self.ws_client.clone();
+        let user_id = self.user_id;
+        
+        // Clone variables for the reconnection sync handler
+        let db_for_reconnect_sync = db.clone();
+        let pending_uploads_for_reconnect_sync = pending_uploads.clone();
+        let sync_protection_mode_for_reconnect_sync = sync_protection_mode.clone();
+        let ws_client_for_reconnect_sync = ws_client.clone();
         
         // Start reconnection monitor if not connected
         if !self.is_connected.load(Ordering::Relaxed) {
@@ -166,6 +191,32 @@ impl SyncEngine {
                 }
             }
             tracing::warn!("CLIENT {}: Message handler terminated", client_id);
+        });
+        
+        // Spawn reconnection sync handler  
+        tokio::spawn(async move {
+            let mut reconnect_sync_rx = reconnect_sync_rx;
+            tracing::info!("CLIENT {}: Reconnection sync handler started", client_id);
+            
+            while let Some(_) = reconnect_sync_rx.recv().await {
+                tracing::info!("CLIENT {}: Received reconnection sync trigger", client_id);
+                
+                // Perform pending sync using the actual engine components
+                if let Err(e) = Self::perform_pending_sync_after_reconnection(
+                    &db_for_reconnect_sync,
+                    &ws_client_for_reconnect_sync,
+                    user_id,
+                    client_id,
+                    &pending_uploads_for_reconnect_sync,
+                    &sync_protection_mode_for_reconnect_sync
+                ).await {
+                    tracing::error!("CLIENT {}: Failed to sync pending documents after reconnection: {}", client_id, e);
+                } else {
+                    tracing::info!("✅ CLIENT {}: Pending documents sync completed after reconnection", client_id);
+                }
+            }
+            
+            tracing::warn!("CLIENT {}: Reconnection sync handler terminated", client_id);
         });
         
         // Only perform initial sync if connected
@@ -384,6 +435,16 @@ impl SyncEngine {
             tracing::info!("CLIENT:   - Document: {} (updated: {})", doc.id, doc.updated_at);
         }
         Ok(docs)
+    }
+    
+    pub async fn count_documents(&self) -> Result<usize, ClientError> {
+        let docs = self.db.get_all_documents().await?;
+        Ok(docs.len())
+    }
+    
+    pub async fn count_pending_sync(&self) -> Result<usize, ClientError> {
+        let pending_docs = self.db.get_pending_documents().await?;
+        Ok(pending_docs.len())
     }
     
     async fn sync_pending_documents(&self) -> Result<(), ClientError> {
@@ -1040,7 +1101,9 @@ impl SyncEngine {
         let db = self.db.clone();
         let pending_uploads = self.pending_uploads.clone();
         let upload_complete_notifier = self.upload_complete_notifier.clone();
+        let reconnect_sync_tx = self.reconnect_sync_tx.clone();
         let sync_protection_mode = self.sync_protection_mode.clone();
+        let last_ping_time = self.last_ping_time.clone();
         
         tracing::info!("🔄 CLIENT {}: Starting continuous reconnection monitor (5-second intervals)", client_id);
         
@@ -1070,6 +1133,9 @@ impl SyncEngine {
                             // Update the client
                             *ws_client.lock().await = Some(new_client);
                             is_connected.store(true, Ordering::Relaxed);
+                            
+                            // Reset ping timer on successful connection
+                            *last_ping_time.lock().await = Some(Instant::now());
                             
                             // Emit connection event
                             event_dispatcher.emit_connection_succeeded(&server_url);
@@ -1121,31 +1187,13 @@ impl SyncEngine {
                                 event_dispatcher_clone.emit_connection_lost(&handler_server_url);
                             });
                             
-                            // Sync pending documents after reconnection
-                            tracing::info!("📤 CLIENT {}: Starting post-reconnection sync", client_id);
+                            // Trigger pending sync on the real sync engine via channel
+                            tracing::info!("📤 CLIENT {}: Triggering post-reconnection sync on real engine", client_id);
                             
-                            // Create a temporary sync engine instance to call sync_pending_documents
-                            let temp_sync_engine = SyncEngine {
-                                db: db.clone(),
-                                ws_client: ws_client.clone(),
-                                user_id,
-                                client_id,
-                                node_id: format!("client_{}", user_id),
-                                message_rx: None,
-                                event_dispatcher: event_dispatcher.clone(),
-                                pending_uploads: pending_uploads.clone(),
-                                upload_complete_notifier: upload_complete_notifier.clone(),
-                                sync_protection_mode: sync_protection_mode.clone(),
-                                is_connected: is_connected.clone(),
-                                server_url: server_url.clone(),
-                                auth_token: auth_token.clone(),
-                            };
-                            
-                            // Use the proper sync method instead of CreateDocument
-                            if let Err(e) = temp_sync_engine.sync_pending_documents().await {
-                                tracing::error!("CLIENT {}: Failed to sync pending documents after reconnection: {}", client_id, e);
+                            if let Err(e) = reconnect_sync_tx.try_send(()) {
+                                tracing::error!("CLIENT {}: Failed to trigger reconnection sync: {}", client_id, e);
                             } else {
-                                tracing::info!("✅ CLIENT {}: Pending documents sync completed after reconnection", client_id);
+                                tracing::info!("✅ CLIENT {}: Reconnection sync trigger sent to real engine", client_id);
                             }
                             
                             // Also request full sync to get any updates that happened while offline
@@ -1164,11 +1212,63 @@ impl SyncEngine {
                         }
                     }
                 } else {
-                    // Check if connection is still alive by trying to get the client
-                    if ws_client.lock().await.is_none() {
-                        tracing::warn!("⚠️ CLIENT {}: Connection flag says connected but no client found - marking as disconnected", client_id);
-                        is_connected.store(false, Ordering::Relaxed);
-                        event_dispatcher.emit_connection_lost(&server_url);
+                    // Connection is supposedly active - perform heartbeat check
+                    let mut should_ping = false;
+                    {
+                        let last_ping = last_ping_time.lock().await;
+                        match *last_ping {
+                            Some(last_time) => {
+                                if last_time.elapsed() >= PING_INTERVAL {
+                                    should_ping = true;
+                                }
+                            }
+                            None => {
+                                // Never pinged before, time to start
+                                should_ping = true;
+                            }
+                        }
+                    }
+                    
+                    if should_ping {
+                        // Try to send a ping to verify connection is alive
+                        tracing::info!("💓 CLIENT {}: Sending heartbeat ping to verify connection", client_id);
+                        let client_guard = ws_client.lock().await;
+                        match client_guard.as_ref() {
+                            Some(client) => {
+                                match client.send(ClientMessage::Ping).await {
+                                    Ok(_) => {
+                                        // Ping successful, update last ping time
+                                        *last_ping_time.lock().await = Some(Instant::now());
+                                        tracing::info!("✅ CLIENT {}: Heartbeat ping successful - connection alive", client_id);
+                                    }
+                                    Err(e) => {
+                                        // Ping failed - connection is broken
+                                        tracing::error!("💥 CLIENT {}: Heartbeat ping FAILED: {} - marking as disconnected and starting reconnection", client_id, e);
+                                        is_connected.store(false, Ordering::Relaxed);
+                                        event_dispatcher.emit_connection_lost(&server_url);
+                                    }
+                                }
+                            }
+                            None => {
+                                // No client but connection flag says connected - inconsistent state
+                                tracing::error!("⚠️ CLIENT {}: Connection flag says connected but no client found - marking as disconnected", client_id);
+                                is_connected.store(false, Ordering::Relaxed);
+                                event_dispatcher.emit_connection_lost(&server_url);
+                            }
+                        }
+                    } else {
+                        // Not time to ping yet
+                        let last_ping = last_ping_time.lock().await;
+                        match *last_ping {
+                            Some(last_time) => {
+                                let elapsed = last_time.elapsed();
+                                tracing::debug!("💤 CLIENT {}: Heartbeat check - last ping was {:.1}s ago (will ping in {:.1}s)", 
+                                    client_id, elapsed.as_secs_f32(), (PING_INTERVAL - elapsed).as_secs_f32());
+                            }
+                            None => {
+                                tracing::debug!("💤 CLIENT {}: Heartbeat check - no ping sent yet", client_id);
+                            }
+                        }
                     }
                 }
                 
@@ -1176,6 +1276,132 @@ impl SyncEngine {
                 tokio::time::sleep(RECONNECTION_INTERVAL).await;
             }
         });
+    }
+    
+    /// Static method to perform pending sync after reconnection
+    /// This is called from the reconnection loop and operates on real engine components
+    async fn perform_pending_sync_after_reconnection(
+        db: &Arc<ClientDatabase>,
+        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
+        user_id: Uuid,
+        client_id: Uuid,
+        pending_uploads: &Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
+        sync_protection_mode: &Arc<AtomicBool>,
+    ) -> Result<(), ClientError> {
+        tracing::info!("CLIENT {}: Starting post-reconnection pending sync using real engine components", client_id);
+        
+        let pending_docs = db.get_pending_documents().await?;
+        
+        if pending_docs.is_empty() {
+            tracing::info!("CLIENT {}: No pending documents to sync after reconnection", client_id);
+            return Ok(());
+        }
+        
+        tracing::info!("CLIENT {}: 📤 UPLOADING {} PENDING DOCUMENTS after reconnection", client_id, pending_docs.len());
+        
+        for pending_info in pending_docs {
+            match db.get_document(&pending_info.id).await {
+                Ok(doc) => {
+                    if pending_info.is_deleted {
+                        // Handle pending delete
+                        tracing::info!("CLIENT {}: Uploading pending delete for doc {}", client_id, pending_info.id);
+                        
+                        // Track this upload
+                        pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
+                            document_id: pending_info.id,
+                            operation_type: UploadType::Delete,
+                            sent_at: Instant::now(),
+                        });
+                        
+                        let ws_client_guard = ws_client.lock().await;
+                        if let Some(client) = ws_client_guard.as_ref() {
+                            client.send(ClientMessage::DeleteDocument {
+                                document_id: pending_info.id,
+                                revision_id: doc.revision_id.clone(),
+                            }).await?;
+                        } else {
+                            return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()));
+                        }
+                    } else {
+                        // Handle pending update/create - check last_synced_revision to determine message type
+                        let use_update_message = pending_info.last_synced_revision.is_some();
+                        
+                        if use_update_message {
+                            let last_synced_rev = pending_info.last_synced_revision.as_ref().unwrap();
+                            tracing::info!("CLIENT {}: Using UpdateDocument for doc {} (last_synced: {})", 
+                                         client_id, pending_info.id, last_synced_rev);
+                            
+                            // Get the stored patch from sync_queue
+                            let patch_result = match db.get_queued_patch(&pending_info.id).await {
+                                Ok(Some(json_patch)) => {
+                                    // Convert the stored patch to DocumentPatch
+                                    use sync_core::models::DocumentPatch;
+                                    use sync_core::patches::calculate_checksum;
+                                    
+                                    DocumentPatch {
+                                        document_id: pending_info.id,
+                                        revision_id: doc.revision_id.clone(),
+                                        patch: json_patch,
+                                        vector_clock: doc.vector_clock.clone(),
+                                        checksum: calculate_checksum(&doc.content),
+                                    }
+                                }
+                                Ok(None) => {
+                                    tracing::warn!("CLIENT {}: No patch found in sync_queue for {}, skipping", 
+                                                 client_id, pending_info.id);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    tracing::error!("CLIENT {}: Failed to get patch from sync_queue: {}", client_id, e);
+                                    continue;
+                                }
+                            };
+                            
+                            // Track this upload
+                            pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
+                                document_id: pending_info.id,
+                                operation_type: UploadType::Update,
+                                sent_at: Instant::now(),
+                            });
+                            
+                            let ws_client_guard = ws_client.lock().await;
+                            if let Some(client) = ws_client_guard.as_ref() {
+                                client.send(ClientMessage::UpdateDocument {
+                                    patch: patch_result,
+                                }).await?;
+                            } else {
+                                return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()));
+                            }
+                        } else {
+                            tracing::info!("CLIENT {}: Using CreateDocument for doc {} (never synced)", 
+                                         client_id, pending_info.id);
+                            
+                            // Track this upload
+                            pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
+                                document_id: pending_info.id,
+                                operation_type: UploadType::Create,
+                                sent_at: Instant::now(),
+                            });
+                            
+                            let ws_client_guard = ws_client.lock().await;
+                            if let Some(client) = ws_client_guard.as_ref() {
+                                client.send(ClientMessage::CreateDocument {
+                                    document: doc.clone(),
+                                }).await?;
+                            } else {
+                                return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()));
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("CLIENT {}: Failed to get pending document {}: {}", client_id, pending_info.id, e);
+                }
+            }
+        }
+        
+        tracing::info!("CLIENT {}: ✅ Completed uploading pending documents after reconnection", client_id);
+        Ok(())
     }
 }
 

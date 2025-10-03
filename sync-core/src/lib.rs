@@ -3,6 +3,7 @@ pub mod protocol;
 pub mod patches;
 pub mod conflicts;
 pub mod errors;
+pub mod ot;
 
 pub type SyncResult<T> = Result<T, SyncError>;
 pub use models::*;

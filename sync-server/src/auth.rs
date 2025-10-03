@@ -9,6 +9,7 @@ use argon2::{
 use dashmap::DashMap;
 use std::sync::Arc;
 use crate::database::ServerDatabase;
+use crate::ServerResult;
 
 #[derive(Clone)]
 pub struct AuthState {
@@ -31,20 +32,20 @@ impl AuthState {
         }
     }
     
-    pub fn hash_token(token: &str) -> Result<String, argon2::password_hash::Error> {
+    pub fn hash_token(token: &str) -> ServerResult<String> {
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let password_hash = argon2.hash_password(token.as_bytes(), &salt)?;
         Ok(password_hash.to_string())
     }
     
-    pub fn verify_token_hash(token: &str, hash: &str) -> Result<bool, argon2::password_hash::Error> {
+    pub fn verify_token_hash(token: &str, hash: &str) -> ServerResult<bool> {
         let parsed_hash = PasswordHash::new(hash)?;
         let argon2 = Argon2::default();
         Ok(argon2.verify_password(token.as_bytes(), &parsed_hash).is_ok())
     }
     
-    pub async fn verify_token(&self, user_id: &Uuid, token: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn verify_token(&self, user_id: &Uuid, token: &str) -> ServerResult<bool> {
         tracing::debug!("Verifying token for user {}: token={}", user_id, token);
         
         // First check if we have an active session
@@ -74,8 +75,7 @@ impl AuthState {
             
             if exists == 0 {
                 // Create demo user with this ID
-                let demo_hash = Self::hash_token("demo-token")
-                    .map_err(|e| format!("Failed to hash token: {:?}", e))?;
+                let demo_hash = Self::hash_token("demo-token")?;
                 
                 tracing::info!("Creating demo user with ID: {} and email: demo_{}@example.com", user_id, user_id);
                 
@@ -99,7 +99,7 @@ impl AuthState {
                             // Continue with session creation
                         } else {
                             tracing::error!("Failed to create demo user with unexpected error: {}", e);
-                            return Err(Box::new(e));
+                            return Err(e)?;
                         }
                     }
                 }
@@ -162,8 +162,7 @@ impl AuthState {
             // In a real system, you'd validate the token format or check against an auth provider
             // For now, we'll accept any non-empty token and create the user
             if !token.is_empty() {
-                let token_hash = Self::hash_token(token)
-                    .map_err(|e| format!("Failed to hash token: {:?}", e))?;
+                let token_hash = Self::hash_token(token)?;
                 
                 // Create user with provided ID
                 match sqlx::query(

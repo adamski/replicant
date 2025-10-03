@@ -17,7 +17,7 @@ use sync_server::{
 };
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> sync_server::ServerResult<()> {
     // Check if monitoring mode is enabled
     let monitoring_enabled = std::env::var("MONITORING").unwrap_or_default() == "true";
     
@@ -29,17 +29,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Print startup banner if monitoring is enabled
     if monitoring_enabled {
         use colored::*;
-        println!("{}", "🚀 Sync Server with Monitoring".bold().cyan());
-        println!("{}", "==============================".cyan());
-        println!();
+        tracing::info!("{}", "🚀 Sync Server with Monitoring".bold().cyan());
+        tracing::info!("{}", "==============================".cyan());
+        tracing::info!("");
     }
-    
     // Database connection
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "http://localhost:5432/sync_db".to_string());
-    
-    let db = Arc::new(ServerDatabase::new(&database_url).await?);
-    db.run_migrations().await?;
+
+    let db = match ServerDatabase::new(&database_url).await {
+        Ok(db) => Arc::new(db),
+        Err(e) => {
+            tracing::error!(%e, "Failed to initialize database");
+            return Ok(());
+        }
+    };
+
+    if let Err(e) = db.run_migrations().await {
+        tracing::error!(%e, "Failed to run migrations");
+        return Ok(());
+    }
     
     // Set up monitoring if enabled
     let monitoring_layer = if monitoring_enabled {
@@ -80,8 +89,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     tracing::info!("Starting sync server on {}", addr);
     
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!(%e, addr=%addr);
+            return Ok(());
+        }
+    };
+    if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!(%e, addr=%addr);
+    }
     
     Ok(())
 }

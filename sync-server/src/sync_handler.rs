@@ -5,7 +5,7 @@ use sync_core::{
     protocol::{ClientMessage, ServerMessage, ConflictResolution, ErrorCode},
     patches::{apply_patch, calculate_checksum},
 };
-use crate::{database::ServerDatabase, monitoring::MonitoringLayer, AppState};
+use crate::{database::ServerDatabase, monitoring::MonitoringLayer, AppState, ServerResult, errors::ServerError};
 
 pub struct SyncHandler {
     db: Arc<ServerDatabase>,
@@ -36,8 +36,8 @@ impl SyncHandler {
         self.client_id = Some(client_id);
     }
     
-    pub async fn handle_message(&mut self, msg: ClientMessage) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let user_id = self.user_id.ok_or("Not authenticated")?;
+    pub async fn handle_message(&mut self, msg: ClientMessage) -> ServerResult<()> {
+        let user_id = self.user_id.ok_or(ServerError::ServerSync("Unauthorized: user_id not found".to_string()))?;
         
         match msg {
             ClientMessage::CreateDocument { document } => {
@@ -57,7 +57,8 @@ impl SyncHandler {
                             revision_id: document.revision_id.clone(),
                             success: true,
                             error: None,
-                        }).await?;
+                        }).await
+                            .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                         
                         // Broadcast to all OTHER connected clients (exclude sender)
                         tracing::info!("Broadcasting DocumentCreated for doc {} to other clients of user {}", document.id, user_id);
@@ -82,7 +83,8 @@ impl SyncHandler {
                             revision_id: document.revision_id.clone(),
                             success: false,
                             error: Some(e.to_string()),
-                        }).await?;
+                        }).await
+                            .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                     }
                 }
             }
@@ -120,7 +122,7 @@ impl SyncHandler {
                     // Update revision and vector clock
                     let old_revision = doc.revision_id.clone();
                     doc.revision_id = doc.next_revision(&doc.content);
-                    doc.vector_clock.increment(&self.user_id.ok_or("Not authenticated")?.to_string());
+                    doc.vector_clock.increment(&self.user_id.ok_or(ServerError::ServerSync("Not Authenticated".to_string()))?.to_string());
                     doc.updated_at = chrono::Utc::now();
                     
                     tracing::warn!("   Server content after conflict resolution: {:?}", doc.content);
@@ -135,7 +137,8 @@ impl SyncHandler {
                         local_revision: patch.revision_id.clone(),
                         server_revision: doc.revision_id.clone(),
                         resolution_strategy: ConflictResolution::ServerWins,
-                    }).await?;
+                    }).await
+                        .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                     
                     // Broadcast the final state to ALL clients to ensure convergence
                     // This ensures all clients get the authoritative state after conflict resolution
@@ -187,7 +190,8 @@ impl SyncHandler {
                             revision_id: doc.revision_id.clone(),
                             success: true,
                             error: None,
-                        }).await?;
+                        }).await
+                            .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                         
                         // Broadcast final state to ALL OTHER clients to ensure convergence
                         tracing::info!("Broadcasting final document state for doc {} to other clients of user {}", doc.id, user_id);
@@ -204,7 +208,8 @@ impl SyncHandler {
                             revision_id: patch.revision_id.clone(),
                             success: false,
                             error: Some(e.to_string()),
-                        }).await?;
+                        }).await
+                            .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                     }
                 }
             }
@@ -226,7 +231,8 @@ impl SyncHandler {
                             revision_id: revision_id.clone(),
                             success: true,
                             error: None,
-                        }).await?;
+                        }).await
+                            .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                         
                         // Broadcast deletion to all OTHER connected clients
                         self.broadcast_to_user_except(
@@ -242,7 +248,8 @@ impl SyncHandler {
                             revision_id: revision_id.clone(),
                             success: false,
                             error: Some(e.to_string()),
-                        }).await?;
+                        }).await
+                            .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                     }
                 }
             }
@@ -252,12 +259,16 @@ impl SyncHandler {
                 for doc_id in document_ids {
                     if let Ok(doc) = self.db.get_document(&doc_id).await {
                         if doc.user_id == user_id {
-                            self.tx.send(ServerMessage::SyncDocument { document: doc }).await?;
+                            self.tx.send(ServerMessage::SyncDocument { document: doc })
+                                .await
+                                .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                         }
                     }
                 }
                 
-                self.tx.send(ServerMessage::SyncComplete { synced_count: count }).await?;
+                self.tx.send(ServerMessage::SyncComplete { synced_count: count })
+                    .await
+                    .map_err(|e| ServerError::ServerSync(e.to_string()))?;
             }
             
             ClientMessage::RequestFullSync => {
@@ -267,19 +278,27 @@ impl SyncHandler {
                 
                 for doc in &documents {
                     tracing::debug!("Sending SyncDocument for doc {}", doc.id);
-                    self.tx.send(ServerMessage::SyncDocument { document: doc.clone() }).await?;
+                    self.tx.send(ServerMessage::SyncDocument { document: doc.clone() })
+                        .await
+                        .map_err(|e| ServerError::ServerSync(e.to_string()))?;
                 }
                 
-                self.tx.send(ServerMessage::SyncComplete { synced_count: documents.len() }).await?;
+                self.tx.send(ServerMessage::SyncComplete { synced_count: documents.len() })
+                    .await
+                    .map_err(|e| ServerError::ServerSync(e.to_string()))?;
             }
             
             ClientMessage::Ping => {
-                self.tx.send(ServerMessage::Pong).await?;
+                self.tx.send(ServerMessage::Pong)
+                    .await
+                    .map_err(|e| ServerError::ServerSync(e.to_string()))?;
             }
             
             ClientMessage::Authenticate { .. } => {
                 // Authentication is handled in the websocket handler
-                self.send_error(ErrorCode::InvalidAuth, "Authentication should be handled before this point").await?;
+                self.send_error(ErrorCode::InvalidAuth, "Authentication should be handled before this point")
+                    .await
+                    .map_err(|e| ServerError::ServerSync(e.to_string()))?;
             }
             
             ClientMessage::GetChangesSince { .. } => {
@@ -296,11 +315,12 @@ impl SyncHandler {
         Ok(())
     }
     
-    async fn send_error(&self, code: ErrorCode, message: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn send_error(&self, code: ErrorCode, message: &str) -> ServerResult<()> {
         self.tx.send(ServerMessage::Error {
             code,
             message: message.to_string(),
-        }).await?;
+        }).await
+            .map_err(|e| ServerError::ServerSync(e.to_string()))?;
         Ok(())
     }
     
@@ -308,7 +328,7 @@ impl SyncHandler {
         &self,
         user_id: Uuid,
         message: ServerMessage,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> ServerResult<()> {
         self.broadcast_to_user_except(user_id, None, message).await
     }
     
@@ -317,7 +337,7 @@ impl SyncHandler {
         user_id: Uuid,
         exclude_client_id: Option<Uuid>,
         message: ServerMessage,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> ServerResult<()> {
         // Get all connected client IDs for this user
         if let Some(client_ids) = self.app_state.user_clients.get(&user_id) {
             let total_clients = client_ids.len();

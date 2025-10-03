@@ -1,13 +1,13 @@
+use crate::errors::ApiError;
+use crate::{auth::AuthState, AppState, ServerResult};
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    Json,
     response::IntoResponse,
+    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
-use crate::{AppState, auth::AuthState};
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -24,22 +24,29 @@ pub struct RegisterResponse {
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
-) -> Result<Json<RegisterResponse>, StatusCode> {
+) -> ServerResult<Json<RegisterResponse>> {
     // Generate auth token
     let auth_token = AuthState::generate_auth_token();
-    
     // Hash the token for storage
-    let token_hash = AuthState::hash_token(&auth_token)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+    let token_hash =
+        AuthState::hash_token(&auth_token).map_err(|_| ApiError::internal("Invalid Token"))?;
+
     // Create user
-    let user_id = state.db.create_user(&req.email, &token_hash)
+    let user_id = state
+        .db
+        .create_user(&req.email, &token_hash)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|e| {
+            tracing::error!( %e, "Failed to create user");
+            ApiError::bad_request(
+                "Invalid credentials",
+                Some(format!("email: {}, password: {}", req.email, req.password)),
+            )
+        })?;
+
     // Create session
     state.auth.create_session(user_id, auth_token.clone());
-    
+
     Ok(Json(RegisterResponse {
         user_id,
         auth_token,
@@ -60,19 +67,21 @@ pub struct LoginResponse {
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, StatusCode> {
+) -> ServerResult<Json<LoginResponse>> {
     // Verify token
-    let valid = state.auth.verify_token(&req.user_id, &req.auth_token)
+    let valid = state
+        .auth
+        .verify_token(&req.user_id, &req.auth_token)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|_| ApiError::internal("Invalid Token"))?;
+
     if !valid {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(ApiError::unauthorized("Unauthorized Token"))?;
     }
-    
+
     // Create session
     let session_id = state.auth.create_session(req.user_id, req.auth_token);
-    
+
     Ok(Json(LoginResponse { session_id }))
 }
 
@@ -85,21 +94,34 @@ pub struct AuthHeader {
 pub async fn list_documents(
     State(state): State<Arc<AppState>>,
     Json(auth): Json<AuthHeader>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> ServerResult<impl IntoResponse> {
     // Verify auth
-    let valid = state.auth.verify_token(&auth.user_id, &auth.auth_token)
+    let valid = state
+        .auth
+        .verify_token(&auth.user_id, &auth.auth_token)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|_| ApiError::internal("Invalid Token"))?;
+
     if !valid {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(ApiError::unauthorized("Unauthorized Token"))?;
     }
-    
+
     // Get documents
-    let documents = state.db.get_user_documents(&auth.user_id)
+    let documents = state
+        .db
+        .get_user_documents(&auth.user_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|e| {
+            tracing::error!(%e, "Failed to retrieve documents");
+            ApiError::bad_request(
+                "Invalid credentials",
+                Some(format!(
+                    "user_id: {}, auth_token: {}",
+                    auth.user_id, auth.auth_token
+                )),
+            )
+        })?;
+
     Ok(Json(documents))
 }
 
@@ -107,25 +129,34 @@ pub async fn get_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<Uuid>,
     Json(auth): Json<AuthHeader>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> ServerResult<impl IntoResponse> {
     // Verify auth
-    let valid = state.auth.verify_token(&auth.user_id, &auth.auth_token)
+    let valid = state
+        .auth
+        .verify_token(&auth.user_id, &auth.auth_token)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|_| ApiError::internal("Invalid Token"))?;
+
     if !valid {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(ApiError::unauthorized("Unauthorized Token"))?;
     }
-    
+
     // Get document
-    let document = state.db.get_document(&document_id)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    
+    let document = state.db.get_document(&document_id).await.map_err(|e| {
+        tracing::error!(%e, "Failed to retrieve documents");
+        ApiError::bad_request(
+            "Invalid credentials",
+            Some(format!(
+                "user_id: {}, auth_token: {}, document: {}",
+                auth.user_id, auth.auth_token, document_id
+            )),
+        )
+    })?;
+
     // Verify ownership
     if document.user_id != auth.user_id {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(ApiError::unauthorized(""))?;
     }
-    
+
     Ok(Json(document))
 }

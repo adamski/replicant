@@ -232,12 +232,6 @@ impl ServerDatabase {
         reverse_patch: Option<&serde_json::Value>,
         applied: bool,
     ) -> Result<(), sqlx::Error> {
-        let event_type_str = match event_type {
-            ChangeEventType::Create => "create",
-            ChangeEventType::Update => "update", 
-            ChangeEventType::Delete => "delete",
-        };
-
         sqlx::query(
             r#"
             INSERT INTO change_events (user_id, document_id, event_type, revision_id, forward_patch, reverse_patch, applied)
@@ -247,7 +241,7 @@ impl ServerDatabase {
         .persistent(false)  // Disable prepared statement caching
         .bind(user_id)
         .bind(document_id)
-        .bind(event_type_str)
+        .bind(event_type.to_string())
         .bind(revision_id)
         .bind(forward_patch)
         .bind(reverse_patch)
@@ -280,11 +274,9 @@ impl ServerDatabase {
         let mut events = Vec::new();
         for row in rows {
             let event_type_str: String = row.get("event_type");
-            let event_type = match event_type_str.as_str() {
-                "create" => ChangeEventType::Create,
-                "update" => ChangeEventType::Update,
-                "delete" => ChangeEventType::Delete,
-                _ => continue, // Skip unknown event types
+            let event_type = match event_type_str.parse::<ChangeEventType>() {
+                Ok(et) => et,
+                Err(_) => continue, // Skip unknown event types
             };
 
             events.push(ChangeEvent {

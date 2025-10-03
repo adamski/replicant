@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use strum::{Display, EnumString};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
@@ -296,33 +297,11 @@ pub struct DocumentPatch {
     pub checksum: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Display, EnumString)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum SyncStatus {
     Synced,
     Pending,
     Conflict,
-}
-
-impl std::fmt::Display for SyncStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SyncStatus::Synced => write!(f, "synced"),
-            SyncStatus::Pending => write!(f, "pending"),
-            SyncStatus::Conflict => write!(f, "conflict"),
-        }
-    }
-}
-
-impl std::str::FromStr for SyncStatus {
-    type Err = String;
-    
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "synced" => Ok(SyncStatus::Synced),
-            "pending" => Ok(SyncStatus::Pending),
-            "conflict" => Ok(SyncStatus::Conflict),
-            _ => Err(format!("Invalid sync status: {}", s)),
-        }
-    }
 }

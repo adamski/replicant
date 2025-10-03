@@ -251,20 +251,14 @@ impl ClientDatabase {
         patch: Option<&json_patch::Patch>,
     ) -> Result<(), ClientError> {
         let patch_json = patch.map(|p| serde_json::to_string(p)).transpose()?;
-        
-        let operation_type_str = match operation_type {
-            ChangeEventType::Create => "create",
-            ChangeEventType::Update => "update",
-            ChangeEventType::Delete => "delete",
-        };
-        
-        tracing::info!("DATABASE: queue_sync_operation called: doc_id={}, op_type={}, patch_size={}", 
-                     document_id, operation_type_str, 
+
+        tracing::info!("DATABASE: queue_sync_operation called: doc_id={}, op_type={}, patch_size={}",
+                     document_id, operation_type.to_string(), 
                      patch_json.as_ref().map(|p| p.len()).unwrap_or(0));
         
         let result = sqlx::query(Queries::INSERT_SYNC_QUEUE)
             .bind(document_id.to_string())
-            .bind(operation_type_str)
+            .bind(operation_type.to_string())
             .bind(patch_json.clone())
             .execute(&self.pool)
             .await?;

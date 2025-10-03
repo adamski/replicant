@@ -62,11 +62,54 @@ impl SyncHandler {
                         
                         // Apply last-write-wins strategy (client's version wins)
                         tracing::info!("🔧 Applying conflict resolution: Client version wins");
-                        
+
                         // Store the existing server version as unapplied (conflict loser)
-                        // Note: For now, we'll skip storing the conflicted version
-                        // This can be implemented later when we add full conflict history
-                        
+                        let mut tx = match self.db.pool.begin().await {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                tracing::error!("❌ Failed to begin transaction: {}", e);
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: false,
+                                    error: Some(format!("Transaction failed: {}", e)),
+                                }).await?;
+                                return Ok(());
+                            }
+                        };
+
+                        // Log server's version as conflict loser (applied=false)
+                        let server_content_json = match serde_json::to_value(&existing_doc.content) {
+                            Ok(json) => json,
+                            Err(e) => {
+                                tracing::error!("❌ Failed to serialize server content: {}", e);
+                                return Ok(());
+                            }
+                        };
+
+                        if let Err(e) = self.db.log_change_event(
+                            &mut tx,
+                            &document.id,
+                            &user_id,
+                            sync_core::protocol::ChangeEventType::Create,
+                            &existing_doc.revision_id,
+                            Some(&server_content_json),
+                            None,
+                            false  // applied = false (conflict loser)
+                        ).await {
+                            tracing::error!("❌ Failed to log conflict: {}", e);
+                            let _ = tx.rollback().await;
+                            return Ok(());
+                        }
+
+                        tracing::info!("📝 Logged server version as conflict loser (rev: {})", existing_doc.revision_id);
+
+                        // Commit the conflict log before updating document
+                        if let Err(e) = tx.commit().await {
+                            tracing::error!("❌ Failed to commit conflict log: {}", e);
+                            return Ok(());
+                        }
+
                         // Update the document with client's version
                         match self.db.update_document(&document, None).await {
                             Ok(_) => {
@@ -154,26 +197,71 @@ impl SyncHandler {
                     if let Some(ref monitoring) = self.monitoring {
                         monitoring.log_conflict_detected(&doc.id.to_string()).await;
                     }
-                    
-                    // Automatic conflict resolution: Server wins (last-write-wins)
+
+                    // Automatic conflict resolution: Client wins (last-write-wins)
                     tracing::warn!("🔥 CONFLICT DETECTED for document {}", doc.id);
                     tracing::warn!("   Server revision: {} | Client revision: {}", doc.revision_id, patch.revision_id);
                     tracing::warn!("   Server content before: {:?}", doc.content);
                     tracing::warn!("   Client patch: {:?}", patch.patch);
-                    
-                    // Apply the patch anyway (server wins - accept the update)
+
+                    // Store the server's current state as conflict loser BEFORE applying client patch
+                    let server_content_before = doc.content.clone();
+                    let server_revision_before = doc.revision_id.clone();
+
+                    // Start transaction to log conflict
+                    let mut tx = match self.db.pool.begin().await {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            tracing::error!("❌ Failed to begin transaction: {}", e);
+                            return Ok(());
+                        }
+                    };
+
+                    // Log server's pre-conflict state as unapplied (conflict loser)
+                    let server_content_json = match serde_json::to_value(&server_content_before) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            tracing::error!("❌ Failed to serialize server content: {}", e);
+                            return Ok(());
+                        }
+                    };
+
+                    if let Err(e) = self.db.log_change_event(
+                        &mut tx,
+                        &doc.id,
+                        &user_id,
+                        sync_core::protocol::ChangeEventType::Update,
+                        &server_revision_before,
+                        Some(&server_content_json),
+                        None,
+                        false  // applied = false (conflict loser)
+                    ).await {
+                        tracing::error!("❌ Failed to log conflict: {}", e);
+                        let _ = tx.rollback().await;
+                        return Ok(());
+                    }
+
+                    tracing::info!("📝 Logged server state as conflict loser (rev: {})", server_revision_before);
+
+                    // Commit conflict log
+                    if let Err(e) = tx.commit().await {
+                        tracing::error!("❌ Failed to commit conflict log: {}", e);
+                        return Ok(());
+                    }
+
+                    // Apply the client's patch (client wins)
                     apply_patch(&mut doc.content, &patch.patch)?;
-                    
+
                     // Update revision and vector clock
                     let old_revision = doc.revision_id.clone();
                     doc.revision_id = doc.next_revision(&doc.content);
                     doc.vector_clock.increment(&self.user_id.ok_or("Not authenticated")?.to_string());
                     doc.updated_at = chrono::Utc::now();
-                    
+
                     tracing::warn!("   Server content after conflict resolution: {:?}", doc.content);
                     tracing::warn!("   New revision: {} -> {}", old_revision, doc.revision_id);
-                    
-                    // Save updated document - this logs the change event properly
+
+                    // Save updated document - this logs the winning change event
                     self.db.update_document(&doc, Some(&patch.patch)).await?;
                     
                     // Notify client of conflict resolution

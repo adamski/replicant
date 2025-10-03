@@ -93,8 +93,8 @@ mod database_tests {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title: "Test Document".to_string(),
             content: json!({
+                "title": "Test Document",
                 "text": "Hello, World!"
             }),
             revision_id: Document::initial_revision(&json!({
@@ -144,8 +144,7 @@ mod database_tests {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title: "Event Test Document".to_string(),
-            content: json!({"text": "Testing events", "version": 1}),
+            content: json!({"title": "Event Test Document", "text": "Testing events", "version": 1}),
             revision_id: Document::initial_revision(&json!({"text": "Testing events", "version": 1})),
             version: 1,
             vector_clock: VectorClock::new(),
@@ -232,5 +231,245 @@ mod database_tests {
         assert_eq!(latest_sequence, events[2].sequence, "Latest sequence should match last event");
         
         println!("✅ Event logging test passed - all events properly recorded with correct sequences");
+    }
+
+    #[tokio::test]
+    async fn test_conflict_storage_on_create() {
+        let db = match setup_test_db().await {
+            Ok(db) => db,
+            Err(e) => {
+                println!("⏭️ Skipping test_conflict_storage_on_create: {}", e);
+                return;
+            }
+        };
+
+        // Create test user
+        let email = format!("conflict_test_{}@example.com", Uuid::new_v4());
+        let user_id = db.create_user(&email, "test-token-hash").await.expect("Failed to create user");
+
+        // Create document v1 on "server"
+        let doc_id = Uuid::new_v4();
+        let mut server_doc = Document {
+            id: doc_id,
+            user_id,
+            content: json!({"value": "server-content", "source": "server"}),
+            revision_id: "1-server".to_string(),
+            version: 1,
+            vector_clock: VectorClock::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+        server_doc.vector_clock.increment(&"server".to_string());
+
+        db.create_document(&server_doc).await.expect("Failed to create server document");
+        println!("✅ Created server version of document");
+
+        // Simulate client creating same document (conflict scenario)
+        let mut client_doc = Document {
+            id: doc_id,
+            user_id,
+            content: json!({"value": "client-content", "source": "client"}),
+            revision_id: "1-client".to_string(),
+            version: 1,
+            vector_clock: VectorClock::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+        client_doc.vector_clock.increment(&"client".to_string());
+
+        // Start transaction to log conflict (simulating sync_handler behavior)
+        let mut tx = db.pool.begin().await.expect("Failed to begin transaction");
+
+        // Log server version as conflict loser
+        let server_content_json = serde_json::to_value(&server_doc.content).unwrap();
+        db.log_change_event(
+            &mut tx,
+            &doc_id,
+            &user_id,
+            sync_core::protocol::ChangeEventType::Create,
+            &server_doc.revision_id,
+            Some(&server_content_json),
+            None,
+            false  // applied = false (conflict loser)
+        ).await.expect("Failed to log conflict");
+
+        tx.commit().await.expect("Failed to commit conflict log");
+        println!("✅ Logged server version as conflict loser");
+
+        // Update document to client version (winner)
+        db.update_document(&client_doc, None).await.expect("Failed to update to client version");
+        println!("✅ Updated to client version");
+
+        // Verify: Should have both events
+        let all_events = db.get_changes_since(&user_id, 0, None).await.expect("Failed to get changes");
+        println!("📊 Total events: {}", all_events.len());
+        assert!(all_events.len() >= 3, "Should have at least 3 events: initial create, conflict, update");
+
+        // Check unapplied changes (conflicts)
+        let conflicts = db.get_unapplied_changes(&doc_id).await.expect("Failed to get unapplied changes");
+        println!("📊 Unapplied changes (conflicts): {}", conflicts.len());
+
+        assert_eq!(conflicts.len(), 1, "Should have exactly 1 unapplied change (conflict loser)");
+        assert_eq!(conflicts[0].revision_id, "1-server", "Conflict should be server's revision");
+        assert!(conflicts[0].forward_patch.is_some(), "Conflict should preserve server content");
+
+        // Verify the preserved content
+        let preserved = &conflicts[0].forward_patch.as_ref().unwrap();
+        assert_eq!(preserved["source"], "server", "Should preserve server's content");
+
+        println!("✅ Conflict storage test passed - server version preserved as unapplied");
+    }
+
+    #[tokio::test]
+    async fn test_conflict_storage_on_update() {
+        let db = match setup_test_db().await {
+            Ok(db) => db,
+            Err(e) => {
+                println!("⏭️ Skipping test_conflict_storage_on_update: {}", e);
+                return;
+            }
+        };
+
+        // Create test user
+        let email = format!("conflict_update_{}@example.com", Uuid::new_v4());
+        let user_id = db.create_user(&email, "test-token-hash").await.expect("Failed to create user");
+
+        // Create initial document
+        let doc_id = Uuid::new_v4();
+        let mut doc = Document {
+            id: doc_id,
+            user_id,
+            content: json!({"value": 1, "name": "initial"}),
+            revision_id: "1-initial".to_string(),
+            version: 1,
+            vector_clock: VectorClock::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+        doc.vector_clock.increment(&"node1".to_string());
+
+        db.create_document(&doc).await.expect("Failed to create document");
+        println!("✅ Created initial document");
+
+        // Simulate concurrent update scenario
+        // Server's state before conflict
+        let server_state = json!({"value": 2, "name": "server-update"});
+        let server_revision = "2-server".to_string();
+
+        // Start transaction to log server's state as conflict loser
+        let mut tx = db.pool.begin().await.expect("Failed to begin transaction");
+
+        let server_content_json = serde_json::to_value(&server_state).unwrap();
+        db.log_change_event(
+            &mut tx,
+            &doc_id,
+            &user_id,
+            sync_core::protocol::ChangeEventType::Update,
+            &server_revision,
+            Some(&server_content_json),
+            None,
+            false  // applied = false (conflict loser)
+        ).await.expect("Failed to log conflict");
+
+        tx.commit().await.expect("Failed to commit conflict log");
+        println!("✅ Logged server state as conflict loser");
+
+        // Apply client's winning update
+        let mut winning_doc = doc.clone();
+        winning_doc.content = json!({"value": 3, "name": "client-wins"});
+        winning_doc.revision_id = "2-client".to_string();
+        winning_doc.version = 2;
+
+        db.update_document(&winning_doc, None).await.expect("Failed to apply winning update");
+        println!("✅ Applied client's winning update");
+
+        // Verify unapplied changes
+        let conflicts = db.get_unapplied_changes(&doc_id).await.expect("Failed to get conflicts");
+        println!("📊 Unapplied changes: {}", conflicts.len());
+
+        assert_eq!(conflicts.len(), 1, "Should have 1 unapplied change");
+        assert_eq!(conflicts[0].revision_id, "2-server", "Should be server's revision");
+        assert!(conflicts[0].forward_patch.is_some(), "Should preserve server's state");
+
+        // Verify preserved content
+        let preserved = conflicts[0].forward_patch.as_ref().unwrap();
+        assert_eq!(preserved["name"], "server-update", "Should preserve server's update");
+        assert_eq!(preserved["value"], 2, "Should preserve server's value");
+
+        println!("✅ Update conflict storage test passed");
+    }
+
+    #[tokio::test]
+    async fn test_query_unapplied_changes() {
+        let db = match setup_test_db().await {
+            Ok(db) => db,
+            Err(e) => {
+                println!("⏭️ Skipping test_query_unapplied_changes: {}", e);
+                return;
+            }
+        };
+
+        // Create test user
+        let email = format!("query_test_{}@example.com", Uuid::new_v4());
+        let user_id = db.create_user(&email, "test-token-hash").await.expect("Failed to create user");
+
+        // Create document with multiple conflicts
+        let doc_id = Uuid::new_v4();
+        let mut doc = Document {
+            id: doc_id,
+            user_id,
+            content: json!({"version": 0}),
+            revision_id: "1-initial".to_string(),
+            version: 1,
+            vector_clock: VectorClock::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        db.create_document(&doc).await.expect("Failed to create document");
+
+        // Create multiple conflict scenarios
+        for i in 1..=3 {
+            let mut tx = db.pool.begin().await.expect("Failed to begin transaction");
+
+            let conflict_content = json!({"version": i, "conflict": true});
+            let conflict_json = serde_json::to_value(&conflict_content).unwrap();
+
+            db.log_change_event(
+                &mut tx,
+                &doc_id,
+                &user_id,
+                sync_core::protocol::ChangeEventType::Update,
+                &format!("{}-conflict", i),
+                Some(&conflict_json),
+                None,
+                false  // unapplied
+            ).await.expect("Failed to log conflict");
+
+            tx.commit().await.expect("Failed to commit");
+        }
+
+        println!("✅ Created 3 conflict scenarios");
+
+        // Query unapplied changes
+        let conflicts = db.get_unapplied_changes(&doc_id).await.expect("Failed to query conflicts");
+
+        assert_eq!(conflicts.len(), 3, "Should have 3 unapplied changes");
+
+        // Verify ordering (DESC by sequence)
+        assert!(conflicts[0].sequence > conflicts[1].sequence, "Should be ordered DESC");
+        assert!(conflicts[1].sequence > conflicts[2].sequence, "Should be ordered DESC");
+
+        // Verify all are unapplied conflicts
+        for (idx, conflict) in conflicts.iter().enumerate() {
+            println!("  Conflict {}: seq={}, rev={}", idx, conflict.sequence, conflict.revision_id);
+            assert!(conflict.forward_patch.is_some(), "All conflicts should have content");
+        }
+
+        println!("✅ Query unapplied changes test passed");
     }
 }

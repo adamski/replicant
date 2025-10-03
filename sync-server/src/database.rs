@@ -221,7 +221,7 @@ impl ServerDatabase {
     }
 
     // Event logging for sequence-based sync
-    async fn log_change_event(
+    pub async fn log_change_event(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: &Uuid,
@@ -299,7 +299,7 @@ impl ServerDatabase {
         let row = sqlx::query(
             r#"
             SELECT COALESCE(MAX(sequence), 0) as latest_sequence
-            FROM change_events 
+            FROM change_events
             WHERE user_id = $1
             "#
         )
@@ -308,5 +308,43 @@ impl ServerDatabase {
         .await?;
 
         Ok(row.get::<i64, _>("latest_sequence") as u64)
+    }
+
+    // Get unapplied changes for a document (conflict losers)
+    pub async fn get_unapplied_changes(&self, document_id: &Uuid) -> Result<Vec<ChangeEvent>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT sequence, document_id, user_id, event_type, revision_id,
+                   forward_patch, reverse_patch, created_at
+            FROM change_events
+            WHERE document_id = $1 AND applied = false
+            ORDER BY sequence DESC
+            "#
+        )
+        .bind(document_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let event_type_str: String = row.get("event_type");
+            let event_type = match event_type_str.parse::<ChangeEventType>() {
+                Ok(et) => et,
+                Err(_) => continue,
+            };
+
+            events.push(ChangeEvent {
+                sequence: row.get::<i64, _>("sequence") as u64,
+                document_id: row.get("document_id"),
+                user_id: row.get("user_id"),
+                event_type,
+                revision_id: row.get("revision_id"),
+                forward_patch: row.get("forward_patch"),
+                reverse_patch: row.get("reverse_patch"),
+                created_at: row.get("created_at"),
+            });
+        }
+
+        Ok(events)
     }
 }

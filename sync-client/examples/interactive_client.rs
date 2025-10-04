@@ -271,16 +271,19 @@ async fn create_task(
 
     if let Some(engine) = sync_engine {
         // Use sync engine if connected
-        let doc = engine.create_document(title.clone(), content).await?;
+        let mut full_content = content.clone();
+        full_content["title"] = serde_json::json!(title);
+        let doc = engine.create_document(full_content).await?;
         println!("✅ Task created: {}", doc.id.to_string().green());
     } else {
         // Offline mode - create locally
+        let mut full_content = content.clone();
+        full_content["title"] = serde_json::json!(title);
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title,
-            revision_id: Document::initial_revision(&content),
-            content,
+            content: full_content.clone(),
+            revision_id: Document::initial_revision(&full_content),
             version: 1,
             vector_clock: sync_core::models::VectorClock::new(),
             created_at: chrono::Utc::now(),
@@ -521,12 +524,13 @@ async fn edit_task(
         // Offline update
         let doc = db.get_document(&doc_id).await?;
         let mut updated_doc = doc;
-        updated_doc.title = new_title;
-        updated_doc.revision_id = updated_doc.next_revision(&new_content);
-        updated_doc.content = new_content;
+        let mut full_content = new_content.clone();
+        full_content["title"] = serde_json::json!(new_title);
+        updated_doc.revision_id = updated_doc.next_revision(&full_content);
+        updated_doc.content = full_content;
         updated_doc.version += 1;
         updated_doc.updated_at = chrono::Utc::now();
-        
+
         db.save_document(&updated_doc).await?;
         
         // Mark as pending sync

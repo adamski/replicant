@@ -6,7 +6,7 @@ use crate::errors::ClientError;
 use crate::queries::{Queries, DbHelpers};
 use json_patch;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PendingDocumentInfo {
     pub id: Uuid,
     pub last_synced_revision: Option<String>,

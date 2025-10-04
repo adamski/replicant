@@ -19,11 +19,11 @@ async fn test_documents_from_server_are_saved_as_synced() {
     // Create a document that simulates one coming from the server
     let user_id = Uuid::new_v4();
     let doc_id = Uuid::new_v4();
+    let content = json!({"title": "Server Document", "text": "Content from server"});
     let doc = Document {
         id: doc_id,
         user_id,
-        title: "Server Document".to_string(),
-        content: json!({"text": "Content from server"}),
+        content: content.clone(),
         revision_id: "2-server123".to_string(),
         version: 2,
         vector_clock: VectorClock::new(),
@@ -59,12 +59,12 @@ async fn test_new_local_documents_are_pending() {
     // Create a document locally (using default save_document method)
     let user_id = Uuid::new_v4();
     let doc_id = Uuid::new_v4();
+    let content = json!({"title": "Local Document", "text": "Local content"});
     let doc = Document {
         id: doc_id,
         user_id,
-        title: "Local Document".to_string(),
-        content: json!({"text": "Local content"}),
-        revision_id: "1-local123".to_string(),
+        content: content.clone(),
+        revision_id: Document::initial_revision(&content),
         version: 1,
         vector_clock: VectorClock::new(),
         created_at: Utc::now(),
@@ -100,11 +100,11 @@ async fn test_pending_documents_can_be_retrieved() {
     // Create mix of pending and synced documents
     for i in 0..5 {
         let doc_id = Uuid::new_v4();
+        let content = json!({"title": format!("Document {}", i), "text": format!("Content {}", i)});
         let doc = Document {
             id: doc_id,
             user_id,
-            title: format!("Document {}", i),
-            content: json!({"text": format!("Content {}", i)}),
+            content: content.clone(),
             revision_id: format!("1-hash{}", i),
             version: 1,
             vector_clock: VectorClock::new(),
@@ -131,11 +131,11 @@ async fn test_pending_documents_can_be_retrieved() {
     assert_eq!(pending_doc_ids.len(), 2, "Should have 2 pending documents");
     
     // Verify the pending ones are the odd indices
-    assert!(pending_doc_ids.contains(&doc_ids[1]), "Document 1 should be pending");
-    assert!(pending_doc_ids.contains(&doc_ids[3]), "Document 3 should be pending");
-    assert!(!pending_doc_ids.contains(&doc_ids[0]), "Document 0 should not be pending");
-    assert!(!pending_doc_ids.contains(&doc_ids[2]), "Document 2 should not be pending");
-    assert!(!pending_doc_ids.contains(&doc_ids[4]), "Document 4 should not be pending");
+    assert!(pending_doc_ids.iter().any(|p| p.id == doc_ids[1]), "Document 1 should be pending");
+    assert!(pending_doc_ids.iter().any(|p| p.id == doc_ids[3]), "Document 3 should be pending");
+    assert!(!pending_doc_ids.iter().any(|p| p.id == doc_ids[0]), "Document 0 should not be pending");
+    assert!(!pending_doc_ids.iter().any(|p| p.id == doc_ids[2]), "Document 2 should not be pending");
+    assert!(!pending_doc_ids.iter().any(|p| p.id == doc_ids[4]), "Document 4 should not be pending");
 }
 
 #[tokio::test]
@@ -148,12 +148,12 @@ async fn test_mark_synced_updates_status() {
     
     let user_id = Uuid::new_v4();
     let doc_id = Uuid::new_v4();
+    let content = json!({"title": "Test Document", "text": "Test content"});
     let doc = Document {
         id: doc_id,
         user_id,
-        title: "Test Document".to_string(),
-        content: json!({"text": "Test content"}),
-        revision_id: "1-initial".to_string(),
+        content: content.clone(),
+        revision_id: Document::initial_revision(&content),
         version: 1,
         vector_clock: VectorClock::new(),
         created_at: Utc::now(),

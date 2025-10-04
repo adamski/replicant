@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::ptr;
 
-use sync_client::ffi::{CSyncEngine, CSyncResult, sync_engine_create, sync_engine_destroy, 
+use sync_client::ffi::{SyncEngine, SyncResult, sync_engine_create, sync_engine_destroy,
                       sync_engine_register_event_callback, sync_engine_create_document};
 use sync_client::events::{EventData, EventType};
 
@@ -77,15 +77,17 @@ extern "C" fn capture_callback(event: *const EventData, context: *mut c_void) {
     *capture.last_boolean_data.lock().unwrap() = event.boolean_data;
 }
 
-fn create_test_engine() -> *mut CSyncEngine {
+fn create_test_engine() -> *mut SyncEngine {
     let db_url = CString::new("sqlite::memory:").unwrap();
     let server_url = CString::new("ws://localhost:8080/ws").unwrap();
     let auth_token = CString::new("test-token").unwrap();
-    
+    let user_identifier = CString::new("test-user@example.com").unwrap();
+
     sync_engine_create(
         db_url.as_ptr(),
         server_url.as_ptr(),
         auth_token.as_ptr(),
+        user_identifier.as_ptr(),
     )
 }
 
@@ -104,7 +106,7 @@ fn test_ffi_callback_registration() {
         -1, // All events
     );
     
-    assert_eq!(result, CSyncResult::Success);
+    assert_eq!(result, SyncResult::Success);
     
     sync_engine_destroy(engine);
 }
@@ -123,7 +125,7 @@ fn test_ffi_callback_with_document_creation() {
         &capture as *const CallbackCapture as *mut c_void,
         0, // DocumentCreated
     );
-    assert_eq!(result, CSyncResult::Success);
+    assert_eq!(result, SyncResult::Success);
     
     // Create a document (this should trigger the callback in offline mode)
     let title = CString::new("Test Document").unwrap();
@@ -137,7 +139,7 @@ fn test_ffi_callback_with_document_creation() {
         doc_id.as_mut_ptr() as *mut i8,
     );
     
-    assert_eq!(create_result, CSyncResult::Success);
+    assert_eq!(create_result, SyncResult::Success);
     
     // Give a moment for callback to be invoked
     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -171,7 +173,7 @@ fn test_ffi_callback_filtering() {
         &created_capture as *const CallbackCapture as *mut c_void,
         0, // DocumentCreated
     );
-    assert_eq!(result1, CSyncResult::Success);
+    assert_eq!(result1, SyncResult::Success);
     
     // Register callback only for updated events
     let result2 = sync_engine_register_event_callback(
@@ -180,7 +182,7 @@ fn test_ffi_callback_filtering() {
         &updated_capture as *const CallbackCapture as *mut c_void,
         1, // DocumentUpdated
     );
-    assert_eq!(result2, CSyncResult::Success);
+    assert_eq!(result2, SyncResult::Success);
     
     #[cfg(debug_assertions)]
     {
@@ -291,7 +293,7 @@ fn test_ffi_all_event_types() {
             4 => EventType::SyncCompleted,
             5 => EventType::SyncError,
             6 => EventType::ConflictDetected,
-            7 => EventType::ConnectionStateChanged,
+            7 => EventType::ConnectionLost,
             _ => panic!("Unexpected event type"),
         };
         
@@ -338,11 +340,11 @@ fn test_ffi_event_data_integrity() {
     
     // Test connection state changed (has boolean data)
     capture.reset();
-    sync_engine_emit_test_event(engine, 7); // ConnectionStateChanged
+    sync_engine_emit_test_event(engine, 7); // ConnectionLost
     std::thread::sleep(std::time::Duration::from_millis(10));
     
     assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-    assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::ConnectionStateChanged));
+    assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::ConnectionLost));
     assert_eq!(*capture.last_boolean_data.lock().unwrap(), true); // Test uses fixed value of true
     
     sync_engine_destroy(engine);
@@ -390,7 +392,7 @@ fn test_ffi_null_pointer_safety() {
         ptr::null_mut(),
         -1,
     );
-    assert_eq!(result, CSyncResult::ErrorInvalidInput);
+    assert_eq!(result, SyncResult::ErrorInvalidInput);
     
     // Test with valid engine but invalid filter
     let engine = create_test_engine();
@@ -401,7 +403,7 @@ fn test_ffi_null_pointer_safety() {
             ptr::null_mut(),
             999, // Invalid event type
         );
-        assert_eq!(result, CSyncResult::ErrorInvalidInput);
+        assert_eq!(result, SyncResult::ErrorInvalidInput);
         
         sync_engine_destroy(engine);
     }
@@ -422,7 +424,7 @@ fn test_ffi_engine_lifecycle() {
             &capture as *const CallbackCapture as *mut c_void,
             -1,
         );
-        assert_eq!(result, CSyncResult::Success);
+        assert_eq!(result, SyncResult::Success);
         
         sync_engine_destroy(engine);
         // After destruction, the engine pointer should not be used
@@ -456,7 +458,7 @@ fn test_ffi_callback_thread_safety() {
         let handles: Vec<_> = (0..3).map(|i| {
             let capture = capture.clone();
             thread::spawn(move || {
-                let engine = engine_ptr as *mut CSyncEngine;
+                let engine = engine_ptr as *mut SyncEngine;
                 for _ in 0..2 {
                     sync_engine_emit_test_event(engine, 3); // SyncStarted
                     thread::sleep(Duration::from_millis(1));

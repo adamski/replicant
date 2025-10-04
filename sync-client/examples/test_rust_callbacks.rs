@@ -74,12 +74,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         EventType::SyncCompleted => {
                             format!("✅ Sync completed: {} docs", numeric_data)
                         }
-                        EventType::ConnectionStateChanged => {
-                            if boolean_data {
-                                "🔗 Connected to server".to_string()
-                            } else {
-                                "❌ Disconnected from server".to_string()
-                            }
+                        EventType::ConnectionSucceeded => {
+                            "🔗 Connected to server".to_string()
+                        }
+                        EventType::ConnectionLost => {
+                            "❌ Disconnected from server".to_string()
+                        }
+                        EventType::ConnectionAttempted => {
+                            "🔄 Attempting to connect...".to_string()
                         }
                         EventType::SyncError => {
                             format!("🚨 Sync error: {}", error.unwrap_or("unknown"))
@@ -118,17 +120,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(engine) = &sync_engine {
             println!("  ➕ Creating document: {}", title);
-            let doc = engine.create_document(title, content).await?;
+            let mut full_content = content.clone();
+            full_content["title"] = serde_json::json!(title);
+            let doc = engine.create_document(full_content).await?;
             println!("     Created: {}", doc.id);
         } else {
             // Offline mode - create directly in database
             println!("  ➕ Creating document offline: {}", title);
+            let mut full_content = content.clone();
+            full_content["title"] = serde_json::json!(title);
             let doc = sync_core::models::Document {
                 id: Uuid::new_v4(),
                 user_id,
-                title,
-                revision_id: sync_core::models::Document::initial_revision(&content),
-                content,
+                content: full_content.clone(),
+                revision_id: sync_core::models::Document::initial_revision(&full_content),
                 version: 1,
                 vector_clock: sync_core::models::VectorClock::new(),
                 created_at: chrono::Utc::now(),
@@ -160,13 +165,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         // Manually emit some events to test the callback mechanism
         let test_doc_id = Uuid::new_v4();
-        let test_content = json!({"test": "data"});
-        
+        let test_content = json!({"title": "Test Document", "test": "data"});
+
         println!("  📤 Emitting test events...");
-        events.emit_document_created(&test_doc_id, "Test Document", &test_content);
+        events.emit_document_created(&test_doc_id, &test_content);
         events.emit_sync_started();
         events.emit_sync_completed(42);
-        events.emit_connection_state_changed(true);
+        events.emit_connection_succeeded("ws://test-server");
         
         // Process the emitted events
         let processed = events.process_events()?;

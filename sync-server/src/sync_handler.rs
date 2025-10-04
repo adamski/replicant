@@ -64,55 +64,41 @@ impl SyncHandler {
                         // Note: This is NOT a merge - server version is completely overwritten
                         tracing::info!("🔧 Applying last-write-wins: Client version will replace server version");
 
-                        // Store the existing server version as unapplied (conflict loser)
-                        let mut tx = match self.db.pool.begin().await {
-                            Ok(tx) => tx,
-                            Err(e) => {
-                                tracing::error!("❌ Failed to begin transaction: {}", e);
-                                self.tx.send(ServerMessage::DocumentCreatedResponse {
-                                    document_id: document.id,
-                                    revision_id: document.revision_id.clone(),
-                                    success: false,
-                                    error: Some(format!("Transaction failed: {}", e)),
-                                }).await?;
-                                return Ok(());
-                            }
-                        };
+                        // Use single transaction for atomicity - log conflict AND update document
+                        let result = async {
+                            let mut tx = self.db.pool.begin().await
+                                .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
-                        // Log server's version as conflict loser (applied=false)
-                        let server_content_json = match serde_json::to_value(&existing_doc.content) {
-                            Ok(json) => json,
-                            Err(e) => {
-                                tracing::error!("❌ Failed to serialize server content: {}", e);
-                                return Ok(());
-                            }
-                        };
+                            // Log server's version as conflict loser (applied=false)
+                            let server_content_json = serde_json::to_value(&existing_doc.content)
+                                .map_err(|e| format!("Failed to serialize server content: {}", e))?;
 
-                        if let Err(e) = self.db.log_change_event(
-                            &mut tx,
-                            &document.id,
-                            &user_id,
-                            sync_core::protocol::ChangeEventType::Create,
-                            &existing_doc.revision_id,
-                            Some(&server_content_json),
-                            None,
-                            false  // applied = false (conflict loser)
-                        ).await {
-                            tracing::error!("❌ Failed to log conflict: {}", e);
-                            let _ = tx.rollback().await;
-                            return Ok(());
-                        }
+                            self.db.log_change_event(
+                                &mut tx,
+                                &document.id,
+                                &user_id,
+                                sync_core::protocol::ChangeEventType::Create,
+                                &existing_doc.revision_id,
+                                Some(&server_content_json),
+                                None,
+                                false  // applied = false (conflict loser)
+                            ).await
+                            .map_err(|e| format!("Failed to log conflict: {}", e))?;
 
-                        tracing::info!("📝 Logged server version as conflict loser (rev: {})", existing_doc.revision_id);
+                            tracing::info!("📝 Logged server version as conflict loser (rev: {})", existing_doc.revision_id);
 
-                        // Commit the conflict log before updating document
-                        if let Err(e) = tx.commit().await {
-                            tracing::error!("❌ Failed to commit conflict log: {}", e);
-                            return Ok(());
-                        }
+                            // Update document to client version IN SAME TRANSACTION
+                            self.db.update_document_in_tx(&mut tx, &document, None).await
+                                .map_err(|e| format!("Failed to update document: {}", e))?;
 
-                        // Override server version with client's version (last-write-wins, no merge)
-                        match self.db.update_document(&document, None).await {
+                            // Commit both operations atomically
+                            tx.commit().await
+                                .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+                            Ok::<(), String>(())
+                        }.await;
+
+                        match result {
                             Ok(_) => {
                                 tracing::info!("✅ Client version applied (server version overwritten)");
 
@@ -132,12 +118,12 @@ impl SyncHandler {
                                 ).await?;
                             }
                             Err(e) => {
-                                tracing::error!("❌ Failed to override with client version: {}", e);
+                                tracing::error!("❌ Failed to apply conflict resolution: {}", e);
                                 self.tx.send(ServerMessage::DocumentCreatedResponse {
                                     document_id: document.id,
                                     revision_id: document.revision_id.clone(),
                                     success: false,
-                                    error: Some(format!("Failed to apply client version: {}", e)),
+                                    error: Some(e),
                                 }).await?;
                             }
                         }
@@ -210,47 +196,6 @@ impl SyncHandler {
                     let server_content_before = doc.content.clone();
                     let server_revision_before = doc.revision_id.clone();
 
-                    // Start transaction to log conflict
-                    let mut tx = match self.db.pool.begin().await {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            tracing::error!("❌ Failed to begin transaction: {}", e);
-                            return Ok(());
-                        }
-                    };
-
-                    // Log server's pre-conflict state as unapplied (conflict loser)
-                    let server_content_json = match serde_json::to_value(&server_content_before) {
-                        Ok(json) => json,
-                        Err(e) => {
-                            tracing::error!("❌ Failed to serialize server content: {}", e);
-                            return Ok(());
-                        }
-                    };
-
-                    if let Err(e) = self.db.log_change_event(
-                        &mut tx,
-                        &doc.id,
-                        &user_id,
-                        sync_core::protocol::ChangeEventType::Update,
-                        &server_revision_before,
-                        Some(&server_content_json),
-                        None,
-                        false  // applied = false (conflict loser)
-                    ).await {
-                        tracing::error!("❌ Failed to log conflict: {}", e);
-                        let _ = tx.rollback().await;
-                        return Ok(());
-                    }
-
-                    tracing::info!("📝 Logged server state as conflict loser (rev: {})", server_revision_before);
-
-                    // Commit conflict log
-                    if let Err(e) = tx.commit().await {
-                        tracing::error!("❌ Failed to commit conflict log: {}", e);
-                        return Ok(());
-                    }
-
                     // Apply the client's patch (client wins)
                     apply_patch(&mut doc.content, &patch.patch)?;
 
@@ -263,16 +208,62 @@ impl SyncHandler {
                     tracing::warn!("   Server content after conflict resolution: {:?}", doc.content);
                     tracing::warn!("   New revision: {} -> {}", old_revision, doc.revision_id);
 
-                    // Save updated document - this logs the winning change event
-                    self.db.update_document(&doc, Some(&patch.patch)).await?;
-                    
-                    // Notify client of conflict resolution
-                    self.tx.send(ServerMessage::ConflictDetected {
-                        document_id: patch.document_id,
-                        local_revision: patch.revision_id.clone(),
-                        server_revision: doc.revision_id.clone(),
-                        resolution_strategy: ConflictResolution::ServerWins,
-                    }).await?;
+                    // Use single transaction to log conflict AND update document atomically
+                    let result = async {
+                        let mut tx = self.db.pool.begin().await
+                            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+                        // Log server's pre-conflict state as unapplied (conflict loser)
+                        let server_content_json = serde_json::to_value(&server_content_before)
+                            .map_err(|e| format!("Failed to serialize server content: {}", e))?;
+
+                        self.db.log_change_event(
+                            &mut tx,
+                            &doc.id,
+                            &user_id,
+                            sync_core::protocol::ChangeEventType::Update,
+                            &server_revision_before,
+                            Some(&server_content_json),
+                            None,
+                            false  // applied = false (conflict loser)
+                        ).await
+                        .map_err(|e| format!("Failed to log conflict: {}", e))?;
+
+                        tracing::info!("📝 Logged server state as conflict loser (rev: {})", server_revision_before);
+
+                        // Update document with client's changes IN SAME TRANSACTION
+                        self.db.update_document_in_tx(&mut tx, &doc, Some(&patch.patch)).await
+                            .map_err(|e| format!("Failed to update document: {}", e))?;
+
+                        // Commit both operations atomically
+                        tx.commit().await
+                            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+                        Ok::<(), String>(())
+                    }.await;
+
+                    match result {
+                        Ok(_) => {
+                            // Notify client of conflict resolution
+                            self.tx.send(ServerMessage::ConflictDetected {
+                                document_id: patch.document_id,
+                                local_revision: patch.revision_id.clone(),
+                                server_revision: doc.revision_id.clone(),
+                                resolution_strategy: ConflictResolution::ServerWins,
+                            }).await?;
+                        }
+                        Err(e) => {
+                            tracing::error!("❌ Conflict resolution failed: {}", e);
+                            // Notify client that the update failed
+                            self.tx.send(ServerMessage::ConflictDetected {
+                                document_id: patch.document_id,
+                                local_revision: patch.revision_id.clone(),
+                                server_revision: doc.revision_id.clone(),
+                                resolution_strategy: ConflictResolution::ServerWins,
+                            }).await?;
+                            return Ok(());
+                        }
+                    }
                     
                     // Broadcast the final state to ALL clients to ensure convergence
                     // This ensures all clients get the authoritative state after conflict resolution

@@ -109,12 +109,23 @@ impl ServerDatabase {
     pub async fn update_document(&self, doc: &Document, patch: Option<&Patch>) -> Result<(), sqlx::Error> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
-        
+        self.update_document_in_tx(&mut tx, doc, patch).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    // Update document within an existing transaction
+    pub async fn update_document_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        doc: &Document,
+        patch: Option<&Patch>
+    ) -> Result<(), sqlx::Error> {
         // Get the original document state before update (for computing reverse patch)
         let original_doc = self.get_document(&doc.id).await?;
-        
+
         let params = DbHelpers::document_to_params(doc);
-        
+
         // Update the document
         sqlx::query(Queries::UPDATE_DOCUMENT)
             .bind(params.0)  // id
@@ -126,9 +137,9 @@ impl ServerDatabase {
             .bind(params.8)  // deleted_at
             .bind(params.9)  // checksum
             .bind(params.10) // size_bytes
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        
+
         // Compute patches for the event log
         let forward_patch_json = patch.map(|p| serde_json::to_value(p).unwrap());
         let reverse_patch_json = if let Some(fwd_patch) = patch {
@@ -140,10 +151,9 @@ impl ServerDatabase {
         } else {
             None
         };
-        
-        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Update, &doc.revision_id, forward_patch_json.as_ref(), reverse_patch_json.as_ref(), true).await?;
-        
-        tx.commit().await?;
+
+        self.log_change_event(tx, &doc.id, &doc.user_id, ChangeEventType::Update, &doc.revision_id, forward_patch_json.as_ref(), reverse_patch_json.as_ref(), true).await?;
+
         Ok(())
     }
     

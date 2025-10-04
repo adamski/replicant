@@ -18,8 +18,10 @@ pub struct AuthState {
 
 #[derive(Clone)]
 struct AuthSession {
+    #[allow(dead_code)]
     user_id: Uuid,
     token: String,
+    #[allow(dead_code)]
     created_at: chrono::DateTime<chrono::Utc>,
 }
 

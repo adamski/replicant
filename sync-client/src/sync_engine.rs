@@ -1,7 +1,6 @@
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use std::io::Write;
 use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
 use sqlx::Row;
@@ -17,22 +16,11 @@ use crate::{
     events::EventDispatcher,
 };
 
-fn debug_log(msg: &str) {
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/task_list_debug.log")
-        .unwrap();
-    let timestamp = chrono::Utc::now().format("%H:%M:%S%.3f");
-    writeln!(file, "[{}] SYNC: {}", timestamp, msg).unwrap();
-}
-
 // Ping intervals for heartbeat detection
 const PING_INTERVAL: Duration = Duration::from_secs(10);  // Send ping every 10 seconds
 
 #[derive(Debug, Clone)]
 struct PendingUpload {
-    document_id: Uuid,
     operation_type: UploadType,
     sent_at: Instant,
 }
@@ -157,12 +145,10 @@ impl SyncEngine {
         let upload_complete_notifier = self.upload_complete_notifier.clone();
         let sync_protection_mode = self.sync_protection_mode.clone();
         let ws_client = self.ws_client.clone();
-        let user_id = self.user_id;
-        
+
         // Clone variables for the reconnection sync handler
         let db_for_reconnect_sync = db.clone();
         let pending_uploads_for_reconnect_sync = pending_uploads.clone();
-        let sync_protection_mode_for_reconnect_sync = sync_protection_mode.clone();
         let ws_client_for_reconnect_sync = ws_client.clone();
         
         // Start reconnection monitor if not connected
@@ -205,10 +191,8 @@ impl SyncEngine {
                 if let Err(e) = Self::perform_pending_sync_after_reconnection(
                     &db_for_reconnect_sync,
                     &ws_client_for_reconnect_sync,
-                    user_id,
                     client_id,
                     &pending_uploads_for_reconnect_sync,
-                    &sync_protection_mode_for_reconnect_sync
                 ).await {
                     tracing::error!("CLIENT {}: Failed to sync pending documents after reconnection: {}", client_id, e);
                 } else {
@@ -512,7 +496,6 @@ impl SyncEngine {
                         
                         // Track this upload
                         self.pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
-                            document_id: pending_info.id,
                             operation_type: UploadType::Delete,
                             sent_at: Instant::now(),
                         });
@@ -538,7 +521,6 @@ impl SyncEngine {
                         
                         // Track this upload
                         self.pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
-                            document_id: pending_info.id,
                             operation_type: UploadType::Create,
                             sent_at: Instant::now(),
                         });
@@ -563,7 +545,6 @@ impl SyncEngine {
                         
                         // Track this upload
                         self.pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
-                            document_id: pending_info.id,
                             operation_type: UploadType::Update,
                             sent_at: Instant::now(),
                         });
@@ -1018,7 +999,6 @@ impl SyncEngine {
         {
             let mut uploads = self.pending_uploads.lock().await;
             uploads.insert(document.id, PendingUpload {
-                document_id: document.id,
                 operation_type,
                 sent_at: Instant::now(),
             });
@@ -1283,10 +1263,8 @@ impl SyncEngine {
     async fn perform_pending_sync_after_reconnection(
         db: &Arc<ClientDatabase>,
         ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
-        user_id: Uuid,
         client_id: Uuid,
         pending_uploads: &Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
-        sync_protection_mode: &Arc<AtomicBool>,
     ) -> Result<(), ClientError> {
         tracing::info!("CLIENT {}: Starting post-reconnection pending sync using real engine components", client_id);
         
@@ -1308,7 +1286,6 @@ impl SyncEngine {
                         
                         // Track this upload
                         pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
-                            document_id: pending_info.id,
                             operation_type: UploadType::Delete,
                             sent_at: Instant::now(),
                         });
@@ -1359,7 +1336,6 @@ impl SyncEngine {
                             
                             // Track this upload
                             pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
-                                document_id: pending_info.id,
                                 operation_type: UploadType::Update,
                                 sent_at: Instant::now(),
                             });
@@ -1378,7 +1354,6 @@ impl SyncEngine {
                             
                             // Track this upload
                             pending_uploads.lock().await.insert(pending_info.id, PendingUpload {
-                                document_id: pending_info.id,
                                 operation_type: UploadType::Create,
                                 sent_at: Instant::now(),
                             });

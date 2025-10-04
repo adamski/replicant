@@ -12,6 +12,7 @@ use crate::{AppState, auth::AuthState};
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     email: String,
+    #[allow(dead_code)]
     password: String,
 }
 

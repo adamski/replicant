@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 use sync_client::SyncEngine;
-use tracing::{info, debug, warn, error};
+use tracing::{info, debug};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

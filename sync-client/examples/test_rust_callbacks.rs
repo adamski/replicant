@@ -1,5 +1,5 @@
 use sync_client::{ClientDatabase, SyncEngine};
-use sync_client::events::{EventDispatcher, EventType};
+use sync_client::events::EventType;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             println!("📡 Registering Rust event callback...");
             events.register_rust_callback(
-                Box::new(move |event_type, document_id, title, _content, error, numeric_data, boolean_data, _context| {
+                Box::new(move |event_type, document_id, title, _content, error, numeric_data, _boolean_data, _context| {
                     let mut test_state = state_clone.lock().unwrap();
                     
                     let event_desc = match event_type {

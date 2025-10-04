@@ -418,7 +418,7 @@ mod database_tests {
 
         // Create document with multiple conflicts
         let doc_id = Uuid::new_v4();
-        let mut doc = Document {
+        let doc = Document {
             id: doc_id,
             user_id,
             content: json!({"version": 0}),

@@ -455,8 +455,8 @@ fn test_ffi_callback_thread_safety() {
         // Emit events from multiple threads (simulated stress test)
         let engine_ptr = engine as usize; // Store as usize for thread safety
         
-        let handles: Vec<_> = (0..3).map(|i| {
-            let capture = capture.clone();
+        let handles: Vec<_> = (0..3).map(|_i| {
+            let _capture = capture.clone();
             thread::spawn(move || {
                 let engine = engine_ptr as *mut SyncEngine;
                 for _ in 0..2 {

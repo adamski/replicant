@@ -574,7 +574,7 @@ async fn run_app<B: Backend>(
                 let state_cb = state.clone();
                 
                 let _ = events.register_rust_callback(
-                    Box::new(move |event_type, document_id, title, _content, error, numeric_data, boolean_data, _context| {
+                    Box::new(move |event_type, document_id, title, _content, error, numeric_data, _boolean_data, _context| {
                         // Use panic protection in the callback
                         let result = std::panic::catch_unwind(|| {
                             let mut app_state = state_cb.lock().unwrap();

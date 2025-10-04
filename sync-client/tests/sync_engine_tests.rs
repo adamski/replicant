@@ -1,8 +1,5 @@
-use sync_client::{SyncEngine, ClientDatabase};
+use sync_client::ClientDatabase;
 use sync_core::models::{Document, VectorClock};
-use sync_core::protocol::{ClientMessage, ServerMessage};
-use std::time::Duration;
-use tokio::time::sleep;
 use sqlx::Row;
 use uuid::Uuid;
 use chrono::Utc;

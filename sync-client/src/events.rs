@@ -492,7 +492,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
 
     #[test]
     fn test_event_dispatcher_creation() {

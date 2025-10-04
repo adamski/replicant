@@ -1,8 +1,5 @@
-use sync_client::{SyncEngine, ClientDatabase};
+use sync_client::ClientDatabase;
 use sync_core::models::{Document, VectorClock};
-use sync_core::protocol::{ClientMessage, ServerMessage};
-use std::time::Duration;
-use tokio::time::sleep;
 use sqlx::Row;
 use uuid::Uuid;
 use chrono::Utc;
@@ -11,9 +8,7 @@ use serde_json::json;
 #[tokio::test]
 async fn test_document_marked_synced_after_creation() {
     let db_url = "sqlite::memory:";
-    let server_url = "ws://localhost:9001";
-    let token = "test_token";
-    
+
     // Create database and run migrations
     let db = ClientDatabase::new(db_url).await.unwrap();
     db.run_migrations().await.unwrap();
@@ -64,9 +59,7 @@ async fn test_document_marked_synced_after_creation() {
 #[tokio::test]
 async fn test_pending_documents_synced_on_connection_restore() {
     let db_url = "sqlite::memory:";
-    let server_url = "ws://localhost:9001";
-    let token = "test_token";
-    
+
     // Create database and run migrations
     let db = ClientDatabase::new(db_url).await.unwrap();
     db.run_migrations().await.unwrap();

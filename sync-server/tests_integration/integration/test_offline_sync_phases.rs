@@ -50,7 +50,7 @@ async fn create_persistent_client(
     .await?;
     
     // Create sync engine with persistent database
-    let mut engine = SyncEngine::new(
+    let engine = SyncEngine::new(
         db_path,
         &format!("{}/ws", server_url),
         token,

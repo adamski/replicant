@@ -183,7 +183,8 @@ impl TestContext {
             
         ws_stream
     }
-    
+
+    #[allow(dead_code)]
     pub fn create_test_document(user_id: Uuid, title: &str) -> Document {
         let content = json!({
             "title": title,
@@ -222,7 +223,8 @@ impl TestContext {
             }
         }
     }
-    
+
+    #[allow(dead_code)]
     pub async fn reset_server_state(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Reset server in-memory state via API (much faster than restart)
         let client = reqwest::Client::new();
@@ -239,7 +241,8 @@ impl TestContext {
         
         Ok(())
     }
-    
+
+    #[allow(dead_code)]
     pub async fn cleanup_database(&self) {
         // Connect to database and clean up test data
         let pool = sqlx::postgres::PgPool::connect(&self.db_url)
@@ -418,6 +421,7 @@ impl TestContext {
     }
 }
 
+#[allow(dead_code)]
 pub async fn assert_eventually<F, Fut>(f: F, timeout_secs: u64) 
 where
     F: Fn() -> Fut,

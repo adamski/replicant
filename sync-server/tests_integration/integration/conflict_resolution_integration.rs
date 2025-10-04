@@ -1,7 +1,6 @@
 use crate::integration::helpers::*;
 use uuid::Uuid;
 use serde_json::json;
-use sync_core::models::VectorClock;
 use futures_util::future;
 
 crate::integration_test!(test_concurrent_edit_conflict_resolution, |ctx: TestContext| async move {

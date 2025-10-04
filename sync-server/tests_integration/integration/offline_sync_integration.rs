@@ -336,7 +336,7 @@ async fn test_task_list_scenario_with_events() {
     for _ in 0..3 {
         let _ = client1.event_dispatcher().process_events();
         let _ = client2.event_dispatcher().process_events();
-        client3.event_dispatcher().process_events();
+        let _ = client3.event_dispatcher().process_events();
         sleep(Duration::from_millis(100)).await;
     }
     
@@ -366,7 +366,7 @@ async fn test_task_list_scenario_with_events() {
     for _ in 0..5 {
         let _ = client1.event_dispatcher().process_events();
         let _ = client2.event_dispatcher().process_events();
-        client3.event_dispatcher().process_events();
+        let _ = client3.event_dispatcher().process_events();
         sleep(Duration::from_millis(100)).await;
     }
     
@@ -398,10 +398,10 @@ async fn test_task_list_scenario_with_events() {
     for _ in 0..5 {
         let _ = client1.event_dispatcher().process_events();
         let _ = client2.event_dispatcher().process_events();
-        client3.event_dispatcher().process_events();
+        let _ = client3.event_dispatcher().process_events();
         sleep(Duration::from_millis(100)).await;
     }
-    
+
     // Verify update events
     sleep(Duration::from_millis(500)).await;
     {
@@ -422,10 +422,10 @@ async fn test_task_list_scenario_with_events() {
     for _ in 0..5 {
         let _ = client1.event_dispatcher().process_events();
         let _ = client2.event_dispatcher().process_events();
-        client3.event_dispatcher().process_events();
+        let _ = client3.event_dispatcher().process_events();
         sleep(Duration::from_millis(100)).await;
     }
-    
+
     // Verify delete events within 500ms
     sleep(Duration::from_millis(500)).await;
     {
@@ -476,8 +476,8 @@ async fn test_rapid_updates_with_event_callbacks() {
         .await.expect("Failed to create client 2");
     
     // Process initial events
-    client1.event_dispatcher().process_events();
-    client2.event_dispatcher().process_events();
+    let _ = client1.event_dispatcher().process_events();
+    let _ = client2.event_dispatcher().process_events();
     sleep(Duration::from_millis(300)).await;
     
     // Create a counter document

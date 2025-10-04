@@ -60,8 +60,9 @@ impl SyncHandler {
                         tracing::warn!("   Server content: {:?}", existing_doc.content);
                         tracing::warn!("   Client content: {:?}", document.content);
                         
-                        // Apply last-write-wins strategy (client's version wins)
-                        tracing::info!("🔧 Applying conflict resolution: Client version wins");
+                        // Apply last-write-wins strategy (client version replaces server version entirely)
+                        // Note: This is NOT a merge - server version is completely overwritten
+                        tracing::info!("🔧 Applying last-write-wins: Client version will replace server version");
 
                         // Store the existing server version as unapplied (conflict loser)
                         let mut tx = match self.db.pool.begin().await {
@@ -110,11 +111,11 @@ impl SyncHandler {
                             return Ok(());
                         }
 
-                        // Update the document with client's version
+                        // Override server version with client's version (last-write-wins, no merge)
                         match self.db.update_document(&document, None).await {
                             Ok(_) => {
-                                tracing::info!("✅ Conflict resolved - Client version applied");
-                                
+                                tracing::info!("✅ Client version applied (server version overwritten)");
+
                                 // Send confirmation to the sender
                                 self.tx.send(ServerMessage::DocumentCreatedResponse {
                                     document_id: document.id,
@@ -122,21 +123,21 @@ impl SyncHandler {
                                     success: true,
                                     error: None,
                                 }).await?;
-                                
-                                // Broadcast the final resolved document to ALL clients
-                                tracing::info!("📡 Broadcasting resolved document to all clients");
+
+                                // Broadcast the client's version to ALL clients for consistency
+                                tracing::info!("📡 Broadcasting client's version to all clients");
                                 self.broadcast_to_user(
                                     user_id,
                                     ServerMessage::SyncDocument { document: document.clone() }
                                 ).await?;
                             }
                             Err(e) => {
-                                tracing::error!("❌ Failed to apply conflict resolution: {}", e);
+                                tracing::error!("❌ Failed to override with client version: {}", e);
                                 self.tx.send(ServerMessage::DocumentCreatedResponse {
                                     document_id: document.id,
                                     revision_id: document.revision_id.clone(),
                                     success: false,
-                                    error: Some(format!("Conflict resolution failed: {}", e)),
+                                    error: Some(format!("Failed to apply client version: {}", e)),
                                 }).await?;
                             }
                         }
@@ -198,7 +199,8 @@ impl SyncHandler {
                         monitoring.log_conflict_detected(&doc.id.to_string()).await;
                     }
 
-                    // Automatic conflict resolution: Client wins (last-write-wins)
+                    // Last-write-wins strategy: Client patch overwrites server state
+                    // Note: This applies the patch to current server state, not merging changes
                     tracing::warn!("🔥 CONFLICT DETECTED for document {}", doc.id);
                     tracing::warn!("   Server revision: {} | Client revision: {}", doc.revision_id, patch.revision_id);
                     tracing::warn!("   Server content before: {:?}", doc.content);

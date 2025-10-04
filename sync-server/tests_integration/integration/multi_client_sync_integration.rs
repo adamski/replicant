@@ -34,8 +34,8 @@ async fn test_multiple_clients_same_user_create_update_delete() {
     // Test 1: Create document on client 1
     tracing::info!("Test 1: Creating document on client 1");
     let doc1 = client1.create_document(
-        "Shared Task".to_string(),
         json!({
+            "title": "Shared Task",
             "description": "This task should sync to all clients",
             "status": "pending",
             "priority": "high"
@@ -50,7 +50,7 @@ async fn test_multiple_clients_same_user_create_update_delete() {
         5,  // 5 second timeout
         move |doc| {
             let id_match = doc.id == expected_doc_id;
-            let title_match = doc.title == "Shared Task";
+            let title_match = doc.title_or_default() == "Shared Task";
             let status_match = doc.content["status"] == "pending";
             async move { id_match && title_match && status_match }
         }
@@ -138,8 +138,8 @@ async fn test_concurrent_document_creation_same_user() {
         let client_ref = client;
         let task = async move {
             client_ref.create_document(
-                format!("Task from client {}", i),
                 json!({
+                    "title": format!("Task from client {}", i),
                     "client_id": i,
                     "description": format!("Created by client {}", i),
                     "timestamp": chrono::Utc::now().to_rfc3339()
@@ -196,20 +196,20 @@ async fn test_no_duplicate_broadcast_to_sender() {
     // Create a document
     tracing::info!("Creating document to test no duplicate broadcast");
     let doc = client.create_document(
-        "Test No Duplicates".to_string(),
         json!({
+            "title": "Test No Duplicates",
             "test": "This document should not be duplicated"
         })
     ).await.expect("Failed to create document");
-    
+
     // Wait for any potential duplicate messages
     sleep(Duration::from_millis(1000)).await;
-    
+
     // Verify only one document exists
     let docs = client.get_all_documents().await.expect("Failed to get documents");
     assert_eq!(docs.len(), 1, "Expected exactly 1 document, found {}", docs.len());
     assert_eq!(docs[0].id, doc.id);
-    assert_eq!(docs[0].title, "Test No Duplicates");
+    assert_eq!(docs[0].title_or_default(), "Test No Duplicates");
     
     tracing::info!("✓ No duplicate documents created (sender not receiving own broadcast)");
 }
@@ -238,13 +238,11 @@ async fn test_offline_sync_recovery() {
     tracing::info!("Creating documents on client 1 while client 2 is offline");
     
     let doc1 = client1.create_document(
-        "Document 1".to_string(),
-        json!({ "created": "while client 2 offline" })
+        json!({ "title": "Document 1", "created": "while client 2 offline" })
     ).await.expect("Failed to create doc1");
-    
+
     let _doc2 = client1.create_document(
-        "Document 2".to_string(),
-        json!({ "also_created": "while client 2 offline" })
+        json!({ "title": "Document 2", "also_created": "while client 2 offline" })
     ).await.expect("Failed to create doc2");
     
     // Update one of them
@@ -302,8 +300,7 @@ async fn test_rapid_concurrent_updates() {
     
     // Create a document
     let doc = client1.create_document(
-        "Counter Document".to_string(),
-        json!({ "counter": 0 })
+        json!({ "title": "Counter Document", "counter": 0 })
     ).await.expect("Failed to create document");
     
     // Wait for initial sync

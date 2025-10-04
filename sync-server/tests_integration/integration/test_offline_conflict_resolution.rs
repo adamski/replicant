@@ -57,10 +57,7 @@ async fn create_persistent_client(
         "test-user@example.com"
     ).await?;
     
-    // Start the engine
-    engine.start().await?;
-    
-    // Give it time to connect
+    // Give it time to connect (connection starts automatically)
     sleep(Duration::from_millis(500)).await;
     
     Ok(engine)

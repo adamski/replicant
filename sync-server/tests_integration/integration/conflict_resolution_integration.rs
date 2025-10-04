@@ -12,7 +12,7 @@ crate::integration_test!(test_concurrent_edit_conflict_resolution, |ctx: TestCon
     let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
     
     // Both clients start with the same document
-    let doc = client1.create_document("Conflict Test".to_string(), json!({"test": true})).await.expect("Failed to create document");
+    let doc = client1.create_document(json!({"title": "Conflict Test", "test": true})).await.expect("Failed to create document");
     // Wait for automatic sync
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     
@@ -45,7 +45,7 @@ crate::integration_test!(test_delete_update_conflict, |ctx: TestContext| async m
     let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
     
     // Create and sync document
-    let doc = client1.create_document("Delete-Update Conflict".to_string(), json!({"test": true})).await.expect("Failed to create document");
+    let doc = client1.create_document(json!({"title": "Delete-Update Conflict", "test": true})).await.expect("Failed to create document");
     // Wait for automatic sync
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     
@@ -76,7 +76,7 @@ crate::integration_test!(test_rapid_concurrent_updates, |ctx: TestContext| async
     }
     
     // First client creates document
-    let doc = clients[0].create_document("Rapid Update Test".to_string(), json!({"test": true})).await.unwrap();
+    let doc = clients[0].create_document(json!({"title": "Rapid Update Test", "test": true})).await.unwrap();
     let doc_id = doc.id;
     
     // Wait for automatic sync
@@ -130,7 +130,7 @@ crate::integration_test!(test_vector_clock_convergence, |ctx: TestContext| async
     let client3 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
     
     // Create document on client 1
-    let doc = client1.create_document("Vector Clock Test".to_string(), json!({"test": true})).await.unwrap();
+    let doc = client1.create_document(json!({"title": "Vector Clock Test", "test": true})).await.unwrap();
     let doc_id = doc.id;
     
     // Wait for automatic sync

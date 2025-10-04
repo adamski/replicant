@@ -55,12 +55,9 @@ async fn create_client_with_event_tracking(
     .execute(&db.pool)
     .await?;
     
-    // Create sync engine
-    let mut engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), token, "test-user@example.com").await?;
-    
-    // Start the engine first
-    engine.start().await?;
-    
+    // Create sync engine (connection starts automatically)
+    let engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), token, "test-user@example.com").await?;
+
     // Give it time to connect and perform initial sync
     sleep(Duration::from_millis(500)).await;
     
@@ -184,8 +181,7 @@ async fn test_offline_changes_sync_on_reconnect() {
     // Create a document on client 1
     tracing::info!("Creating document on client 1...");
     let doc = client1.create_document(
-        "Task 1".to_string(),
-        json!({ "status": "pending", "description": "Created while online" })
+        json!({ "title": "Task 1", "status": "pending", "description": "Created while online" })
     ).await.expect("Failed to create document");
     
     // Process events and wait for sync
@@ -230,14 +226,12 @@ async fn test_offline_changes_sync_on_reconnect() {
     
     // Client 1: Create new document
     let offline_doc = client1.create_document(
-        "Offline Task".to_string(),
-        json!({ "created_offline": true, "client": "1" })
+        json!({ "title": "Offline Task", "created_offline": true, "client": "1" })
     ).await.expect("Should create document while offline");
-    
+
     // Client 2: Create a different document while offline
     let offline_doc2 = client2.create_document(
-        "Client 2 Offline Task".to_string(),
-        json!({ "created_offline": true, "client": "2" })
+        json!({ "title": "Client 2 Offline Task", "created_offline": true, "client": "2" })
     ).await.expect("Should create document while offline");
     
     // Process events
@@ -351,17 +345,17 @@ async fn test_task_list_scenario_with_events() {
     
     // Client 1: Create some tasks
     let task1 = client1.create_document(
-        "Buy groceries".to_string(),
         json!({
+            "title": "Buy groceries",
             "status": "pending",
             "priority": "high",
             "tags": ["shopping", "urgent"]
         })
     ).await.expect("Failed to create task 1");
-    
+
     let task2 = client1.create_document(
-        "Review PRs".to_string(),
         json!({
+            "title": "Review PRs",
             "status": "pending",
             "priority": "medium",
             "tags": ["work", "code-review"]
@@ -488,8 +482,7 @@ async fn test_rapid_updates_with_event_callbacks() {
     
     // Create a counter document
     let doc = client1.create_document(
-        "Counter".to_string(),
-        json!({ "value": 0 })
+        json!({ "title": "Counter", "value": 0 })
     ).await.expect("Failed to create counter");
     
     // Wait for initial sync

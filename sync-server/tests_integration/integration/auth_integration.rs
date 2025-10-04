@@ -9,12 +9,12 @@ crate::integration_test!(test_demo_token_authentication, |ctx: TestContext| asyn
     let client = ctx.create_test_client(user_id, "demo-token").await.expect("Failed to create client");
     
     // Should be able to create and sync a document
-    let _doc = client.create_document("Demo Test Doc".to_string(), json!({"test": true})).await.expect("Failed to create document");
-    
+    let _doc = client.create_document(json!({"title": "Demo Test Doc", "test": true})).await.expect("Failed to create document");
+
     // Verify sync worked
     let synced_docs = client.get_all_documents().await.expect("Failed to get documents");
     assert_eq!(synced_docs.len(), 1);
-    assert_eq!(synced_docs[0].title, "Demo Test Doc");
+    assert_eq!(synced_docs[0].title_or_default(), "Demo Test Doc");
 });
 
 crate::integration_test!(test_custom_token_auto_registration, |ctx: TestContext| async move {
@@ -25,21 +25,21 @@ crate::integration_test!(test_custom_token_auto_registration, |ctx: TestContext|
     let client1 = ctx.create_test_client(user_id, &custom_token).await.expect("Failed to create client");
     
     // Create a document
-    let _doc = client1.create_document("Auto Registration Test".to_string(), json!({"test": true})).await.expect("Failed to create document");
-    
+    let _doc = client1.create_document(json!({"title": "Auto Registration Test", "test": true})).await.expect("Failed to create document");
+
     // Wait for document to be processed by server
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    
+
     // Second connection with same credentials should work
     let client2 = ctx.create_test_client(user_id, &custom_token).await.expect("Failed to create client");
-    
+
     // Wait for sync to complete
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    
+
     // Should see the same document
     let docs = client2.get_all_documents().await.expect("Failed to get documents");
     assert_eq!(docs.len(), 1, "Client2 should see 1 document but found {}", docs.len());
-    assert_eq!(docs[0].title, "Auto Registration Test");
+    assert_eq!(docs[0].title_or_default(), "Auto Registration Test");
 });
 
 crate::integration_test!(test_invalid_token_rejection, |ctx: TestContext| async move {
@@ -50,8 +50,8 @@ crate::integration_test!(test_invalid_token_rejection, |ctx: TestContext| async 
     let client = ctx.create_test_client(user_id, &valid_token).await.expect("Failed to create client");
     
     // Create a document
-    let _doc = client.create_document("Security Test".to_string(), json!({"test": true})).await.expect("Failed to create document");
-    
+    let _doc = client.create_document(json!({"title": "Security Test", "test": true})).await.expect("Failed to create document");
+
     // Try to connect with wrong token - should fail
     let db_path = format!(":memory:{}:invalid", user_id);
     let result = sync_client::SyncEngine::new(
@@ -60,18 +60,9 @@ crate::integration_test!(test_invalid_token_rejection, |ctx: TestContext| async 
         "wrong-token",
         "test-user@example.com"
     ).await;
-    
-    // Connection should fail or subsequent operations should fail
-    match result {
-        Err(_) => {
-            // Expected - connection rejected
-        },
-        Ok(mut invalid_engine) => {
-            // If connection succeeded, starting the engine should fail
-            let start_result = invalid_engine.start().await;
-            assert!(start_result.is_err(), "Starting engine with invalid token should fail");
-        }
-    }
+
+    // Connection should fail (authentication happens during new())
+    assert!(result.is_err(), "Creating engine with invalid token should fail");
 });
 
 crate::integration_test!(test_concurrent_sessions, |ctx: TestContext| async move {
@@ -80,23 +71,23 @@ crate::integration_test!(test_concurrent_sessions, |ctx: TestContext| async move
     
     // Create the first client and document to ensure the user exists
     let client0 = ctx.create_test_client(user_id, token).await.expect("Failed to create client0");
-    let _doc0 = client0.create_document("Doc from client 0".to_string(), json!({"test": true}))
+    let _doc0 = client0.create_document(json!({"title": "Doc from client 0", "test": true}))
         .await.expect("Failed to create document 0");
-    
+
     // Create remaining clients and documents
     let mut clients = vec![client0];
-    
+
     for i in 1..5 {
         // Small delay between client connections
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         let client = ctx.create_test_client(user_id, token).await
             .expect(&format!("Failed to create client {}", i));
-        
+
         // Create document for this client
-        let _doc = client.create_document(format!("Doc from client {}", i), json!({"test": true}))
+        let _doc = client.create_document(json!({"title": format!("Doc from client {}", i), "test": true}))
             .await.expect(&format!("Failed to create document {}", i));
-        
+
         clients.push(client);
     }
     
@@ -130,7 +121,7 @@ crate::integration_test!(test_concurrent_sessions, |ctx: TestContext| async move
                 let docs = clients[i].get_all_documents().await.expect("Failed to get documents");
                 eprintln!("  Client {}: {} documents", i, count);
                 for doc in &docs {
-                    eprintln!("    - {}: {}", doc.id, doc.title);
+                    eprintln!("    - {}: {}", doc.id, doc.title_or_default());
                 }
             }
             panic!("Clients did not converge within {} seconds", timeout.as_secs());

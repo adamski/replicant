@@ -67,8 +67,7 @@ async fn test_simple_event_delivery() {
     // Create a document on client 1
     tracing::info!("Creating document on client 1...");
     let doc = client1.create_document(
-        "Test Document".to_string(),
-        json!({ "test": true })
+        json!({ "title": "Test Document", "test": true })
     ).await.expect("Failed to create document");
     
     tracing::info!("Document created with ID: {}", doc.id);

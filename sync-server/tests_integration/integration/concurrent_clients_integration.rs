@@ -26,8 +26,7 @@ crate::integration_test!(test_many_concurrent_clients, |ctx: TestContext| async 
             
             // Each client creates a document
             let _doc = client.create_document(
-                format!("Client {} Document", i),
-                json!({"test": true})
+                json!({"title": format!("Client {} Document", i), "test": true})
             ).await.unwrap();
             
             // Wait for automatic sync
@@ -72,7 +71,7 @@ crate::integration_test!(test_concurrent_updates_same_document, |ctx: TestContex
     
     // First client creates the document
     let client0 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let doc = client0.create_document("Concurrent Update Target".to_string(), json!({"test": true})).await.unwrap();
+    let doc = client0.create_document(json!({"title": "Concurrent Update Target", "test": true})).await.unwrap();
     let doc_id = doc.id;
     
     // Wait for document to be processed by server
@@ -151,8 +150,7 @@ crate::integration_test!(test_server_under_load, |ctx: TestContext| async move {
             // Each user creates multiple documents
             for doc_idx in 0..docs_per_user {
                 let _doc = client.create_document(
-                    format!("User {} Doc {}", user_idx, doc_idx),
-                    json!({"test": true})
+                    json!({"title": format!("User {} Doc {}", user_idx, doc_idx), "test": true})
                 ).await.unwrap();
                 
                 // Small delay to spread out load
@@ -209,8 +207,7 @@ crate::integration_test!(test_connection_stability, |ctx: TestContext| async mov
             
             // Create a document
             let _doc = client.create_document(
-                format!("Round {} Client {} Doc", round, i),
-                json!({"test": true})
+                json!({"title": format!("Round {} Client {} Doc", round, i), "test": true})
             ).await.unwrap();
             
             clients.push(client);

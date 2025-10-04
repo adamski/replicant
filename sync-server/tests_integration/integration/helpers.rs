@@ -121,21 +121,17 @@ impl TestContext {
             (db_path, ws_url)
         };
         
-        // Create and start the engine without holding the semaphore
-        let mut engine = SyncClient::new(
+        // Create the engine without holding the semaphore
+        // Connection starts automatically, no need to call start()
+        let engine = SyncClient::new(
             &db_path,
             &ws_url,
-            token
+            token,
+            &user_id.to_string()  // user_identifier for deterministic user ID
         ).await?;
-        
+
         // Small delay to ensure connection is established
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        
-        // Start the sync engine with error handling
-        engine.start().await.map_err(|e| {
-            tracing::debug!("Engine start failed for user {} on attempt {}: {}", user_id, attempt + 1, e);
-            e
-        })?;
         
         // Adaptive delay based on attempt number
         let auth_delay = if attempt == 0 { 200u64 } else { 300u64 + (attempt as u64 * 100) };
@@ -189,18 +185,16 @@ impl TestContext {
     }
     
     pub fn create_test_document(user_id: Uuid, title: &str) -> Document {
+        let content = json!({
+            "title": title,
+            "text": format!("Content for {}", title),
+            "timestamp": chrono::Utc::now().to_rfc3339()
+        });
         Document {
             id: Uuid::new_v4(),
             user_id,
-            title: title.to_string(),
-            content: json!({
-                "text": format!("Content for {}", title),
-                "timestamp": chrono::Utc::now().to_rfc3339()
-            }),
-            revision_id: Document::initial_revision(&json!({
-                "text": format!("Content for {}", title),
-                "timestamp": chrono::Utc::now().to_rfc3339()
-            })),
+            content: content.clone(),
+            revision_id: Document::initial_revision(&content),
             version: 1,
             vector_clock: sync_core::models::VectorClock::new(),
             created_at: chrono::Utc::now(),
@@ -497,8 +491,8 @@ pub async fn assert_all_clients_converge<F, Fut>(
                 eprintln!("\nClient {}: {} documents", i, count);
                 if let Ok(docs) = clients[*i].get_all_documents().await {
                     for doc in &docs {
-                        eprintln!("  - {} | {} | rev: {}", 
-                                 doc.id, doc.title, doc.revision_id);
+                        eprintln!("  - {} | {} | rev: {}",
+                                 doc.id, doc.title_or_default(), doc.revision_id);
                     }
                 }
             }

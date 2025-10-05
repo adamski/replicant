@@ -31,7 +31,7 @@ extern "C" {
     struct CSyncEngine;
     extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token, const char* user_identifier);
     extern void sync_engine_destroy(struct CSyncEngine* engine);
-    extern SyncResult sync_engine_create_document(struct CSyncEngine* engine, const char* title, const char* content_json, char* out_document_id);
+    extern SyncResult sync_engine_create_document(struct CSyncEngine* engine, const char* content_json, char* out_document_id);
     extern SyncResult sync_engine_update_document(struct CSyncEngine* engine, const char* document_id, const char* content_json);
     extern SyncResult sync_engine_delete_document(struct CSyncEngine* engine, const char* document_id);
     
@@ -74,10 +74,10 @@ public:
     
     CSyncEngine* get() const { return engine_.get(); }
     
-    SyncResult create_document(const std::string& title, const std::string& content_json, std::string& out_document_id)
+    SyncResult create_document(const std::string& content_json, std::string& out_document_id)
     {
         char doc_id[37] = {0};
-        auto result = sync_engine_create_document(engine_.get(), title.c_str(), content_json.c_str(), doc_id);
+        auto result = sync_engine_create_document(engine_.get(), content_json.c_str(), doc_id);
         if (result == SYNC_RESULT_SUCCESS)
         {
             out_document_id = std::string(doc_id);
@@ -377,8 +377,7 @@ void test_lambda_callbacks()
         
         std::string doc_id;
         auto create_result = engine.create_document(
-            "C++ Test Document", 
-            R"({"language": "C++", "features": ["lambdas", "RAII", "smart_pointers"]})",
+            R"({"title": "C++ Test Document", "language": "C++", "features": ["lambdas", "RAII", "smart_pointers"]})",
             doc_id
         );
         

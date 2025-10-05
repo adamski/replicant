@@ -79,8 +79,7 @@ int main() {
     char doc_id[37] = {0};
     result = sync_engine_create_document(
         engine,
-        "Test Document",
-        "{\"message\":\"Hello from C!\"}",
+        "{\"title\":\"Test Document\",\"message\":\"Hello from C!\"}",
         doc_id
     );
     

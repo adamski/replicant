@@ -31,8 +31,7 @@ int main()
     char doc_id[37] = {0};
     enum SyncResult result = sync_engine_create_document(
         engine,
-        "My Document",
-        "{\"content\":\"Hello World\",\"type\":\"note\",\"priority\":\"medium\"}",
+        "{\"title\":\"My Document\",\"content\":\"Hello World\",\"type\":\"note\",\"priority\":\"medium\"}",
         doc_id
     );
     

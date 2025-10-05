@@ -195,10 +195,10 @@ public:
         return sync_engine_process_events(engine_, processed_count);
     }
     
-    SyncResult create_document(const std::string& title, const std::string& content_json, std::string& out_doc_id)
+    SyncResult create_document(const std::string& content_json, std::string& out_doc_id)
     {
         char doc_id[37] = {0};
-        auto result = sync_engine_create_document(engine_, title.c_str(), content_json.c_str(), doc_id);
+        auto result = sync_engine_create_document(engine_, content_json.c_str(), doc_id);
         if (result == Success)
         {
             out_doc_id = std::string(doc_id);
@@ -254,8 +254,7 @@ int main()
         
         std::string doc_id;
         auto create_result = engine.create_document(
-            "Simple C++ Document", 
-            R"({"language": "C++", "complexity": "simple", "thread_safe": true})",
+            R"({"title": "Simple C++ Document", "language": "C++", "complexity": "simple", "thread_safe": true})",
             doc_id
         );
         

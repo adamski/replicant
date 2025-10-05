@@ -44,7 +44,6 @@ mod tests {
             CREATE TABLE documents (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
-                title TEXT NOT NULL,
                 content JSON NOT NULL,
                 revision_id TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
@@ -161,7 +160,6 @@ mod tests {
             CREATE TABLE documents (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
-                title TEXT NOT NULL,
                 content JSON NOT NULL,
                 revision_id TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,

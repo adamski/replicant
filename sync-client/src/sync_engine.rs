@@ -151,10 +151,7 @@ impl SyncEngine {
         let pending_uploads_for_reconnect_sync = pending_uploads.clone();
         let ws_client_for_reconnect_sync = ws_client.clone();
         
-        // Start reconnection monitor if not connected
-        if !self.is_connected.load(Ordering::Relaxed) {
-            self.start_reconnection_loop();
-        }
+        self.start_reconnection_loop();
         
         // Spawn message handler with upload tracking
         tokio::spawn(async move {
@@ -197,6 +194,16 @@ impl SyncEngine {
                     tracing::error!("CLIENT {}: Failed to sync pending documents after reconnection: {}", client_id, e);
                 } else {
                     tracing::info!("✅ CLIENT {}: Pending documents sync completed after reconnection", client_id);
+
+                    // NOW request full sync after uploads are complete
+                    tracing::info!("🔄 CLIENT {}: Requesting full sync to get missed updates", client_id);
+                    if let Some(client) = ws_client_for_reconnect_sync.lock().await.as_ref() {
+                        if let Err(e) = client.send(ClientMessage::RequestFullSync).await {
+                            tracing::error!("CLIENT {}: Failed to request full sync after reconnection: {}", client_id, e);
+                        } else {
+                            tracing::info!("✅ CLIENT {}: RequestFullSync sent after pending uploads complete", client_id);
+                        }
+                    }
                 }
             }
             
@@ -669,7 +676,7 @@ impl SyncEngine {
             ServerMessage::SyncDocument { document } => {
                 // Check if we're in protection mode
                 if sync_protection_mode.load(Ordering::Relaxed) {
-                    tracing::warn!("CLIENT {}: PROTECTED - Upload phase active, deferring sync for document {}", 
+                    tracing::debug!("CLIENT {}: Initial upload phase active, deferring sync for document {}",
                                   client_id, document.id);
                     return Ok(()); // Defer this message
                 }
@@ -679,12 +686,9 @@ impl SyncEngine {
                     // Check if this document has an active upload in progress
                     // This is our primary protection mechanism
                     if Self::has_pending_upload(pending_uploads, &document.id).await {
-                        tracing::warn!("CLIENT {}: PROTECTED - Document {} has active upload, refusing server overwrite", 
+                        tracing::debug!("CLIENT {}: Deferring server sync for document {} (upload in progress)",
                                       client_id, document.id);
-                        
-                        event_dispatcher.emit_sync_error(&format!(
-                            "Document {} protected from overwrite (active upload in progress)", document.id
-                        ));
+                        // Don't emit error - this is expected behavior during upload phase
                         return Ok(());
                     }
                 }
@@ -1167,24 +1171,27 @@ impl SyncEngine {
                                 event_dispatcher_clone.emit_connection_lost(&handler_server_url);
                             });
                             
+                            // Clear any stale pending uploads from before disconnection
+                            // These are invalid now and will be re-uploaded if needed
+                            {
+                                let mut uploads = pending_uploads.lock().await;
+                                if !uploads.is_empty() {
+                                    tracing::info!("CLIENT {}: Clearing {} stale pending uploads from before reconnection",
+                                                 client_id, uploads.len());
+                                    uploads.clear();
+                                }
+                            }
+
                             // Trigger pending sync on the real sync engine via channel
+                            // This will upload any pending documents and THEN request full sync
                             tracing::info!("📤 CLIENT {}: Triggering post-reconnection sync on real engine", client_id);
-                            
+
                             if let Err(e) = reconnect_sync_tx.try_send(()) {
                                 tracing::error!("CLIENT {}: Failed to trigger reconnection sync: {}", client_id, e);
                             } else {
                                 tracing::info!("✅ CLIENT {}: Reconnection sync trigger sent to real engine", client_id);
                             }
-                            
-                            // Also request full sync to get any updates that happened while offline
-                            tracing::info!("🔄 CLIENT {}: Requesting full sync to get missed updates", client_id);
-                            if let Some(client) = ws_client.lock().await.as_ref() {
-                                if let Err(e) = client.send(ClientMessage::RequestFullSync).await {
-                                    tracing::error!("CLIENT {}: Failed to request full sync after reconnection: {}", client_id, e);
-                                } else {
-                                    tracing::info!("✅ CLIENT {}: RequestFullSync sent after reconnection", client_id);
-                                }
-                            }
+                            // The pending sync handler will request full sync after uploads complete
                         }
                         Err(e) => {
                             tracing::debug!("❌ CLIENT {}: Connection attempt #{} failed: {} - will retry in {}s", client_id, connection_attempts, e, RECONNECTION_INTERVAL.as_secs());

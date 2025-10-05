@@ -41,48 +41,125 @@ impl SyncHandler {
         
         match msg {
             ClientMessage::CreateDocument { document } => {
-                tracing::debug!("Received CreateDocument from user {} for doc {}", user_id, document.id);
+                tracing::info!("🔵 Received CreateDocument from user {} for doc {} (rev: {})", 
+                             user_id, document.id, document.revision_id);
+                
                 // Validate ownership
                 if document.user_id != user_id {
                     self.send_error(ErrorCode::InvalidAuth, "Cannot create document for another user").await?;
                     return Ok(());
                 }
                 
-                // Save to database
-                match self.db.create_document(&document).await {
-                    Ok(_) => {
-                        // Send confirmation to the sender
-                        self.tx.send(ServerMessage::DocumentCreatedResponse {
-                            document_id: document.id,
-                            revision_id: document.revision_id.clone(),
-                            success: true,
-                            error: None,
-                        }).await?;
+                // Check if document already exists (conflict detection)
+                match self.db.get_document(&document.id).await {
+                    Ok(existing_doc) => {
+                        // Document exists! This is a conflict - handle it
+                        tracing::warn!("🔥 CONFLICT DETECTED: Document {} already exists on server", document.id);
+                        tracing::warn!("   Server revision: {} | Client revision: {}", 
+                                     existing_doc.revision_id, document.revision_id);
+                        tracing::warn!("   Server content: {:?}", existing_doc.content);
+                        tracing::warn!("   Client content: {:?}", document.content);
                         
-                        // Broadcast to all OTHER connected clients (exclude sender)
-                        tracing::info!("Broadcasting DocumentCreated for doc {} to other clients of user {}", document.id, user_id);
-                        
-                        // Log current client count
-                        if let Some(client_ids) = self.app_state.user_clients.get(&user_id) {
-                            tracing::info!("User {} has {} connected clients", user_id, client_ids.len());
-                        } else {
-                            tracing::warn!("User {} has no registered clients!", user_id);
+                        // Apply last-write-wins strategy (client version replaces server version entirely)
+                        // Note: This is NOT a merge - server version is completely overwritten
+                        tracing::info!("🔧 Applying last-write-wins: Client version will replace server version");
+
+                        // Use single transaction for atomicity - log conflict AND update document
+                        let result = async {
+                            let mut tx = self.db.pool.begin().await
+                                .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+                            // Log server's version as conflict loser (applied=false)
+                            let server_content_json = serde_json::to_value(&existing_doc.content)
+                                .map_err(|e| format!("Failed to serialize server content: {}", e))?;
+
+                            self.db.log_change_event(
+                                &mut tx,
+                                &document.id,
+                                &user_id,
+                                sync_core::protocol::ChangeEventType::Create,
+                                &existing_doc.revision_id,
+                                Some(&server_content_json),
+                                None,
+                                false  // applied = false (conflict loser)
+                            ).await
+                            .map_err(|e| format!("Failed to log conflict: {}", e))?;
+
+                            tracing::info!("📝 Logged server version as conflict loser (rev: {})", existing_doc.revision_id);
+
+                            // Update document to client version IN SAME TRANSACTION
+                            self.db.update_document_in_tx(&mut tx, &document, None).await
+                                .map_err(|e| format!("Failed to update document: {}", e))?;
+
+                            // Commit both operations atomically
+                            tx.commit().await
+                                .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+                            Ok::<(), String>(())
+                        }.await;
+
+                        match result {
+                            Ok(_) => {
+                                tracing::info!("✅ Client version applied (server version overwritten)");
+
+                                // Send confirmation to the sender
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: true,
+                                    error: None,
+                                }).await?;
+
+                                // Broadcast the client's version to ALL clients for consistency
+                                tracing::info!("📡 Broadcasting client's version to all clients");
+                                self.broadcast_to_user(
+                                    user_id,
+                                    ServerMessage::SyncDocument { document: document.clone() }
+                                ).await?;
+                            }
+                            Err(e) => {
+                                tracing::error!("❌ Failed to apply conflict resolution: {}", e);
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: false,
+                                    error: Some(e),
+                                }).await?;
+                            }
                         }
-                        
-                        self.broadcast_to_user_except(
-                            user_id,
-                            self.client_id,
-                            ServerMessage::DocumentCreated { document }
-                        ).await?;
                     }
-                    Err(e) => {
-                        // Send error response to the sender
-                        self.tx.send(ServerMessage::DocumentCreatedResponse {
-                            document_id: document.id,
-                            revision_id: document.revision_id.clone(),
-                            success: false,
-                            error: Some(e.to_string()),
-                        }).await?;
+                    Err(_) => {
+                        // Document doesn't exist - this is a true create operation
+                        tracing::info!("📝 Creating new document {} ", document.id);
+                        
+                        match self.db.create_document(&document).await {
+                            Ok(_) => {
+                                // Send confirmation to the sender
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: true,
+                                    error: None,
+                                }).await?;
+                                
+                                // Broadcast to all OTHER connected clients (exclude sender)
+                                tracing::info!("📡 Broadcasting new document to other clients");
+                                self.broadcast_to_user_except(
+                                    user_id,
+                                    self.client_id,
+                                    ServerMessage::DocumentCreated { document }
+                                ).await?;
+                            }
+                            Err(e) => {
+                                // Send error response to the sender
+                                self.tx.send(ServerMessage::DocumentCreatedResponse {
+                                    document_id: document.id,
+                                    revision_id: document.revision_id.clone(),
+                                    success: false,
+                                    error: Some(e.to_string()),
+                                }).await?;
+                            }
+                        }
                     }
                 }
             }
@@ -107,35 +184,86 @@ impl SyncHandler {
                     if let Some(ref monitoring) = self.monitoring {
                         monitoring.log_conflict_detected(&doc.id.to_string()).await;
                     }
-                    
-                    // Automatic conflict resolution: Server wins (last-write-wins)
+
+                    // Last-write-wins strategy: Client patch overwrites server state
+                    // Note: This applies the patch to current server state, not merging changes
                     tracing::warn!("🔥 CONFLICT DETECTED for document {}", doc.id);
                     tracing::warn!("   Server revision: {} | Client revision: {}", doc.revision_id, patch.revision_id);
                     tracing::warn!("   Server content before: {:?}", doc.content);
                     tracing::warn!("   Client patch: {:?}", patch.patch);
-                    
-                    // Apply the patch anyway (server wins - accept the update)
+
+                    // Store the server's current state as conflict loser BEFORE applying client patch
+                    let server_content_before = doc.content.clone();
+                    let server_revision_before = doc.revision_id.clone();
+
+                    // Apply the client's patch (client wins)
                     apply_patch(&mut doc.content, &patch.patch)?;
-                    
+
                     // Update revision and vector clock
                     let old_revision = doc.revision_id.clone();
                     doc.revision_id = doc.next_revision(&doc.content);
                     doc.vector_clock.increment(&self.user_id.ok_or("Not authenticated")?.to_string());
                     doc.updated_at = chrono::Utc::now();
-                    
+
                     tracing::warn!("   Server content after conflict resolution: {:?}", doc.content);
                     tracing::warn!("   New revision: {} -> {}", old_revision, doc.revision_id);
-                    
-                    // Save updated document - this logs the change event properly
-                    self.db.update_document(&doc, Some(&patch.patch)).await?;
-                    
-                    // Notify client of conflict resolution
-                    self.tx.send(ServerMessage::ConflictDetected {
-                        document_id: patch.document_id,
-                        local_revision: patch.revision_id.clone(),
-                        server_revision: doc.revision_id.clone(),
-                        resolution_strategy: ConflictResolution::ServerWins,
-                    }).await?;
+
+                    // Use single transaction to log conflict AND update document atomically
+                    let result = async {
+                        let mut tx = self.db.pool.begin().await
+                            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+                        // Log server's pre-conflict state as unapplied (conflict loser)
+                        let server_content_json = serde_json::to_value(&server_content_before)
+                            .map_err(|e| format!("Failed to serialize server content: {}", e))?;
+
+                        self.db.log_change_event(
+                            &mut tx,
+                            &doc.id,
+                            &user_id,
+                            sync_core::protocol::ChangeEventType::Update,
+                            &server_revision_before,
+                            Some(&server_content_json),
+                            None,
+                            false  // applied = false (conflict loser)
+                        ).await
+                        .map_err(|e| format!("Failed to log conflict: {}", e))?;
+
+                        tracing::info!("📝 Logged server state as conflict loser (rev: {})", server_revision_before);
+
+                        // Update document with client's changes IN SAME TRANSACTION
+                        self.db.update_document_in_tx(&mut tx, &doc, Some(&patch.patch)).await
+                            .map_err(|e| format!("Failed to update document: {}", e))?;
+
+                        // Commit both operations atomically
+                        tx.commit().await
+                            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+                        Ok::<(), String>(())
+                    }.await;
+
+                    match result {
+                        Ok(_) => {
+                            // Notify client of conflict resolution
+                            self.tx.send(ServerMessage::ConflictDetected {
+                                document_id: patch.document_id,
+                                local_revision: patch.revision_id.clone(),
+                                server_revision: doc.revision_id.clone(),
+                                resolution_strategy: ConflictResolution::ServerWins,
+                            }).await?;
+                        }
+                        Err(e) => {
+                            tracing::error!("❌ Conflict resolution failed: {}", e);
+                            // Notify client that the update failed
+                            self.tx.send(ServerMessage::ConflictDetected {
+                                document_id: patch.document_id,
+                                local_revision: patch.revision_id.clone(),
+                                server_revision: doc.revision_id.clone(),
+                                resolution_strategy: ConflictResolution::ServerWins,
+                            }).await?;
+                            return Ok(());
+                        }
+                    }
                     
                     // Broadcast the final state to ALL clients to ensure convergence
                     // This ensures all clients get the authoritative state after conflict resolution
@@ -267,6 +395,10 @@ impl SyncHandler {
                 
                 for doc in &documents {
                     tracing::debug!("Sending SyncDocument for doc {}", doc.id);
+                    tracing::info!("📤 SENDING SyncDocument: {} | Title: {} | Rev: {}", 
+                                 doc.id, 
+                                 doc.content.get("title").and_then(|v| v.as_str()).unwrap_or("N/A"),
+                                 doc.revision_id);
                     self.tx.send(ServerMessage::SyncDocument { document: doc.clone() }).await?;
                 }
                 

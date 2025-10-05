@@ -4,7 +4,7 @@
 //! These functions are only available in debug builds.
 
 use uuid::Uuid;
-use crate::ffi::{CSyncEngine, CSyncResult};
+use crate::ffi::{SyncEngine, SyncResult};
 
 /// Trigger a test event (for development/testing purposes)
 /// 
@@ -13,7 +13,7 @@ use crate::ffi::{CSyncEngine, CSyncResult};
 /// * `event_type` - Event type to emit (0-7)
 /// 
 /// # Returns
-/// * CSyncResult indicating success or failure
+/// * SyncResult indicating success or failure
 /// 
 /// # Event Types
 /// * 0 - DocumentCreated
@@ -23,15 +23,17 @@ use crate::ffi::{CSyncEngine, CSyncResult};
 /// * 4 - SyncCompleted
 /// * 5 - SyncError
 /// * 6 - ConflictDetected
-/// * 7 - ConnectionStateChanged
+/// * 7 - ConnectionLost
+/// * 8 - ConnectionAttempted
+/// * 9 - ConnectionSucceeded
 #[cfg(debug_assertions)]
 #[no_mangle]
 pub extern "C" fn sync_engine_emit_test_event(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     event_type: i32,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &*engine };
@@ -39,13 +41,13 @@ pub extern "C" fn sync_engine_emit_test_event(
     match event_type {
         0 => {
             let test_id = Uuid::new_v4();
-            let test_content = serde_json::json!({"test": "data", "created_at": chrono::Utc::now()});
-            engine.event_dispatcher.emit_document_created(&test_id, "Test Document (Created)", &test_content);
+            let test_content = serde_json::json!({"title": "Test Document (Created)", "test": "data", "created_at": chrono::Utc::now()});
+            engine.event_dispatcher.emit_document_created(&test_id, &test_content);
         },
         1 => {
             let test_id = Uuid::new_v4();
-            let test_content = serde_json::json!({"test": "updated", "updated_at": chrono::Utc::now()});
-            engine.event_dispatcher.emit_document_updated(&test_id, "Test Document (Updated)", &test_content);
+            let test_content = serde_json::json!({"title": "Test Document (Updated)", "test": "updated", "updated_at": chrono::Utc::now()});
+            engine.event_dispatcher.emit_document_updated(&test_id, &test_content);
         },
         2 => {
             let test_id = Uuid::new_v4();
@@ -58,11 +60,13 @@ pub extern "C" fn sync_engine_emit_test_event(
             let test_id = Uuid::new_v4();
             engine.event_dispatcher.emit_conflict_detected(&test_id);
         },
-        7 => engine.event_dispatcher.emit_connection_state_changed(true),
-        _ => return CSyncResult::ErrorInvalidInput,
+        7 => engine.event_dispatcher.emit_connection_lost("test-server"),
+        8 => engine.event_dispatcher.emit_connection_attempted("test-server"),
+        9 => engine.event_dispatcher.emit_connection_succeeded("test-server"),
+        _ => return SyncResult::ErrorInvalidInput,
     }
 
-    CSyncResult::Success
+    SyncResult::Success
 }
 
 /// Trigger multiple test events in sequence (for stress testing callbacks)
@@ -72,15 +76,15 @@ pub extern "C" fn sync_engine_emit_test_event(
 /// * `count` - Number of events to emit (1-100)
 /// 
 /// # Returns
-/// * CSyncResult indicating success or failure
+/// * SyncResult indicating success or failure
 #[cfg(debug_assertions)]
 #[no_mangle]
 pub extern "C" fn sync_engine_emit_test_event_burst(
-    engine: *mut CSyncEngine,
+    engine: *mut SyncEngine,
     count: i32,
-) -> CSyncResult {
+) -> SyncResult {
     if engine.is_null() || count < 1 || count > 100 {
-        return CSyncResult::ErrorInvalidInput;
+        return SyncResult::ErrorInvalidInput;
     }
 
     let engine = unsafe { &*engine };
@@ -88,12 +92,13 @@ pub extern "C" fn sync_engine_emit_test_event_burst(
     for i in 0..count {
         let test_id = Uuid::new_v4();
         let test_content = serde_json::json!({
+            "title": format!("Burst Test Document {}", i),
             "test": "burst_event",
             "sequence": i,
             "timestamp": chrono::Utc::now()
         });
-        engine.event_dispatcher.emit_document_created(&test_id, &format!("Burst Test Document {}", i), &test_content);
+        engine.event_dispatcher.emit_document_created(&test_id, &test_content);
     }
 
-    CSyncResult::Success
+    SyncResult::Success
 }

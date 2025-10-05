@@ -55,12 +55,9 @@ async fn create_client_with_event_tracking(
     .execute(&db.pool)
     .await?;
     
-    // Create sync engine
-    let mut engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), token).await?;
-    
-    // Start the engine first
-    engine.start().await?;
-    
+    // Create sync engine (connection starts automatically)
+    let engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), token, "test-user@example.com").await?;
+
     // Give it time to connect and perform initial sync
     sleep(Duration::from_millis(500)).await;
     
@@ -140,7 +137,6 @@ async fn create_client_with_event_tracking(
 }
 
 #[tokio::test]
-#[ignore = "Test is hanging - needs investigation"]
 async fn test_offline_changes_sync_on_reconnect() {
     if std::env::var("RUN_INTEGRATION_TESTS").is_err() {
         eprintln!("Skipping integration test. Set RUN_INTEGRATION_TESTS=1 to run.");
@@ -185,8 +181,7 @@ async fn test_offline_changes_sync_on_reconnect() {
     // Create a document on client 1
     tracing::info!("Creating document on client 1...");
     let doc = client1.create_document(
-        "Task 1".to_string(),
-        json!({ "status": "pending", "description": "Created while online" })
+        json!({ "title": "Task 1", "status": "pending", "description": "Created while online" })
     ).await.expect("Failed to create document");
     
     // Process events and wait for sync
@@ -231,14 +226,12 @@ async fn test_offline_changes_sync_on_reconnect() {
     
     // Client 1: Create new document
     let offline_doc = client1.create_document(
-        "Offline Task".to_string(),
-        json!({ "created_offline": true, "client": "1" })
+        json!({ "title": "Offline Task", "created_offline": true, "client": "1" })
     ).await.expect("Should create document while offline");
-    
+
     // Client 2: Create a different document while offline
     let offline_doc2 = client2.create_document(
-        "Client 2 Offline Task".to_string(),
-        json!({ "created_offline": true, "client": "2" })
+        json!({ "title": "Client 2 Offline Task", "created_offline": true, "client": "2" })
     ).await.expect("Should create document while offline");
     
     // Process events
@@ -343,7 +336,7 @@ async fn test_task_list_scenario_with_events() {
     for _ in 0..3 {
         let _ = client1.event_dispatcher().process_events();
         let _ = client2.event_dispatcher().process_events();
-        client3.event_dispatcher().process_events();
+        let _ = client3.event_dispatcher().process_events();
         sleep(Duration::from_millis(100)).await;
     }
     
@@ -352,17 +345,17 @@ async fn test_task_list_scenario_with_events() {
     
     // Client 1: Create some tasks
     let task1 = client1.create_document(
-        "Buy groceries".to_string(),
         json!({
+            "title": "Buy groceries",
             "status": "pending",
             "priority": "high",
             "tags": ["shopping", "urgent"]
         })
     ).await.expect("Failed to create task 1");
-    
+
     let task2 = client1.create_document(
-        "Review PRs".to_string(),
         json!({
+            "title": "Review PRs",
             "status": "pending",
             "priority": "medium",
             "tags": ["work", "code-review"]
@@ -373,7 +366,7 @@ async fn test_task_list_scenario_with_events() {
     for _ in 0..5 {
         let _ = client1.event_dispatcher().process_events();
         let _ = client2.event_dispatcher().process_events();
-        client3.event_dispatcher().process_events();
+        let _ = client3.event_dispatcher().process_events();
         sleep(Duration::from_millis(100)).await;
     }
     
@@ -405,10 +398,10 @@ async fn test_task_list_scenario_with_events() {
     for _ in 0..5 {
         let _ = client1.event_dispatcher().process_events();
         let _ = client2.event_dispatcher().process_events();
-        client3.event_dispatcher().process_events();
+        let _ = client3.event_dispatcher().process_events();
         sleep(Duration::from_millis(100)).await;
     }
-    
+
     // Verify update events
     sleep(Duration::from_millis(500)).await;
     {
@@ -429,10 +422,10 @@ async fn test_task_list_scenario_with_events() {
     for _ in 0..5 {
         let _ = client1.event_dispatcher().process_events();
         let _ = client2.event_dispatcher().process_events();
-        client3.event_dispatcher().process_events();
+        let _ = client3.event_dispatcher().process_events();
         sleep(Duration::from_millis(100)).await;
     }
-    
+
     // Verify delete events within 500ms
     sleep(Duration::from_millis(500)).await;
     {
@@ -483,14 +476,13 @@ async fn test_rapid_updates_with_event_callbacks() {
         .await.expect("Failed to create client 2");
     
     // Process initial events
-    client1.event_dispatcher().process_events();
-    client2.event_dispatcher().process_events();
+    let _ = client1.event_dispatcher().process_events();
+    let _ = client2.event_dispatcher().process_events();
     sleep(Duration::from_millis(300)).await;
     
     // Create a counter document
     let doc = client1.create_document(
-        "Counter".to_string(),
-        json!({ "value": 0 })
+        json!({ "title": "Counter", "value": 0 })
     ).await.expect("Failed to create counter");
     
     // Wait for initial sync

@@ -2,9 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::sleep;
 use serde_json::json;
-use uuid::Uuid;
 use crate::integration::helpers::TestContext;
-use sync_client::SyncEngine;
 
 #[tokio::test]
 async fn test_simple_event_delivery() {
@@ -67,8 +65,7 @@ async fn test_simple_event_delivery() {
     // Create a document on client 1
     tracing::info!("Creating document on client 1...");
     let doc = client1.create_document(
-        "Test Document".to_string(),
-        json!({ "test": true })
+        json!({ "title": "Test Document", "test": true })
     ).await.expect("Failed to create document");
     
     tracing::info!("Document created with ID: {}", doc.id);

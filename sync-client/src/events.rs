@@ -12,28 +12,32 @@
 //! - **Offline/Online Events**: Receive events for both local and synchronized operations
 //! 
 //! # Usage
-//! 
+//!
 //! ```rust,no_run
 //! use sync_client::events::{EventDispatcher, EventType};
-//! 
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create event dispatcher
 //! let dispatcher = EventDispatcher::new();
-//! 
+//!
 //! // Register callback for all events
-//! dispatcher.register_callback(
-//!     |event, context| {
+//! dispatcher.register_rust_callback(
+//!     Box::new(|event_type, _document_id, _title, _content, _error, _numeric_data, _boolean_data, _context| {
 //!         // Handle event
-//!         println!("Event received: {:?}", event.event_type);
-//!     },
+//!         println!("Event received: {:?}", event_type);
+//!     }),
 //!     std::ptr::null_mut(),
 //!     None
 //! )?;
-//! 
+//!
 //! // In your main loop, process events
 //! loop {
 //!     let processed = dispatcher.process_events()?;
 //!     // ... do other work
+//! #   break; // Exit loop for doctest
 //! }
+//! # Ok(())
+//! # }
 //! ```
 //! 
 //! # Thread Safety
@@ -69,8 +73,8 @@ pub enum EventType {
     SyncError = 5,
     /// A conflict was detected between document versions
     ConflictDetected = 6,
-    /// Connection state changed (connected/disconnected)
-    ConnectionStateChanged = 7,
+    /// Connection to server was lost
+    ConnectionLost = 7,
     /// A connection attempt was made to the server
     ConnectionAttempted = 8,
     /// Successfully connected to the server
@@ -173,20 +177,32 @@ struct QueuedEvent {
 /// registered them. This eliminates the need for complex synchronization in user code.
 /// 
 /// # Example
-/// 
+///
 /// ```rust,no_run
-/// use sync_client::events::EventDispatcher;
-/// 
+/// use sync_client::events::{EventDispatcher, EventData, EventType};
+/// use std::ffi::c_void;
+///
+/// // Define callback function
+/// extern "C" fn my_callback(event: *const EventData, _context: *mut c_void) {
+///     unsafe {
+///         println!("Event type: {:?}", (*event).event_type);
+///     }
+/// }
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let dispatcher = EventDispatcher::new();
-/// 
+///
 /// // Register callback (sets callback thread to current thread)
 /// dispatcher.register_callback(my_callback, std::ptr::null_mut(), None)?;
-/// 
+///
 /// // In main loop
 /// loop {
 ///     let processed = dispatcher.process_events()?;
 ///     // ... do other work
+/// #   break; // Exit loop for doctest
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub struct EventDispatcher {
     callbacks: Mutex<Vec<CallbackEntry>>,
@@ -296,11 +312,15 @@ impl EventDispatcher {
         Ok(())
     }
 
-    pub fn emit_document_created(&self, document_id: &Uuid, title: &str, content: &serde_json::Value) {
+    pub fn emit_document_created(&self, document_id: &Uuid, content: &serde_json::Value) {
+        // Extract title from content if present
+        let title = content.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
         self.queue_event(EventType::DocumentCreated, Some(document_id), Some(title), Some(content), None, 0, false);
     }
 
-    pub fn emit_document_updated(&self, document_id: &Uuid, title: &str, content: &serde_json::Value) {
+    pub fn emit_document_updated(&self, document_id: &Uuid, content: &serde_json::Value) {
+        // Extract title from content if present
+        let title = content.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
         self.queue_event(EventType::DocumentUpdated, Some(document_id), Some(title), Some(content), None, 0, false);
     }
 
@@ -324,8 +344,8 @@ impl EventDispatcher {
         self.queue_event(EventType::ConflictDetected, Some(document_id), None, None, None, 0, false);
     }
 
-    pub fn emit_connection_state_changed(&self, connected: bool) {
-        self.queue_event(EventType::ConnectionStateChanged, None, None, None, None, 0, connected);
+    pub fn emit_connection_lost(&self, server_url: &str) {
+        self.queue_event(EventType::ConnectionLost, None, Some(server_url), None, None, 0, false);
     }
 
     pub fn emit_connection_attempted(&self, server_url: &str) {
@@ -488,7 +508,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
 
     #[test]
     fn test_event_dispatcher_creation() {
@@ -522,7 +541,7 @@ mod tests {
         
         // Emit an event
         let doc_id = Uuid::new_v4();
-        dispatcher.emit_document_created(&doc_id, "Test", &serde_json::json!({"test": true}));
+        dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test", "test": true}));
         
         // Process events (should invoke callback)
         let processed = dispatcher.process_events().unwrap();
@@ -561,13 +580,13 @@ mod tests {
         let doc_id = Uuid::new_v4();
         
         // Emit created event
-        dispatcher.emit_document_created(&doc_id, "Test", &serde_json::json!({}));
+        dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test"}));
         dispatcher.process_events().unwrap();
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
         assert_eq!(updated_count.load(Ordering::SeqCst), 0);
         
         // Emit updated event
-        dispatcher.emit_document_updated(&doc_id, "Test", &serde_json::json!({}));
+        dispatcher.emit_document_updated(&doc_id, &serde_json::json!({"title": "Test"}));
         dispatcher.process_events().unwrap();
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
         assert_eq!(updated_count.load(Ordering::SeqCst), 1);
@@ -633,8 +652,8 @@ mod tests {
         
         // Emit multiple events
         let doc_id = Uuid::new_v4();
-        dispatcher.emit_document_created(&doc_id, "Test1", &serde_json::json!({}));
-        dispatcher.emit_document_updated(&doc_id, "Test2", &serde_json::json!({}));
+        dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test1"}));
+        dispatcher.emit_document_updated(&doc_id, &serde_json::json!({"title": "Test2"}));
         dispatcher.emit_document_deleted(&doc_id);
         dispatcher.emit_sync_started();
         dispatcher.emit_sync_completed(5);

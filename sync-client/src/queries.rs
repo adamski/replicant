@@ -1,7 +1,7 @@
 use sqlx::{SqlitePool, Row, sqlite::SqliteRow};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use sync_core::models::Document;
+use sync_core::models::{Document, SyncStatus};
 use crate::errors::ClientError;
 
 /// SQL queries for client database operations
@@ -20,7 +20,6 @@ impl Queries {
         CREATE TABLE IF NOT EXISTS documents (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
-            title TEXT NOT NULL,
             content JSON NOT NULL,
             revision_id TEXT NOT NULL,
             version INTEGER NOT NULL DEFAULT 1,
@@ -65,7 +64,7 @@ impl Queries {
 
     // Document queries
     pub const GET_DOCUMENT: &'static str = r#"
-        SELECT id, user_id, title, content, revision_id, version,
+        SELECT id, user_id, content, revision_id, version,
                vector_clock, created_at, updated_at, deleted_at
         FROM documents
         WHERE id = ?1
@@ -73,11 +72,10 @@ impl Queries {
     
     pub const UPSERT_DOCUMENT: &'static str = r#"
         INSERT INTO documents (
-            id, user_id, title, content, revision_id, version,
+            id, user_id, content, revision_id, version,
             vector_clock, created_at, updated_at, deleted_at, sync_status
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         ON CONFLICT(id) DO UPDATE SET
-            title = excluded.title,
             content = excluded.content,
             revision_id = excluded.revision_id,
             version = excluded.version,
@@ -88,23 +86,23 @@ impl Queries {
     "#;
     
     pub const LIST_USER_DOCUMENTS: &'static str = r#"
-        SELECT id, title, sync_status, updated_at 
+        SELECT id, sync_status, updated_at 
         FROM documents 
         WHERE user_id = ?1 AND deleted_at IS NULL
         ORDER BY updated_at DESC
     "#;
     
     pub const GET_PENDING_DOCUMENTS: &'static str = r#"
-        SELECT id FROM documents
-        WHERE sync_status = 'pending'
+        SELECT id, last_synced_revision, deleted_at FROM documents
+        WHERE sync_status = ?
         ORDER BY updated_at ASC
     "#;
     
     pub const MARK_DOCUMENT_SYNCED: &'static str = r#"
         UPDATE documents
-        SET sync_status = 'synced',
-            last_synced_revision = ?2
-        WHERE id = ?1
+        SET sync_status = ?,
+            last_synced_revision = ?
+        WHERE id = ?
     "#;
     
     pub const UPDATE_SYNC_STATUS: &'static str = 
@@ -149,7 +147,6 @@ impl DbHelpers {
     pub fn parse_document(row: &SqliteRow) -> Result<Document, ClientError> {
         let id: String = row.get("id");
         let user_id: String = row.get("user_id");
-        let title: String = row.get("title");
         let content: String = row.get("content");
         let revision_id: String = row.get("revision_id");
         let version: i64 = row.get("version");
@@ -161,7 +158,6 @@ impl DbHelpers {
         Ok(Document {
             id: Uuid::parse_str(&id)?,
             user_id: Uuid::parse_str(&user_id)?,
-            title,
             content: serde_json::from_str(&content)?,
             revision_id,
             version,
@@ -175,14 +171,13 @@ impl DbHelpers {
     }
     
     /// Prepare document values for database insertion
-    pub fn document_to_params(doc: &Document, sync_status: Option<&str>) -> Result<(
-        String, String, String, String, String, i64, String, String, String, Option<String>, String
+    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> Result<(
+        String, String, String, String, i64, String, String, String, Option<String>, String
     ), ClientError> {
-        let status = sync_status.unwrap_or("pending").to_string();
+        let status = sync_status.unwrap_or(SyncStatus::Pending).to_string();
         Ok((
             doc.id.to_string(),
             doc.user_id.to_string(),
-            doc.title.clone(),
             serde_json::to_string(&doc.content)?,
             doc.revision_id.to_string(),
             doc.version,
@@ -197,10 +192,10 @@ impl DbHelpers {
     /// Get count of documents by sync status
     pub async fn count_by_status(
         pool: &SqlitePool,
-        status: &str,
+        status: SyncStatus,
     ) -> Result<i64, ClientError> {
         let row = sqlx::query(Queries::COUNT_BY_SYNC_STATUS)
-            .bind(status)
+            .bind(status.to_string())
             .fetch_one(pool)
             .await?;
         

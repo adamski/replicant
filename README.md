@@ -105,10 +105,9 @@ let engine = SyncEngine::new(
 
 // Create a document
 let doc = engine.create_document(
-    "My Document".to_string(),
     json!({
-        "title": "Task title",
-        "description": "Task description", 
+        "title": "My Document",
+        "description": "Task description",
         "status": "pending",
         "priority": "medium",
         "tags": ["work", "important"]
@@ -330,8 +329,7 @@ int main() {
     char doc_id[37] = {0}; // UUID string + null terminator
     enum CSyncResult result = sync_engine_create_document(
         engine,
-        "My Document",
-        "{\"content\":\"Hello World\",\"type\":\"note\",\"priority\":\"medium\"}",
+        "{\"title\":\"My Document\",\"content\":\"Hello World\",\"type\":\"note\",\"priority\":\"medium\"}",
         doc_id
     );
     
@@ -375,8 +373,7 @@ int main() {
         
         // Create a document
         auto doc_id = engine.create_document(
-            "My Document",
-            R"({"content":"Hello World","type":"note","priority":"medium"})"
+            R"({"title":"My Document","content":"Hello World","type":"note","priority":"medium"})"
         );
         
         std::cout << "Created document: " << doc_id << std::endl;

@@ -10,7 +10,7 @@
 #include <string.h>
 
 /* Include the main sync client header */
-#include "../../dist/include/sync_client.h"
+#include "sync_client.h"
 
 /* Simple callback function */
 void simple_callback(const EventData* event, void* context) {
@@ -79,8 +79,7 @@ int main() {
     char doc_id[37] = {0};
     result = sync_engine_create_document(
         engine,
-        "Test Document",
-        "{\"message\":\"Hello from C!\"}",
+        "{\"title\":\"Test Document\",\"message\":\"Hello from C!\"}",
         doc_id
     );
     

@@ -7,7 +7,6 @@ pub fn parse_document(row: &PgRow) -> Result<Document, sqlx::Error> {
     Ok(Document {
         id: row.try_get("id")?,
         user_id: row.try_get("user_id")?,
-        title: row.try_get("title")?,
         content: row.try_get("content")?,
         revision_id: row.try_get("revision_id")?,
         version: row.try_get("version")?,
@@ -30,7 +29,6 @@ pub fn document_to_params(
 ) -> (
     Uuid,                                  // id
     Uuid,                                  // user_id
-    String,                                // title
     serde_json::Value,                     // content
     String,                                // revision_id
     i64,                                   // version
@@ -48,7 +46,6 @@ pub fn document_to_params(
     (
         doc.id,
         doc.user_id,
-        doc.title.clone(),
         doc.content.clone(),
         doc.revision_id.clone(),
         doc.version,

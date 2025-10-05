@@ -11,3 +11,4 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 json-patch = "1.2"
 sha2 = "0.10"
+strum = { version = "0.26", features = ["derive"] }

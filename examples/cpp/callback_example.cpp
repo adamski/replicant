@@ -19,24 +19,8 @@
 #include <chrono>
 #include <thread>
 
-// Include the event header
-#include "../include/sync_client_events.h"
-
-// Forward declarations for the main sync client functions
-extern "C" {
-    struct CSyncEngine;
-    extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token, const char* user_identifier);
-    extern void sync_engine_destroy(struct CSyncEngine* engine);
-    extern SyncResult sync_engine_create_document(struct CSyncEngine* engine, const char* content_json, char* out_document_id);
-    extern SyncResult sync_engine_update_document(struct CSyncEngine* engine, const char* document_id, const char* content_json);
-    extern SyncResult sync_engine_delete_document(struct CSyncEngine* engine, const char* document_id);
-    
-    // Debug functions (only available in debug builds)
-    #ifdef DEBUG
-    extern SyncResult sync_engine_emit_test_event(struct CSyncEngine* engine, int event_type);
-    extern SyncResult sync_engine_emit_test_event_burst(struct CSyncEngine* engine, int count);
-    #endif
-}
+// Include the sync client header
+#include "sync_client.h"
 
 // Simple event statistics - no thread synchronization needed!
 struct event_stats
@@ -84,24 +68,24 @@ struct event_stats
 event_stats g_stats;
 
 // Helper function to get event type name
-std::string get_event_type_name(SyncEventType type)
+std::string get_event_type_name(EventType type)
 {
     switch (type)
     {
-        case SYNC_EVENT_DOCUMENT_CREATED: return "DocumentCreated";
-        case SYNC_EVENT_DOCUMENT_UPDATED: return "DocumentUpdated";
-        case SYNC_EVENT_DOCUMENT_DELETED: return "DocumentDeleted";
-        case SYNC_EVENT_SYNC_STARTED: return "SyncStarted";
-        case SYNC_EVENT_SYNC_COMPLETED: return "SyncCompleted";
-        case SYNC_EVENT_SYNC_ERROR: return "SyncError";
-        case SYNC_EVENT_CONFLICT_DETECTED: return "ConflictDetected";
-        case SYNC_EVENT_CONNECTION_STATE_CHANGED: return "ConnectionStateChanged";
+        case DocumentCreated: return "DocumentCreated";
+        case DocumentUpdated: return "DocumentUpdated";
+        case DocumentDeleted: return "DocumentDeleted";
+        case SyncStarted: return "SyncStarted";
+        case SyncCompleted: return "SyncCompleted";
+        case SyncError: return "SyncError";
+        case ConflictDetected: return "ConflictDetected";
+        case ConnectionLost: return "ConnectionStateChanged";
         default: return "Unknown";
     }
 }
 
 // Simple callback function - no locks needed!
-void simple_event_callback(const SyncEventData* event, void* context)
+void simple_event_callback(const EventData* event, void* context)
 {
     std::string event_name = get_event_type_name(event->event_type);
     
@@ -111,9 +95,9 @@ void simple_event_callback(const SyncEventData* event, void* context)
     // Handle different event types
     switch (event->event_type)
     {
-        case SYNC_EVENT_DOCUMENT_CREATED:
-        case SYNC_EVENT_DOCUMENT_UPDATED:
-        case SYNC_EVENT_DOCUMENT_DELETED:
+        case DocumentCreated:
+        case DocumentUpdated:
+        case DocumentDeleted:
             g_stats.document_events++;
             std::cout << "📄 " << event_name;
             if (event->document_id)
@@ -127,8 +111,8 @@ void simple_event_callback(const SyncEventData* event, void* context)
             std::cout << "\n";
             break;
             
-        case SYNC_EVENT_SYNC_STARTED:
-        case SYNC_EVENT_SYNC_COMPLETED:
+        case SyncStarted:
+        case SyncCompleted:
             g_stats.sync_events++;
             std::cout << "🔄 " << event_name;
             if (event->numeric_data > 0)
@@ -138,7 +122,7 @@ void simple_event_callback(const SyncEventData* event, void* context)
             std::cout << "\n";
             break;
             
-        case SYNC_EVENT_SYNC_ERROR:
+        case SyncError:
             g_stats.error_events++;
             std::cout << "🚨 " << event_name;
             if (event->error)
@@ -148,12 +132,12 @@ void simple_event_callback(const SyncEventData* event, void* context)
             std::cout << "\n";
             break;
             
-        case SYNC_EVENT_CONNECTION_STATE_CHANGED:
+        case ConnectionLost:
             std::cout << "🔗 " << event_name << " - Connected: " 
                      << (event->boolean_data ? "Yes" : "No") << "\n";
             break;
             
-        case SYNC_EVENT_CONFLICT_DETECTED:
+        case ConflictDetected:
             std::cout << "⚠️ " << event_name;
             if (event->document_id)
             {
@@ -172,7 +156,7 @@ void simple_event_callback(const SyncEventData* event, void* context)
 class simple_sync_engine
 {
 private:
-    CSyncEngine* engine_;
+    SyncEngine* engine_;
     
 public:
     simple_sync_engine(const std::string& database_url, 
@@ -199,9 +183,9 @@ public:
     simple_sync_engine(const simple_sync_engine&) = delete;
     simple_sync_engine& operator=(const simple_sync_engine&) = delete;
     
-    CSyncEngine* get() const { return engine_; }
+    SyncEngine* get() const { return engine_; }
     
-    SyncResult register_callback(SyncEventCallback callback, void* context = nullptr, int event_filter = -1)
+    SyncResult register_callback(EventCallback callback, void* context = nullptr, int event_filter = -1)
     {
         return sync_engine_register_event_callback(engine_, callback, context, event_filter);
     }
@@ -215,7 +199,7 @@ public:
     {
         char doc_id[37] = {0};
         auto result = sync_engine_create_document(engine_, content_json.c_str(), doc_id);
-        if (result == SYNC_RESULT_SUCCESS)
+        if (result == Success)
         {
             out_doc_id = std::string(doc_id);
         }
@@ -258,7 +242,7 @@ int main()
         
         // Register callback - this sets the callback thread to the current thread
         auto result = engine.register_callback(simple_event_callback);
-        if (result != SYNC_RESULT_SUCCESS)
+        if (result != Success)
         {
             std::cout << "❌ Failed to register callback: " << result << "\n";
             return 1;
@@ -274,7 +258,7 @@ int main()
             doc_id
         );
         
-        if (create_result == SYNC_RESULT_SUCCESS)
+        if (create_result == Success)
         {
             std::cout << "✓ Document created: " << doc_id << "\n";
             
@@ -287,7 +271,7 @@ int main()
             auto update_result = engine.update_document(doc_id, 
                 R"({"language": "C++", "complexity": "simple", "thread_safe": true, "updated": true})");
             
-            if (update_result == SYNC_RESULT_SUCCESS)
+            if (update_result == Success)
             {
                 std::cout << "✓ Document updated\n";
                 engine.process_events(&processed);
@@ -295,7 +279,7 @@ int main()
                 
                 // Delete the document
                 auto delete_result = engine.delete_document(doc_id);
-                if (delete_result == SYNC_RESULT_SUCCESS)
+                if (delete_result == Success)
                 {
                     std::cout << "✓ Document deleted\n";
                     engine.process_events(&processed);
@@ -312,9 +296,9 @@ int main()
         // Test with debug events
         std::cout << "\n--- Testing Debug Events ---\n";
         
-        engine.emit_test_event(SYNC_EVENT_SYNC_STARTED);
-        engine.emit_test_event(SYNC_EVENT_SYNC_COMPLETED);
-        engine.emit_test_event(SYNC_EVENT_CONNECTION_STATE_CHANGED);
+        engine.emit_test_event(SyncStarted);
+        engine.emit_test_event(SyncCompleted);
+        engine.emit_test_event(ConnectionLost);
         
         // Process all queued events
         uint32_t total_processed = 0;

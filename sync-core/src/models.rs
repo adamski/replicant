@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use strum::{Display, EnumString};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub title: String,
     pub content: serde_json::Value,
     pub revision_id: String,  // CouchDB-style: "generation-hash" e.g. "2-a8d73487645ef123abc"
     pub version: i64,
@@ -76,6 +76,16 @@ impl Document {
         let other_hash = other_revision.split('-').nth(1).unwrap_or("");
         
         self.generation() == other_gen && self.hash() != other_hash
+    }
+    
+    /// Get the title from the content JSON, if present
+    pub fn title(&self) -> Option<&str> {
+        self.content.get("title").and_then(|v| v.as_str())
+    }
+    
+    /// Get the title from content JSON, or return a default
+    pub fn title_or_default(&self) -> &str {
+        self.title().unwrap_or("Untitled")
     }
 }
 
@@ -165,8 +175,7 @@ mod tests {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
-            title: "Test".to_string(),
-            content: serde_json::json!({"test": true}),
+            content: serde_json::json!({"title": "Test", "test": true}),
             revision_id: "3-a8d73487645ef123".to_string(),
             version: 3,
             vector_clock: VectorClock::new(),
@@ -184,8 +193,7 @@ mod tests {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
-            title: "Test".to_string(),
-            content: serde_json::json!({"test": true}),
+            content: serde_json::json!({"title": "Test", "test": true}),
             revision_id: "3-abc123".to_string(),
             version: 3,
             vector_clock: VectorClock::new(),
@@ -223,8 +231,7 @@ mod tests {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
-            title: "Test".to_string(),
-            content: serde_json::json!({"test": true}),
+            content: serde_json::json!({"title": "Test", "test": true}),
             revision_id: "2-abc123".to_string(),
             version: 2,
             vector_clock: VectorClock::new(),
@@ -244,6 +251,41 @@ mod tests {
         let other_revision = doc.next_revision(&other_content);
         assert_ne!(next_revision, other_revision);
     }
+    
+    #[test]
+    fn test_document_title_helpers() {
+        // Test document with title
+        let doc_with_title = Document {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            content: serde_json::json!({"title": "My Document", "test": true}),
+            revision_id: "1-abc123".to_string(),
+            version: 1,
+            vector_clock: VectorClock::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            deleted_at: None,
+        };
+        
+        assert_eq!(doc_with_title.title(), Some("My Document"));
+        assert_eq!(doc_with_title.title_or_default(), "My Document");
+        
+        // Test document without title
+        let doc_without_title = Document {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            content: serde_json::json!({"test": true}),
+            revision_id: "1-def456".to_string(),
+            version: 1,
+            vector_clock: VectorClock::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            deleted_at: None,
+        };
+        
+        assert_eq!(doc_without_title.title(), None);
+        assert_eq!(doc_without_title.title_or_default(), "Untitled");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,8 +297,9 @@ pub struct DocumentPatch {
     pub checksum: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Display, EnumString)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum SyncStatus {
     Synced,
     Pending,

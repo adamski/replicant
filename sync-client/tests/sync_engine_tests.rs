@@ -1,8 +1,5 @@
-use sync_client::{SyncEngine, ClientDatabase};
+use sync_client::ClientDatabase;
 use sync_core::models::{Document, VectorClock};
-use sync_core::protocol::{ClientMessage, ServerMessage};
-use std::time::Duration;
-use tokio::time::sleep;
 use sqlx::Row;
 use uuid::Uuid;
 use chrono::Utc;
@@ -25,12 +22,12 @@ async fn test_sync_engine_leaves_documents_pending_after_creation() {
     let user_id = db.get_user_id().await.unwrap();
     
     // In offline mode, let's manually create a document to simulate what sync engine does
+    let content = json!({"title": "Test Doc", "text": "Test content"});
     let doc = Document {
         id: Uuid::new_v4(),
         user_id,
-        title: "Test Doc".to_string(),
-        content: json!({"text": "Test content"}),
-        revision_id: "1-abc123".to_string(),
+        content: content.clone(),
+        revision_id: Document::initial_revision(&content),
         version: 1,
         vector_clock: VectorClock::new(),
         created_at: Utc::now(),
@@ -79,12 +76,12 @@ async fn test_sync_engine_has_no_pending_document_recovery() {
     
     // Create several "offline" documents that would be stuck in pending
     for i in 1..=3 {
+        let content = json!({"title": format!("Offline Doc {}", i), "text": format!("Content {}", i)});
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title: format!("Offline Doc {}", i),
-            content: json!({"text": format!("Content {}", i)}),
-            revision_id: "1-abc123".to_string(),
+            content: content.clone(),
+            revision_id: Document::initial_revision(&content),
             version: 1,
             vector_clock: VectorClock::new(),
             created_at: Utc::now(),
@@ -127,12 +124,12 @@ async fn test_mark_synced_requires_revision_id() {
     db.ensure_user_config("ws://localhost:9001", "test_token").await.unwrap();
     let user_id = db.get_user_id().await.unwrap();
     
+    let content = json!({"title": "Test Doc", "text": "Test content"});
     let doc = Document {
         id: Uuid::new_v4(),
         user_id,
-        title: "Test Doc".to_string(),
-        content: json!({"text": "Test content"}),
-        revision_id: "1-local".to_string(),
+        content: content.clone(),
+        revision_id: Document::initial_revision(&content),
         version: 1,
         vector_clock: VectorClock::new(),
         created_at: Utc::now(),
@@ -170,11 +167,11 @@ async fn test_document_to_params_always_sets_pending() {
     let user_id = db.get_user_id().await.unwrap();
     
     // Create a document that should be synced
+    let content = json!({"title": "Should be synced", "text": "This should be synced"});
     let doc = Document {
         id: Uuid::new_v4(),
         user_id,
-        title: "Should be synced".to_string(),
-        content: json!({"text": "This should be synced"}),
+        content: content.clone(),
         revision_id: "2-server-confirmed".to_string(),
         version: 2,
         vector_clock: VectorClock::new(),

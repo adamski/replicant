@@ -3,7 +3,7 @@ use uuid::Uuid;
 use sync_core::models::{Document, SyncStatus};
 use sync_core::protocol::ChangeEventType;
 use crate::errors::ClientError;
-use crate::queries::{Queries, DbHelpers};
+use crate::queries::{DbHelpers, Queries};
 use json_patch;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,30 +23,32 @@ impl ClientDatabase {
             .max_connections(5)
             .connect(database_url)
             .await?;
-        
+
         Ok(Self { pool })
     }
-    
+
     pub async fn run_migrations(&self) -> Result<(), ClientError> {
-        sqlx::migrate!("./migrations")
-            .run(&self.pool)
-            .await?;
+        sqlx::migrate!("./migrations").run(&self.pool).await?;
         Ok(())
     }
-    
-    pub async fn ensure_user_config(&self, server_url: &str, auth_token: &str) -> Result<(), ClientError> {
+
+    pub async fn ensure_user_config(
+        &self,
+        server_url: &str,
+        auth_token: &str,
+    ) -> Result<(), ClientError> {
         // Check if user_config already exists
         let exists = sqlx::query("SELECT COUNT(*) as count FROM user_config")
             .fetch_one(&self.pool)
             .await?;
-        
+
         let count: i64 = exists.try_get("count")?;
-        
+
         if count == 0 {
             // No user config exists, create default
             let user_id = Uuid::new_v4();
             let client_id = Uuid::new_v4();
-            
+
             sqlx::query("INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)")
                 .bind(user_id.to_string())
                 .bind(client_id.to_string())
@@ -55,7 +57,7 @@ impl ClientDatabase {
                 .execute(&self.pool)
                 .await?;
         }
-        
+
         Ok(())
     }
     
@@ -100,39 +102,43 @@ impl ClientDatabase {
         let row = sqlx::query(Queries::GET_USER_ID)
             .fetch_one(&self.pool)
             .await?;
-        
+
         let user_id: String = row.try_get("user_id")?;
         Ok(Uuid::parse_str(&user_id)?)
     }
-    
+
     pub async fn get_client_id(&self) -> Result<Uuid, ClientError> {
         let row = sqlx::query(Queries::GET_CLIENT_ID)
             .fetch_one(&self.pool)
             .await?;
-        
+
         let client_id: String = row.try_get("client_id")?;
         Ok(Uuid::parse_str(&client_id)?)
     }
-    
+
     pub async fn get_user_and_client_id(&self) -> Result<(Uuid, Uuid), ClientError> {
         let row = sqlx::query(Queries::GET_USER_AND_CLIENT_ID)
             .fetch_one(&self.pool)
             .await?;
-        
+
         let user_id: String = row.try_get("user_id")?;
         let client_id: String = row.try_get("client_id")?;
         Ok((Uuid::parse_str(&user_id)?, Uuid::parse_str(&client_id)?))
     }
-    
+
     pub async fn get_document(&self, id: &Uuid) -> Result<Document, ClientError> {
-        let row = sqlx::query(Queries::GET_DOCUMENT)
+        let row = sqlx::query(r#"
+            SELECT id, user_id, content, revision_id, version, vector_clock, created_at, updated_at, deleted_at
+            FROM documents
+            WHERE id = $1
+        "#)
             .bind(id.to_string())
             .fetch_one(&self.pool)
             .await?;
-        
+
         DbHelpers::parse_document(&row)
     }
-    
+
     pub async fn save_document(&self, doc: &Document) -> Result<(), ClientError> {
         self.save_document_with_status(doc, None).await
     }
@@ -143,7 +149,7 @@ impl ClientDatabase {
                      doc.id, status_str, doc.revision_id);
         
         let params = DbHelpers::document_to_params(doc, sync_status)?;
-        
+
         sqlx::query(Queries::UPSERT_DOCUMENT)
             .bind(params.0)  // id
             .bind(params.1)  // user_id
@@ -223,27 +229,27 @@ impl ClientDatabase {
         
         Ok(())
     }
-    
+
     pub async fn delete_document(&self, document_id: &Uuid) -> Result<(), ClientError> {
         sqlx::query("UPDATE documents SET deleted_at = datetime('now'), sync_status = ? WHERE id = ?")
             .bind(SyncStatus::Pending.to_string())
             .bind(document_id.to_string())
             .execute(&self.pool)
             .await?;
-        
+
         Ok(())
     }
-    
+
     pub async fn get_all_documents(&self) -> Result<Vec<Document>, ClientError> {
         let rows = sqlx::query("SELECT * FROM documents WHERE deleted_at IS NULL")
             .fetch_all(&self.pool)
             .await?;
-        
+
         rows.into_iter()
             .map(|row| DbHelpers::parse_document(&row))
             .collect()
     }
-    
+
     pub async fn queue_sync_operation(
         &self,
         document_id: &Uuid,

@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 sync-core = { path = "../sync-core" }
 tokio = { workspace = true }
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "json", "uuid", "chrono"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

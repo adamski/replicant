@@ -2,13 +2,14 @@ use json_patch::{Patch, PatchOperation};
 use serde_json::Value;
 use sha2::{Sha256, Digest};
 use crate::errors::SyncError;
+use crate::SyncResult;
 
-pub fn create_patch(from: &Value, to: &Value) -> Result<Patch, SyncError> {
+pub fn create_patch(from: &Value, to: &Value) -> SyncResult<Patch> {
     let diff = json_patch::diff(from, to);
     Ok(diff)
 }
 
-pub fn apply_patch(document: &mut Value, patch: &Patch) -> Result<(), SyncError> {
+pub fn apply_patch(document: &mut Value, patch: &Patch) -> SyncResult<()> {
     json_patch::patch(document, patch)
         .map_err(|e| SyncError::PatchFailed(e.to_string()))
 }
@@ -28,7 +29,7 @@ pub fn merge_patches(patch1: &Patch, patch2: &Patch) -> Patch {
 
 /// Compute a reverse patch that can undo the given forward patch
 /// Requires the original document state before the patch was applied
-pub fn compute_reverse_patch(original: &Value, forward_patch: &Patch) -> Result<Patch, SyncError> {
+pub fn compute_reverse_patch(original: &Value, forward_patch: &Patch) -> SyncResult<Patch> {
     // Apply the forward patch to get the new state
     let mut new_state = original.clone();
     apply_patch(&mut new_state, forward_patch)?;
@@ -42,7 +43,7 @@ pub fn transform_patches(
     local: &Patch,
     remote: &Patch,
     strategy: TransformStrategy,
-) -> Result<(Patch, Patch), SyncError> {
+) -> SyncResult<(Patch, Patch)> {
     // Operational transformation implementation
     match strategy {
         TransformStrategy::LastWriteWins => {
@@ -64,7 +65,7 @@ pub enum TransformStrategy {
 fn transform_operations(
     local_ops: &[PatchOperation],
     remote_ops: &[PatchOperation],
-) -> Result<(Patch, Patch), SyncError> {
+) -> SyncResult<(Patch, Patch)> {
     // Simplified OT - would need full implementation
     // This is a placeholder for the actual OT algorithm
     let transformed_local = Patch(local_ops.to_vec());

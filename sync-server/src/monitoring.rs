@@ -2,6 +2,7 @@ use chrono::Local;
 use colored::*;
 use sync_core::protocol::{ClientMessage, ServerMessage};
 use tokio::sync::mpsc;
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone)]
 pub enum LogMessage {
@@ -71,16 +72,16 @@ impl MonitoringLayer {
 
 pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
     tokio::spawn(async move {
-        println!();
-        println!("{}", "📋 Activity Log:".bold());
-        println!("{}", "─".repeat(80).dimmed());
+        info!("");
+        info!("{}", "📋 Activity Log:".bold());
+        info!("{}", "─".repeat(80).dimmed());
         
         while let Some(log) = rx.recv().await {
             let timestamp = Local::now().format("%H:%M:%S%.3f");
             
             match log {
                 LogMessage::ClientConnected { client_id } => {
-                    println!(
+                    info!(
                         "{} {} Client connected: {}",
                         timestamp.to_string().dimmed(),
                         "→".green().bold(),
@@ -88,7 +89,7 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                     );
                 }
                 LogMessage::ClientDisconnected { client_id } => {
-                    println!(
+                    info!(
                         "{} {} Client disconnected: {}",
                         timestamp.to_string().dimmed(),
                         "←".red().bold(),
@@ -107,7 +108,7 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                         ClientMessage::GetChangesSince { .. } => "GetChangesSince",
                         ClientMessage::AckChanges { .. } => "AckChanges",
                     };
-                    println!(
+                    info!(
                         "{} {} {} from {}",
                         timestamp.to_string().dimmed(),
                         "↓".blue(),
@@ -133,7 +134,7 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                         ServerMessage::Changes { .. } => "Changes",
                         ServerMessage::ChangesAcknowledged { .. } => "ChangesAcknowledged",
                     };
-                    println!(
+                    info!(
                         "{} {} {} to {}",
                         timestamp.to_string().dimmed(),
                         "↑".green(),
@@ -142,7 +143,7 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                     );
                 }
                 LogMessage::PatchApplied { document_id, patch } => {
-                    println!(
+                    info!(
                         "{} {} Patch applied to document {}:",
                         timestamp.to_string().dimmed(),
                         "🔧".to_string(),
@@ -150,11 +151,11 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                     );
                     // Print patch with indentation
                     for line in patch.lines() {
-                        println!("     {}", line.cyan());
+                        info!("     {}", line.cyan());
                     }
                 }
                 LogMessage::ConflictDetected { document_id } => {
-                    println!(
+                    warn!(
                         "{} {} Conflict detected for document {}",
                         timestamp.to_string().dimmed(),
                         "⚠️".to_string(),
@@ -162,7 +163,7 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                     );
                 }
                 LogMessage::Error { message } => {
-                    println!(
+                    error!(
                         "{} {} Error: {}",
                         timestamp.to_string().dimmed(),
                         "❌".to_string(),

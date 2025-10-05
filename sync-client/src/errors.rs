@@ -31,4 +31,19 @@ pub enum ClientError {
     
     #[error("Migration error: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
+
+    #[error("Failed to acquire lock: {0}")]
+    LockError(String),
+
+    #[error("Channel send failed")]
+    SendError(#[from] std::sync::mpsc::SendError<crate::events::QueuedEvent>),
+
+    #[error("Thread safety violation: process_events() must be called on the registration thread")]
+    ThreadSafetyViolation,
+
+    #[error("No callbacks registered yet")]
+    NoCallbacksRegistered,
+
+    #[error("Internal channel closed")]
+    ChannelClosed,
 }

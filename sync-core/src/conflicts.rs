@@ -1,6 +1,7 @@
 use crate::models::{Document, VectorClock};
 use crate::errors::SyncError;
 use serde_json::Value;
+use crate::SyncResult;
 
 #[derive(Debug, Clone)]
 pub enum ConflictStrategy {
@@ -23,7 +24,7 @@ impl ConflictResolver {
         &self,
         local: &Document,
         remote: &Document,
-    ) -> Result<Document, SyncError> {
+    ) -> SyncResult<Document> {
         match &self.strategy {
             ConflictStrategy::LastWriteWins => {
                 if local.updated_at > remote.updated_at {
@@ -52,7 +53,7 @@ impl ConflictResolver {
         &self,
         local: &Document,
         remote: &Document,
-    ) -> Result<Document, SyncError> {
+    ) -> SyncResult<Document> {
         let merged_content = merge_json_values(&local.content, &remote.content)?;
         
         let mut merged_doc = local.clone();
@@ -67,7 +68,7 @@ impl ConflictResolver {
     }
 }
 
-fn merge_json_values(local: &Value, remote: &Value) -> Result<Value, SyncError> {
+fn merge_json_values(local: &Value, remote: &Value) -> SyncResult<Value> {
     match (local, remote) {
         (Value::Object(local_map), Value::Object(remote_map)) => {
             let mut merged = local_map.clone();

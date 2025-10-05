@@ -18,6 +18,8 @@ pub use sync_engine::SyncEngine;
 pub use websocket::WebSocketClient;
 pub use errors::ClientError;
 
+pub type ClientResult<T> = Result<T, ClientError>;
+
 #[cfg(test)]
 mod tests {
     use super::*;

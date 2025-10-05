@@ -6,12 +6,7 @@ use sync_core::{
     protocol::{ClientMessage, ServerMessage},
     patches::{create_patch, apply_patch, calculate_checksum},
 };
-use crate::{
-    database::ClientDatabase,
-    websocket::WebSocketClient,
-    errors::ClientError,
-    events::EventDispatcher,
-};
+use crate::{database::ClientDatabase, websocket::WebSocketClient, errors::ClientError, events::EventDispatcher, ClientResult};
 
 pub struct SyncEngine {
     db: Arc<ClientDatabase>,
@@ -28,7 +23,7 @@ impl SyncEngine {
         database_url: &str,
         server_url: &str,
         auth_token: &str,
-    ) -> Result<Self, ClientError> {
+    ) -> ClientResult<Self> {
         let db = Arc::new(ClientDatabase::new(database_url).await?);
         db.run_migrations().await?;
         
@@ -76,7 +71,7 @@ impl SyncEngine {
         self.event_dispatcher.clone()
     }
     
-    pub async fn start(&mut self) -> Result<(), ClientError> {
+    pub async fn start(&mut self) -> ClientResult<()> {
         // Take the receiver - can only start once
         let rx = self.message_rx.take()
             .ok_or_else(|| ClientError::WebSocket("SyncEngine already started".to_string()))?;
@@ -110,7 +105,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    pub async fn create_document(&self, title: String, content: serde_json::Value) -> Result<Document, ClientError> {
+    pub async fn create_document(&self, title: String, content: serde_json::Value) -> ClientResult<Document> {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id: self.user_id,
@@ -145,7 +140,7 @@ impl SyncEngine {
         Ok(doc)
     }
     
-    pub async fn update_document(&self, id: Uuid, new_content: serde_json::Value) -> Result<(), ClientError> {
+    pub async fn update_document(&self, id: Uuid, new_content: serde_json::Value) -> ClientResult<()> {
         let mut doc = self.db.get_document(&id).await?;
         let old_content = doc.content.clone();
         
@@ -187,7 +182,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    pub async fn delete_document(&self, id: Uuid) -> Result<(), ClientError> {
+    pub async fn delete_document(&self, id: Uuid) -> ClientResult<()> {
         let doc = self.db.get_document(&id).await?;
         
         // Send delete to server
@@ -205,7 +200,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    pub async fn get_all_documents(&self) -> Result<Vec<Document>, ClientError> {
+    pub async fn get_all_documents(&self) -> ClientResult<Vec<Document>> {
         let docs = self.db.get_all_documents().await?;
         tracing::info!("CLIENT: get_all_documents() returning {} documents", docs.len());
         for doc in &docs {
@@ -214,7 +209,7 @@ impl SyncEngine {
         Ok(docs)
     }
     
-    async fn sync_pending_documents(&self) -> Result<(), ClientError> {
+    async fn sync_pending_documents(&self) -> ClientResult<()> {
         let pending_doc_ids = self.db.get_pending_documents().await?;
         
         if pending_doc_ids.is_empty() {
@@ -249,7 +244,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid, event_dispatcher: &Arc<EventDispatcher>) -> Result<(), ClientError> {
+    async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid, event_dispatcher: &Arc<EventDispatcher>) -> ClientResult<()> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
                 // Apply patch from server
@@ -419,7 +414,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    pub async fn sync_all(&self) -> Result<(), ClientError> {
+    pub async fn sync_all(&self) -> ClientResult<()> {
         // Request full sync on startup to get all documents
         tracing::debug!("Requesting full sync from server");
         self.ws_client.send(ClientMessage::RequestFullSync).await?;

@@ -1,6 +1,7 @@
 use uuid::Uuid;
 use sqlx::{SqlitePool, Row};
 use sync_core::protocol::ClientMessage;
+use crate::ClientResult;
 use crate::errors::ClientError;
 use crate::queries::Queries;
 
@@ -13,7 +14,7 @@ impl OfflineQueue {
         Self { pool }
     }
     
-    pub async fn enqueue(&self, message: ClientMessage) -> Result<(), ClientError> {
+    pub async fn enqueue(&self, message: ClientMessage) -> ClientResult<()> {
         let message_json = serde_json::to_string(&message)?;
         
         sqlx::query(Queries::INSERT_SYNC_QUEUE)
@@ -26,10 +27,10 @@ impl OfflineQueue {
         Ok(())
     }
     
-    pub async fn process_queue<F, Fut>(&self, mut send_fn: F) -> Result<(), ClientError>
+    pub async fn process_queue<F, Fut>(&self, mut send_fn: F) -> ClientResult<()>
     where
         F: FnMut(ClientMessage) -> Fut,
-        Fut: std::future::Future<Output = Result<(), ClientError>>,
+        Fut: std::future::Future<Output = ClientResult<()>>,
     {
         let rows = sqlx::query(Queries::GET_SYNC_QUEUE)
             .fetch_all(&self.pool)

@@ -4,6 +4,7 @@ pub mod patches;
 pub mod conflicts;
 pub mod errors;
 
+pub type SyncResult<T> = Result<T, SyncError>;
 pub use models::*;
 pub use protocol::*;
 pub use patches::*;

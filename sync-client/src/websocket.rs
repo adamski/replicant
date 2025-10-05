@@ -7,6 +7,7 @@ use crate::errors::ClientError;
 use crate::events::EventDispatcher;
 use backoff::{future::retry, ExponentialBackoff};
 use std::sync::Arc;
+use crate::ClientResult;
 
 #[derive(Clone)]
 pub struct WebSocketClient {
@@ -24,7 +25,7 @@ impl WebSocketClient {
         client_id: Uuid,
         auth_token: &str,
         event_dispatcher: Option<Arc<EventDispatcher>>,
-    ) -> Result<(Self, WebSocketReceiver), ClientError> {
+    ) -> ClientResult<(Self, WebSocketReceiver)> {
         let ws_stream = Self::connect_with_retry(server_url, 3, event_dispatcher).await?;
         
         let (write, read) = ws_stream.split();
@@ -84,7 +85,7 @@ impl WebSocketClient {
         server_url: &str, 
         _max_retries: u32,
         event_dispatcher: Option<Arc<EventDispatcher>>,
-    ) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, ClientError> {
+    ) -> ClientResult<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
         let backoff = ExponentialBackoff {
             initial_interval: std::time::Duration::from_millis(100),
             max_interval: std::time::Duration::from_millis(2000),
@@ -124,7 +125,7 @@ impl WebSocketClient {
             .map_err(|e| ClientError::WebSocket(e.to_string()))
     }
     
-    pub async fn send(&self, message: ClientMessage) -> Result<(), ClientError> {
+    pub async fn send(&self, message: ClientMessage) -> ClientResult<()> {
         self.tx
             .send(message)
             .await
@@ -134,11 +135,11 @@ impl WebSocketClient {
 }
 
 impl WebSocketReceiver {
-    pub async fn receive(&mut self) -> Result<Option<ServerMessage>, ClientError> {
+    pub async fn receive(&mut self) -> ClientResult<Option<ServerMessage>> {
         Ok(self.rx.recv().await)
     }
     
-    pub async fn forward_to(mut self, tx: mpsc::Sender<ServerMessage>) -> Result<(), ClientError> {
+    pub async fn forward_to(mut self, tx: mpsc::Sender<ServerMessage>) -> ClientResult<()> {
         tracing::info!("CLIENT: WebSocket receiver forwarder started");
         while let Some(msg) = self.receive().await? {
             tracing::info!("CLIENT: Received WebSocket message: {:?}", std::mem::discriminant(&msg));

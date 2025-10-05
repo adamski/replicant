@@ -12,28 +12,32 @@
 //! - **Offline/Online Events**: Receive events for both local and synchronized operations
 //! 
 //! # Usage
-//! 
+//!
 //! ```rust,no_run
 //! use sync_client::events::{EventDispatcher, EventType};
-//! 
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create event dispatcher
 //! let dispatcher = EventDispatcher::new();
-//! 
+//!
 //! // Register callback for all events
-//! dispatcher.register_callback(
-//!     |event, context| {
+//! dispatcher.register_rust_callback(
+//!     Box::new(|event_type, _document_id, _title, _content, _error, _numeric_data, _boolean_data, _context| {
 //!         // Handle event
-//!         println!("Event received: {:?}", event.event_type);
-//!     },
+//!         println!("Event received: {:?}", event_type);
+//!     }),
 //!     std::ptr::null_mut(),
 //!     None
 //! )?;
-//! 
+//!
 //! // In your main loop, process events
 //! loop {
 //!     let processed = dispatcher.process_events()?;
 //!     // ... do other work
+//! #   break; // Exit loop for doctest
 //! }
+//! # Ok(())
+//! # }
 //! ```
 //! 
 //! # Thread Safety
@@ -173,20 +177,32 @@ struct QueuedEvent {
 /// registered them. This eliminates the need for complex synchronization in user code.
 /// 
 /// # Example
-/// 
+///
 /// ```rust,no_run
-/// use sync_client::events::EventDispatcher;
-/// 
+/// use sync_client::events::{EventDispatcher, EventData, EventType};
+/// use std::ffi::c_void;
+///
+/// // Define callback function
+/// extern "C" fn my_callback(event: *const EventData, _context: *mut c_void) {
+///     unsafe {
+///         println!("Event type: {:?}", (*event).event_type);
+///     }
+/// }
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let dispatcher = EventDispatcher::new();
-/// 
+///
 /// // Register callback (sets callback thread to current thread)
 /// dispatcher.register_callback(my_callback, std::ptr::null_mut(), None)?;
-/// 
+///
 /// // In main loop
 /// loop {
 ///     let processed = dispatcher.process_events()?;
 ///     // ... do other work
+/// #   break; // Exit loop for doctest
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub struct EventDispatcher {
     callbacks: Mutex<Vec<CallbackEntry>>,

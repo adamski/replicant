@@ -7,9 +7,14 @@ variables:
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
 
 cache:
+  key:
+    files:
+      - Cargo.lock
+    prefix: ${CI_COMMIT_REF_SLUG}-cargo
   paths:
     - .cargo/
     - target/
+  policy: pull-push
 
 .rust_setup: &rust_setup
   - apt-get update -qq && apt-get install -y -qq build-essential postgresql-client
@@ -30,6 +35,7 @@ build:
 
 test:
   stage: test
+  dependencies: []
   services:
     - postgres:16
   variables:

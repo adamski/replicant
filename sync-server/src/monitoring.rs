@@ -143,9 +143,8 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                 }
                 LogMessage::PatchApplied { document_id, patch } => {
                     println!(
-                        "{} {} Patch applied to document {}:",
+                        "{} 🔧 Patch applied to document {}:",
                         timestamp.to_string().dimmed(),
-                        "🔧".to_string(),
                         document_id.blue()
                     );
                     // Print patch with indentation
@@ -155,17 +154,15 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
                 }
                 LogMessage::ConflictDetected { document_id } => {
                     println!(
-                        "{} {} Conflict detected for document {}",
+                        "{} ⚠️ Conflict detected for document {}",
                         timestamp.to_string().dimmed(),
-                        "⚠️".to_string(),
                         document_id.red().bold()
                     );
                 }
                 LogMessage::Error { message } => {
                     println!(
-                        "{} {} Error: {}",
+                        "{} ❌ Error: {}",
                         timestamp.to_string().dimmed(),
-                        "❌".to_string(),
                         message.red()
                     );
                 }

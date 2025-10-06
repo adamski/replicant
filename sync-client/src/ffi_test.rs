@@ -26,9 +26,12 @@ use crate::ffi::{SyncEngine, SyncResult};
 /// * 7 - ConnectionLost
 /// * 8 - ConnectionAttempted
 /// * 9 - ConnectionSucceeded
+///
+/// # Safety
+/// Caller must ensure engine is a valid pointer
 #[cfg(debug_assertions)]
 #[no_mangle]
-pub extern "C" fn sync_engine_emit_test_event(
+pub unsafe extern "C" fn sync_engine_emit_test_event(
     engine: *mut SyncEngine,
     event_type: i32,
 ) -> SyncResult {
@@ -36,7 +39,7 @@ pub extern "C" fn sync_engine_emit_test_event(
         return SyncResult::ErrorInvalidInput;
     }
 
-    let engine = unsafe { &*engine };
+    let engine = &*engine;
     
     match event_type {
         0 => {
@@ -77,17 +80,20 @@ pub extern "C" fn sync_engine_emit_test_event(
 /// 
 /// # Returns
 /// * SyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is a valid pointer
 #[cfg(debug_assertions)]
 #[no_mangle]
-pub extern "C" fn sync_engine_emit_test_event_burst(
+pub unsafe extern "C" fn sync_engine_emit_test_event_burst(
     engine: *mut SyncEngine,
     count: i32,
 ) -> SyncResult {
-    if engine.is_null() || count < 1 || count > 100 {
+    if engine.is_null() || !(1..=100).contains(&count) {
         return SyncResult::ErrorInvalidInput;
     }
 
-    let engine = unsafe { &*engine };
+    let engine = &*engine;
     
     for i in 0..count {
         let test_id = Uuid::new_v4();

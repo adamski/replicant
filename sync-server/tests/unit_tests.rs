@@ -286,13 +286,15 @@ mod database_tests {
         let server_content_json = serde_json::to_value(&server_doc.content).unwrap();
         db.log_change_event(
             &mut tx,
-            &doc_id,
-            &user_id,
-            sync_core::protocol::ChangeEventType::Create,
-            &server_doc.revision_id,
-            Some(&server_content_json),
-            None,
-            false  // applied = false (conflict loser)
+            sync_server::database::ChangeEventParams {
+                document_id: &doc_id,
+                user_id: &user_id,
+                event_type: sync_core::protocol::ChangeEventType::Create,
+                revision_id: &server_doc.revision_id,
+                forward_patch: Some(&server_content_json),
+                reverse_patch: None,
+                applied: false,
+            }
         ).await.expect("Failed to log conflict");
 
         tx.commit().await.expect("Failed to commit conflict log");
@@ -365,13 +367,15 @@ mod database_tests {
         let server_content_json = serde_json::to_value(&server_state).unwrap();
         db.log_change_event(
             &mut tx,
-            &doc_id,
-            &user_id,
-            sync_core::protocol::ChangeEventType::Update,
-            &server_revision,
-            Some(&server_content_json),
-            None,
-            false  // applied = false (conflict loser)
+            sync_server::database::ChangeEventParams {
+                document_id: &doc_id,
+                user_id: &user_id,
+                event_type: sync_core::protocol::ChangeEventType::Update,
+                revision_id: &server_revision,
+                forward_patch: Some(&server_content_json),
+                reverse_patch: None,
+                applied: false,
+            }
         ).await.expect("Failed to log conflict");
 
         tx.commit().await.expect("Failed to commit conflict log");
@@ -441,13 +445,15 @@ mod database_tests {
 
             db.log_change_event(
                 &mut tx,
-                &doc_id,
-                &user_id,
-                sync_core::protocol::ChangeEventType::Update,
-                &format!("{}-conflict", i),
-                Some(&conflict_json),
-                None,
-                false  // unapplied
+                sync_server::database::ChangeEventParams {
+                    document_id: &doc_id,
+                    user_id: &user_id,
+                    event_type: sync_core::protocol::ChangeEventType::Update,
+                    revision_id: &format!("{}-conflict", i),
+                    forward_patch: Some(&conflict_json),
+                    reverse_patch: None,
+                    applied: false,
+                }
             ).await.expect("Failed to log conflict");
 
             tx.commit().await.expect("Failed to commit");

@@ -1,5 +1,5 @@
 //! C FFI interface for the sync client
-//! 
+//!
 //! This module provides C-compatible functions for using the sync client from C/C++.
 //! The generated header file will be available after building.
 
@@ -53,8 +53,11 @@ pub struct Document {
 /// 
 /// # Returns
 /// * Pointer to SyncEngine on success, null on failure
+///
+/// # Safety
+/// Caller must ensure all pointers are valid, non-null C strings
 #[no_mangle]
-pub extern "C" fn sync_engine_create(
+pub unsafe extern "C" fn sync_engine_create(
     database_url: *const c_char,
     server_url: *const c_char,
     auth_token: *const c_char,
@@ -64,22 +67,22 @@ pub extern "C" fn sync_engine_create(
         return ptr::null_mut();
     }
 
-    let database_url = match unsafe { CStr::from_ptr(database_url) }.to_str() {
+    let database_url = match CStr::from_ptr(database_url).to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
 
-    let server_url = match unsafe { CStr::from_ptr(server_url) }.to_str() {
+    let server_url = match CStr::from_ptr(server_url).to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
 
-    let auth_token = match unsafe { CStr::from_ptr(auth_token) }.to_str() {
+    let auth_token = match CStr::from_ptr(auth_token).to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
 
-    let user_identifier = match unsafe { CStr::from_ptr(user_identifier) }.to_str() {
+    let user_identifier = match CStr::from_ptr(user_identifier).to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
@@ -97,9 +100,9 @@ pub extern "C" fn sync_engine_create(
     };
 
     // Run migrations
-    if let Err(_) = runtime.block_on(async {
+    if runtime.block_on(async {
         database.run_migrations().await
-    }) {
+    }).is_err() {
         return ptr::null_mut();
     }
 
@@ -123,12 +126,13 @@ pub extern "C" fn sync_engine_create(
 }
 
 /// Destroy a sync engine instance and free memory
+///
+/// # Safety
+/// Caller must ensure engine pointer was created by sync_engine_create and hasn't been freed
 #[no_mangle]
-pub extern "C" fn sync_engine_destroy(engine: *mut SyncEngine) {
+pub unsafe extern "C" fn sync_engine_destroy(engine: *mut SyncEngine) {
     if !engine.is_null() {
-        unsafe {
-            let _ = Box::from_raw(engine);
-        }
+        let _ = Box::from_raw(engine);
     }
 }
 
@@ -141,8 +145,11 @@ pub extern "C" fn sync_engine_destroy(engine: *mut SyncEngine) {
 ///
 /// # Returns
 /// * CSyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid, content_json is a valid C string, and out_document_id has space for 37 bytes
 #[no_mangle]
-pub extern "C" fn sync_engine_create_document(
+pub unsafe extern "C" fn sync_engine_create_document(
     engine: *mut SyncEngine,
     content_json: *const c_char,
     out_document_id: *mut c_char,
@@ -151,9 +158,9 @@ pub extern "C" fn sync_engine_create_document(
         return SyncResult::ErrorInvalidInput;
     }
 
-    let engine = unsafe { &mut *engine };
+    let engine = &mut *engine;
 
-    let content_json = match unsafe { CStr::from_ptr(content_json) }.to_str() {
+    let content_json = match CStr::from_ptr(content_json).to_str() {
         Ok(s) => s,
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
@@ -197,9 +204,9 @@ pub extern "C" fn sync_engine_create_document(
             deleted_at: None,
         };
 
-        if let Err(_) = engine.runtime.block_on(async {
+        if engine.runtime.block_on(async {
             engine.database.save_document(&doc).await
-        }) {
+        }).is_err() {
             return SyncResult::ErrorDatabase;
         }
 
@@ -215,7 +222,7 @@ pub extern "C" fn sync_engine_create_document(
     if id_bytes.len() >= 36 {
         unsafe {
             ptr::copy_nonoverlapping(id_bytes.as_ptr(), out_document_id as *mut u8, 36);
-            *out_document_id.add(36) = 0; // null terminator
+            out_document_id.add(36).write(0); // null terminator
         }
     }
 
@@ -231,8 +238,11 @@ pub extern "C" fn sync_engine_create_document(
 /// 
 /// # Returns
 /// * CSyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid and both document_id and content_json are valid C strings
 #[no_mangle]
-pub extern "C" fn sync_engine_update_document(
+pub unsafe extern "C" fn sync_engine_update_document(
     engine: *mut SyncEngine,
     document_id: *const c_char,
     content_json: *const c_char,
@@ -241,9 +251,9 @@ pub extern "C" fn sync_engine_update_document(
         return SyncResult::ErrorInvalidInput;
     }
 
-    let engine = unsafe { &mut *engine };
+    let engine = &mut *engine;
 
-    let document_id = match unsafe { CStr::from_ptr(document_id) }.to_str() {
+    let document_id = match CStr::from_ptr(document_id).to_str() {
         Ok(s) => s,
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
@@ -253,7 +263,7 @@ pub extern "C" fn sync_engine_update_document(
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
-    let content_json = match unsafe { CStr::from_ptr(content_json) }.to_str() {
+    let content_json = match CStr::from_ptr(content_json).to_str() {
         Ok(s) => s,
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
@@ -307,8 +317,11 @@ pub extern "C" fn sync_engine_update_document(
 /// 
 /// # Returns
 /// * CSyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid and document_id is a valid C string
 #[no_mangle]
-pub extern "C" fn sync_engine_delete_document(
+pub unsafe extern "C" fn sync_engine_delete_document(
     engine: *mut SyncEngine,
     document_id: *const c_char,
 ) -> SyncResult {
@@ -316,9 +329,9 @@ pub extern "C" fn sync_engine_delete_document(
         return SyncResult::ErrorInvalidInput;
     }
 
-    let engine = unsafe { &mut *engine };
+    let engine = &mut *engine;
 
-    let document_id = match unsafe { CStr::from_ptr(document_id) }.to_str() {
+    let document_id = match CStr::from_ptr(document_id).to_str() {
         Ok(s) => s,
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
@@ -352,12 +365,13 @@ pub extern "C" fn sync_engine_delete_document(
 }
 
 /// Free a C string allocated by this library
+///
+/// # Safety
+/// Caller must ensure the string was allocated by this library and hasn't been freed
 #[no_mangle]
-pub extern "C" fn sync_string_free(s: *mut c_char) {
+pub unsafe extern "C" fn sync_string_free(s: *mut c_char) {
     if !s.is_null() {
-        unsafe {
-            let _ = CString::from_raw(s);
-        }
+        let _ = CString::from_raw(s);
     }
 }
 
@@ -381,8 +395,11 @@ pub extern "C" fn sync_get_version() -> *mut c_char {
 /// 
 /// # Returns
 /// * CSyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
 #[no_mangle]
-pub extern "C" fn sync_engine_register_event_callback(
+pub unsafe extern "C" fn sync_engine_register_event_callback(
     engine: *mut SyncEngine,
     callback: EventCallback,
     context: *mut c_void,
@@ -392,8 +409,8 @@ pub extern "C" fn sync_engine_register_event_callback(
         return SyncResult::ErrorInvalidInput;
     }
 
-    let engine = unsafe { &*engine };
-    
+    let engine = &*engine;
+
     let filter = if event_filter >= 0 {
         match event_filter {
             0 => Some(EventType::DocumentCreated),
@@ -430,8 +447,11 @@ pub extern "C" fn sync_engine_register_event_callback(
 /// # Important
 /// This function MUST be called on the same thread where callbacks were registered.
 /// Events are queued from any thread but only processed on the callback thread.
+///
+/// # Safety
+/// Caller must ensure engine is valid and out_processed_count points to valid memory (if not null)
 #[no_mangle]
-pub extern "C" fn sync_engine_process_events(
+pub unsafe extern "C" fn sync_engine_process_events(
     engine: *mut SyncEngine,
     out_processed_count: *mut u32,
 ) -> SyncResult {
@@ -439,14 +459,12 @@ pub extern "C" fn sync_engine_process_events(
         return SyncResult::ErrorInvalidInput;
     }
 
-    let engine = unsafe { &*engine };
-    
+    let engine = &*engine;
+
     match engine.event_dispatcher.process_events() {
         Ok(count) => {
             if !out_processed_count.is_null() {
-                unsafe {
-                    *out_processed_count = count as u32;
-                }
+                out_processed_count.write(count as u32);
             }
             SyncResult::Success
         },

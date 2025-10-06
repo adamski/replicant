@@ -11,14 +11,16 @@ cache:
     - .cargo/
     - target/
 
-before_script:
-  - apt-get update -qq && apt-get install -y -qq build-essential
+.rust_setup: &rust_setup
+  - apt-get update -qq && apt-get install -y -qq build-essential postgresql-client
   - curl https://sh.rustup.rs -sSf | sh -s -- -y
   - source $CARGO_HOME/env
   - rustc --version && cargo --version
 
 build:
   stage: build
+  before_script:
+    - *rust_setup
   script:
     - cargo build --workspace --release
   artifacts:
@@ -34,8 +36,14 @@ test:
     POSTGRES_DB: sync_test_db
     POSTGRES_USER: postgres
     POSTGRES_PASSWORD: postgres
+    DATABASE_URL: "postgres://postgres:postgres@postgres/sync_test_db"
     TEST_DATABASE_URL: "postgres://postgres:postgres@postgres/sync_test_db"
+    RUN_INTEGRATION_TESTS: "1"
+  before_script:
+    - *rust_setup
+    - cargo install sqlx-cli --no-default-features --features postgres
   script:
+    - cd sync-server && sqlx migrate run && cd ..
     - cargo test --workspace -- --nocapture
     - cargo clippy --workspace -- -D warnings
     - cargo fmt --all -- --check

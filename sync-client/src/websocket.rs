@@ -2,12 +2,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use sync_core::protocol::{ClientMessage, ServerMessage};
-use crate::errors::ClientError;
+use sync_core::{protocol::{ClientMessage, ServerMessage}, SyncResult, errors::ClientError};
 use crate::events::EventDispatcher;
 use backoff::{future::retry, ExponentialBackoff};
 use std::sync::Arc;
-use crate::ClientResult;
 
 #[derive(Clone)]
 pub struct WebSocketClient {
@@ -25,7 +23,7 @@ impl WebSocketClient {
         client_id: Uuid,
         auth_token: &str,
         event_dispatcher: Option<Arc<EventDispatcher>>,
-    ) -> ClientResult<(Self, WebSocketReceiver)> {
+    ) -> SyncResult<(Self, WebSocketReceiver)> {
         let ws_stream = Self::connect_with_retry(server_url, 3, event_dispatcher).await?;
         
         let (write, read) = ws_stream.split();
@@ -85,7 +83,7 @@ impl WebSocketClient {
         server_url: &str, 
         _max_retries: u32,
         event_dispatcher: Option<Arc<EventDispatcher>>,
-    ) -> ClientResult<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
+    ) -> SyncResult<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
         let backoff = ExponentialBackoff {
             initial_interval: std::time::Duration::from_millis(100),
             max_interval: std::time::Duration::from_millis(2000),
@@ -122,10 +120,10 @@ impl WebSocketClient {
         
         retry(backoff, operation)
             .await
-            .map_err(|e| ClientError::WebSocket(e.to_string()))
+            .map_err(|e| ClientError::WebSocket(e.to_string()).into())
     }
     
-    pub async fn send(&self, message: ClientMessage) -> ClientResult<()> {
+    pub async fn send(&self, message: ClientMessage) -> SyncResult<()> {
         self.tx
             .send(message)
             .await
@@ -135,11 +133,11 @@ impl WebSocketClient {
 }
 
 impl WebSocketReceiver {
-    pub async fn receive(&mut self) -> ClientResult<Option<ServerMessage>> {
+    pub async fn receive(&mut self) -> SyncResult<Option<ServerMessage>> {
         Ok(self.rx.recv().await)
     }
     
-    pub async fn forward_to(mut self, tx: mpsc::Sender<ServerMessage>) -> ClientResult<()> {
+    pub async fn forward_to(mut self, tx: mpsc::Sender<ServerMessage>) -> SyncResult<()> {
         tracing::info!("CLIENT: WebSocket receiver forwarder started");
         while let Some(msg) = self.receive().await? {
             tracing::info!("CLIENT: Received WebSocket message: {:?}", std::mem::discriminant(&msg));

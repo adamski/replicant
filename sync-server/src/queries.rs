@@ -1,8 +1,6 @@
 use sqlx::{PgPool, postgres::PgRow, Row};
 use uuid::Uuid;
-use sync_core::models::Document;
-use crate::ServerResult;
-
+use sync_core::{models::Document, SyncResult};
 /// SQL queries for server database operations
 pub struct Queries;
 
@@ -116,7 +114,7 @@ pub struct DbHelpers;
 
 impl DbHelpers {
     /// Parse a document from a database row
-    pub fn parse_document(row: &PgRow) -> ServerResult<Document> {
+    pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
         Ok(Document {
             id: row.try_get("id")?,
             user_id: row.try_get("user_id")?,
@@ -168,7 +166,7 @@ impl DbHelpers {
     }
     
     /// Calculate document statistics
-    pub async fn get_document_stats(pool: &PgPool, user_id: &Uuid) -> ServerResult<DocumentStats> {
+    pub async fn get_document_stats(pool: &PgPool, user_id: &Uuid) -> SyncResult<DocumentStats> {
         let row = sqlx::query(
             r#"
             SELECT 

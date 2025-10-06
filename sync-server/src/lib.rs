@@ -6,14 +6,12 @@ pub mod api;
 pub mod queries;
 pub mod monitoring;
 
-pub mod errors;
 
 use std::sync::Arc;
 use std::collections::HashSet;
 use dashmap::DashMap;
 use uuid::Uuid;
 use sync_core::protocol::ServerMessage;
-use crate::errors::ServerError;
 
 // Registry of connected clients: (user_id, client_id) -> channel
 pub type ClientRegistry = Arc<DashMap<(Uuid, Uuid), tokio::sync::mpsc::Sender<ServerMessage>>>;
@@ -21,7 +19,6 @@ pub type ClientRegistry = Arc<DashMap<(Uuid, Uuid), tokio::sync::mpsc::Sender<Se
 // Auxiliary mapping to track which clients belong to which user
 pub type UserClients = Arc<DashMap<Uuid, HashSet<Uuid>>>;
 
-pub type ServerResult<T> = Result<T, ServerError>;
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<database::ServerDatabase>,

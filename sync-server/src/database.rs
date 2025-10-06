@@ -3,7 +3,8 @@ use uuid::Uuid;
 use sync_core::models::Document;
 use sync_core::protocol::{ChangeEvent, ChangeEventType};
 use json_patch::Patch;
-use crate::{ServerResult, queries::{Queries, DbHelpers}};
+use crate::{queries::{Queries, DbHelpers}};
+use sync_core::SyncResult;
 use tracing::instrument;
 
 pub struct ServerDatabase {
@@ -13,7 +14,7 @@ pub struct ServerDatabase {
 impl ServerDatabase {
 
     #[instrument(skip(database_url))]
-    pub async fn new(database_url: &str) -> ServerResult<Self> {
+    pub async fn new(database_url: &str) -> SyncResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .connect(database_url)
@@ -22,7 +23,7 @@ impl ServerDatabase {
         Ok(Self { pool })
     }
     
-    pub async fn new_with_options(database_url: &str, max_connections: u32) -> ServerResult<Self> {
+    pub async fn new_with_options(database_url: &str, max_connections: u32) -> SyncResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
             .max_lifetime(std::time::Duration::from_secs(30))  // Short lifetime for tests
@@ -33,14 +34,14 @@ impl ServerDatabase {
         Ok(Self { pool })
     }
     
-    pub async fn run_migrations(&self) -> ServerResult<()> {
+    pub async fn run_migrations(&self) -> SyncResult<()> {
         sqlx::migrate!("./migrations")
             .run(&self.pool)
             .await?;
         Ok(())
     }
     
-    pub async fn create_user(&self, email: &str, auth_token_hash: &str) -> ServerResult<Uuid> {
+    pub async fn create_user(&self, email: &str, auth_token_hash: &str) -> SyncResult<Uuid> {
         let row = sqlx::query(Queries::CREATE_USER)
             .bind(email)
             .bind(auth_token_hash)
@@ -50,7 +51,7 @@ impl ServerDatabase {
         Ok(row.get("id"))
     }
     
-    pub async fn verify_auth_token(&self, user_id: &Uuid, token_hash: &str) -> ServerResult<bool> {
+    pub async fn verify_auth_token(&self, user_id: &Uuid, token_hash: &str) -> SyncResult<bool> {
         let row = sqlx::query(Queries::VERIFY_AUTH_TOKEN)
             .bind(user_id)
             .bind(token_hash)
@@ -61,7 +62,7 @@ impl ServerDatabase {
         Ok(count > 0)
     }
     
-    pub async fn create_document(&self, doc: &Document) -> ServerResult<()> {
+    pub async fn create_document(&self, doc: &Document) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
         
@@ -101,7 +102,7 @@ impl ServerDatabase {
         Ok(())
     }
     
-    pub async fn get_document(&self, id: &Uuid) -> ServerResult<Document> {
+    pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query(Queries::GET_DOCUMENT)
             .bind(id)
             .fetch_one(&self.pool)
@@ -110,7 +111,7 @@ impl ServerDatabase {
         DbHelpers::parse_document(&row)
     }
     
-    pub async fn update_document(&self, doc: &Document, patch: Option<&Patch>) -> ServerResult<()> {
+    pub async fn update_document(&self, doc: &Document, patch: Option<&Patch>) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
         
@@ -152,7 +153,7 @@ impl ServerDatabase {
         Ok(())
     }
     
-    pub async fn delete_document(&self, document_id: &Uuid, user_id: &Uuid, revision_id: &str) -> ServerResult<()> {
+    pub async fn delete_document(&self, document_id: &Uuid, user_id: &Uuid, revision_id: &str) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
         
@@ -175,7 +176,7 @@ impl ServerDatabase {
         Ok(())
     }
     
-    pub async fn get_user_documents(&self, user_id: &Uuid) -> ServerResult<Vec<Document>> {
+    pub async fn get_user_documents(&self, user_id: &Uuid) -> SyncResult<Vec<Document>> {
         let rows = sqlx::query(Queries::GET_USER_DOCUMENTS)
             .bind(user_id)
             .fetch_all(&self.pool)
@@ -190,7 +191,7 @@ impl ServerDatabase {
         &self,
         doc: &Document,
         patch: Option<&Patch>,
-    ) -> ServerResult<()> {
+    ) -> SyncResult<()> {
         let patch_json = patch.map(|p| serde_json::to_value(p).unwrap());
         
         sqlx::query(Queries::CREATE_REVISION)
@@ -206,7 +207,7 @@ impl ServerDatabase {
         Ok(())
     }
     
-    pub async fn add_active_connection(&self, user_id: &Uuid, connection_id: &Uuid) -> ServerResult<()> {
+    pub async fn add_active_connection(&self, user_id: &Uuid, connection_id: &Uuid) -> SyncResult<()> {
         sqlx::query(Queries::ADD_ACTIVE_CONNECTION)
             .bind(user_id)
             .bind(connection_id)
@@ -216,7 +217,7 @@ impl ServerDatabase {
         Ok(())
     }
     
-    pub async fn remove_active_connection(&self, user_id: &Uuid) -> ServerResult<()> {
+    pub async fn remove_active_connection(&self, user_id: &Uuid) -> SyncResult<()> {
         sqlx::query(Queries::REMOVE_ACTIVE_CONNECTION)
             .bind(user_id)
             .execute(&self.pool)
@@ -235,7 +236,7 @@ impl ServerDatabase {
         revision_id: &str,
         forward_patch: Option<&serde_json::Value>,
         reverse_patch: Option<&serde_json::Value>,
-    ) -> ServerResult<()> {
+    ) -> SyncResult<()> {
         let event_type_str = match event_type {
             ChangeEventType::Create => "create",
             ChangeEventType::Update => "update", 
@@ -262,7 +263,7 @@ impl ServerDatabase {
     }
 
     // Get changes since a specific sequence number for sync
-    pub async fn get_changes_since(&self, user_id: &Uuid, last_sequence: u64, limit: Option<u32>) -> ServerResult<Vec<ChangeEvent>> {
+    pub async fn get_changes_since(&self, user_id: &Uuid, last_sequence: u64, limit: Option<u32>) -> SyncResult<Vec<ChangeEvent>> {
         let limit = limit.unwrap_or(100).min(1000); // Cap at 1000 for safety
         
         let rows = sqlx::query(
@@ -306,7 +307,7 @@ impl ServerDatabase {
     }
 
     // Get the latest sequence number for a user
-    pub async fn get_latest_sequence(&self, user_id: &Uuid) -> ServerResult<u64> {
+    pub async fn get_latest_sequence(&self, user_id: &Uuid) -> SyncResult<u64> {
         let row = sqlx::query(
             r#"
             SELECT COALESCE(MAX(sequence), 0) as latest_sequence

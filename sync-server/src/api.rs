@@ -1,5 +1,5 @@
-use crate::errors::ApiError;
-use crate::{auth::AuthState, AppState, ServerResult};
+use crate::{auth::AuthState, AppState};
+use sync_core::{SyncResult, errors::ApiError};
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -24,7 +24,7 @@ pub struct RegisterResponse {
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
-) -> ServerResult<Json<RegisterResponse>> {
+) -> SyncResult<Json<RegisterResponse>> {
     // Generate auth token
     let auth_token = AuthState::generate_auth_token();
     // Hash the token for storage
@@ -67,7 +67,7 @@ pub struct LoginResponse {
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
-) -> ServerResult<Json<LoginResponse>> {
+) -> SyncResult<Json<LoginResponse>> {
     // Verify token
     let valid = state
         .auth
@@ -94,7 +94,7 @@ pub struct AuthHeader {
 pub async fn list_documents(
     State(state): State<Arc<AppState>>,
     Json(auth): Json<AuthHeader>,
-) -> ServerResult<impl IntoResponse> {
+) -> SyncResult<impl IntoResponse> {
     // Verify auth
     let valid = state
         .auth
@@ -129,7 +129,7 @@ pub async fn get_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<Uuid>,
     Json(auth): Json<AuthHeader>,
-) -> ServerResult<impl IntoResponse> {
+) -> SyncResult<impl IntoResponse> {
     // Verify auth
     let valid = state
         .auth

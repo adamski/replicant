@@ -2,7 +2,6 @@ pub mod database;
 pub mod sync_engine;
 pub mod websocket;
 pub mod offline_queue;
-pub mod errors;
 pub mod queries;
 pub mod events;
 
@@ -16,9 +15,7 @@ pub mod ffi_test;
 pub use database::ClientDatabase;
 pub use sync_engine::SyncEngine;
 pub use websocket::WebSocketClient;
-pub use errors::ClientError;
 
-pub type ClientResult<T> = Result<T, ClientError>;
 
 #[cfg(test)]
 mod tests {

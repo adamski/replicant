@@ -17,7 +17,7 @@ use sync_server::{
 };
 
 #[tokio::main]
-async fn main() -> sync_server::ServerResult<()> {
+async fn main() -> sync_core::SyncResult<()> {
     // Check if monitoring mode is enabled
     let monitoring_enabled = std::env::var("MONITORING").unwrap_or_default() == "true";
     

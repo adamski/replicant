@@ -9,7 +9,7 @@ use argon2::{
 use dashmap::DashMap;
 use std::sync::Arc;
 use crate::database::ServerDatabase;
-use crate::ServerResult;
+use sync_core::SyncResult;
 
 #[derive(Clone)]
 pub struct AuthState {
@@ -32,20 +32,20 @@ impl AuthState {
         }
     }
     
-    pub fn hash_token(token: &str) -> ServerResult<String> {
+    pub fn hash_token(token: &str) -> SyncResult<String> {
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let password_hash = argon2.hash_password(token.as_bytes(), &salt)?;
         Ok(password_hash.to_string())
     }
     
-    pub fn verify_token_hash(token: &str, hash: &str) -> ServerResult<bool> {
+    pub fn verify_token_hash(token: &str, hash: &str) -> SyncResult<bool> {
         let parsed_hash = PasswordHash::new(hash)?;
         let argon2 = Argon2::default();
         Ok(argon2.verify_password(token.as_bytes(), &parsed_hash).is_ok())
     }
     
-    pub async fn verify_token(&self, user_id: &Uuid, token: &str) -> ServerResult<bool> {
+    pub async fn verify_token(&self, user_id: &Uuid, token: &str) -> SyncResult<bool> {
         tracing::debug!("Verifying token for user {}: token={}", user_id, token);
         
         // First check if we have an active session

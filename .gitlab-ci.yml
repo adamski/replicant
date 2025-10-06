@@ -14,7 +14,7 @@ cache:
 before_script:
   - apt-get update -qq && apt-get install -y -qq build-essential
   - curl https://sh.rustup.rs -sSf | sh -s -- -y
-  - source $HOME/.cargo/env
+  - source $CARGO_HOME/env
   - rustc --version && cargo --version
 
 build:

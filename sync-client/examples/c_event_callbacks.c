@@ -31,9 +31,9 @@ typedef enum {
     ErrorUnknown = -99,
 } CSyncResult;
 
-extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token);
+extern struct CSyncEngine* sync_engine_create(const char* database_url, const char* server_url, const char* auth_token, const char* user_identifier);
 extern void sync_engine_destroy(struct CSyncEngine* engine);
-extern CSyncResult sync_engine_create_document(struct CSyncEngine* engine, const char* title, const char* content_json, char* out_document_id);
+extern CSyncResult sync_engine_create_document(struct CSyncEngine* engine, const char* content_json, char* out_document_id);
 extern CSyncResult sync_engine_update_document(struct CSyncEngine* engine, const char* document_id, const char* content_json);
 extern CSyncResult sync_engine_delete_document(struct CSyncEngine* engine, const char* document_id);
 
@@ -185,7 +185,8 @@ int main() {
     struct CSyncEngine* engine = sync_engine_create(
         "sqlite:client_events_example.db?mode=rwc",
         "ws://localhost:8080/ws",
-        "demo-token"
+        "demo-token",
+        "callback-test@example.com"
     );
     
     if (!engine) {
@@ -236,8 +237,7 @@ int main() {
     char doc_id[37] = {0};
     result = sync_engine_create_document(
         engine,
-        "Test Document",
-        "{\"content\":\"Hello from event callbacks!\",\"type\":\"note\",\"priority\":\"high\"}",
+        "{\"title\":\"Test Document\",\"content\":\"Hello from event callbacks!\",\"type\":\"note\",\"priority\":\"high\"}",
         doc_id
     );
     

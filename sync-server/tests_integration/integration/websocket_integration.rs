@@ -126,12 +126,12 @@ crate::integration_test!(test_message_exchange, |ctx: TestContext| async move {
     }
     
     // Test sending various message types with timeout
+    let content = json!({"title": "Test Doc", "text": "Hello World"});
     let doc = Document {
         id: Uuid::new_v4(),
         user_id,
-        title: "Test Doc".to_string(),
-        content: json!({"text": "Hello World"}),
-        revision_id: Document::initial_revision(&json!({"text": "Hello World"})),
+        content: content.clone(),
+        revision_id: Document::initial_revision(&content),
         version: 1,
         vector_clock: VectorClock::new(),
         created_at: Utc::now(),

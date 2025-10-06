@@ -18,17 +18,26 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use std::{
     error::Error,
-    io,
+    io::{self, Write},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::time::sleep;
 use sync_client::{ClientDatabase, SyncEngine};
 use sync_core::models::Document;
 use uuid::Uuid;
 
 // Application identifier for namespace generation
 const APP_ID: &str = "com.example.sync-task-list";
+
+fn debug_log(msg: &str) {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/task_list_debug.log")
+        .unwrap();
+    let timestamp = chrono::Utc::now().format("%H:%M:%S%.3f");
+    writeln!(file, "[{}] {}", timestamp, msg).unwrap();
+}
 
 #[derive(Parser)]
 #[command(name = "task-list")]
@@ -384,17 +393,23 @@ type SharedState = Arc<Mutex<AppState>>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize logging with minimal output to avoid interfering with TUI
-    // Use RUST_LOG=off to completely disable logging for clean TUI
-    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "off".to_string());
-    if log_level != "off" {
-        tracing_subscriber::fmt()
-            .with_env_filter(&log_level)
-            .with_writer(std::io::stderr)
-            .init();
-    }
+    // Clear the debug log file and start logging
+    std::fs::write("/tmp/task_list_debug.log", "").unwrap();
+    debug_log("=== Task List Example Starting ===");
+    
+    // Initialize comprehensive logging to file for debugging
+    tracing_subscriber::fmt()
+        .with_env_filter("sync_client=info,sync_core=info,task_list_example=info")
+        .with_writer(std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("/tmp/sync_debug.log")
+            .unwrap())
+        .init();
 
     let cli = Cli::parse();
+    debug_log(&format!("CLI args - database: {}, auto: {}, user: {:?}", cli.database, cli.auto, cli.user));
 
     // Setup database
     std::fs::create_dir_all("databases")?;
@@ -443,14 +458,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = Arc::new(Mutex::new(AppState::new(db_name.clone())));
 
     // Load initial tasks
-    load_tasks(&db, user_id, state.clone()).await?;
+    {
+        let mut app_state = state.lock().unwrap();
+        app_state.add_activity(format!("Loading tasks for user: {}", user_id), ActivityType::SyncStarted);
+    }
+    
+    match load_tasks(&db, user_id, state.clone()).await {
+        Ok(_) => {
+            let task_count = state.lock().unwrap().tasks.len();
+            let mut app_state = state.lock().unwrap();
+            app_state.add_activity(format!("Loaded {} tasks", task_count), ActivityType::SyncCompleted);
+        }
+        Err(e) => {
+            let mut app_state = state.lock().unwrap();
+            app_state.add_activity(format!("Failed to load initial tasks: {}", e), ActivityType::Error);
+            // Don't propagate the error - let the UI start anyway
+        }
+    }
 
     // Setup terminal first - we want to show the UI immediately
+    debug_log("Enabling raw mode...");
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    debug_log("Setting up terminal...");
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    debug_log(&format!("Terminal initialized, size: {:?}", terminal.size()?));
 
     // Initialize UI with startup message
     {
@@ -467,108 +501,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app_state.sync_status.connection_state = "Starting...".to_string();
     }
 
-    // Start connection attempt in background
-    let state_clone = state.clone();
-    let server_url = cli.server.clone();
-    let token = cli.token.clone();
-    let db_url_clone = db_url.clone();
+    // Create sync engine - automatic reconnection is now built-in
+    let user_email = cli.user.clone().unwrap_or_else(|| "anonymous".to_string());
     
-    let sync_engine = Arc::new(Mutex::new(None::<Arc<SyncEngine>>));
-    let sync_engine_clone = sync_engine.clone();
-    
-    // Spawn background task for connection with periodic retry
-    tokio::spawn(async move {
-        // Show connection attempt
-        {
-            let mut app_state = state_clone.lock().unwrap();
-            app_state.add_activity(format!("Connecting to {}", server_url), ActivityType::SyncStarted);
-            app_state.sync_status.connection_state = "Connecting...".to_string();
-        }
-        
-        let mut retry_interval = Duration::from_secs(5); // Start with 5 seconds
-        let max_retry_interval = Duration::from_secs(30); // Cap at 30 seconds
-        
-        loop {
-            // Try to connect to server
-            match SyncEngine::new(&db_url_clone, &server_url, &token).await {
-                Ok(mut engine) => {
-                    // Don't register callbacks here - they will be registered in the main thread
-
-                    // Try to start the sync engine
-                    match engine.start().await {
-                        Ok(_) => {
-                            {
-                                let mut app_state = state_clone.lock().unwrap();
-                                app_state.sync_status.connected = true;
-                                app_state.sync_status.connection_state = "Connected".to_string();
-                                app_state.add_activity("Successfully connected to server".to_string(), ActivityType::Connected);
-                            }
-                            
-                            // Store the engine for use
-                            *sync_engine_clone.lock().unwrap() = Some(Arc::new(engine));
-                            
-                            // Give initial sync time to complete
-                            sleep(Duration::from_millis(500)).await;
-                            
-                            // Trigger a refresh to show synced documents
-                            {
-                                let mut app_state = state_clone.lock().unwrap();
-                                app_state.needs_refresh = true;
-                            }
-                            
-                            // Reset retry interval on successful connection
-                            retry_interval = Duration::from_secs(5);
-                            
-                            // Connection successful, break out of retry loop
-                            break;
-                        }
-                        Err(e) => {
-                            let mut app_state = state_clone.lock().unwrap();
-                            app_state.sync_status.connected = false;
-                            app_state.sync_status.connection_state = "Offline (connection failed)".to_string();
-                            app_state.add_activity(format!("Connection failed: {}", e), ActivityType::Error);
-                            
-                            // Still store the engine for offline use
-                            *sync_engine_clone.lock().unwrap() = Some(Arc::new(engine));
-                            
-                            // Don't retry immediately on start failure - this typically means protocol issues
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    let now = Instant::now();
-                    {
-                        let mut app_state = state_clone.lock().unwrap();
-                        app_state.sync_status.connected = false;
-                        app_state.sync_status.connection_state = format!("Offline (retry in {}s)", retry_interval.as_secs());
-                        app_state.sync_status.last_attempt = Some(now);
-                        app_state.sync_status.next_retry = Some(now + retry_interval);
-                        app_state.add_activity(format!("Connection attempt failed: {}", e), ActivityType::Error);
-                    }
-                    
-                    // Wait before retrying
-                    sleep(retry_interval).await;
-                    
-                    // Exponential backoff with cap
-                    retry_interval = std::cmp::min(retry_interval * 2, max_retry_interval);
-                    
-                    // Show retry attempt
-                    {
-                        let mut app_state = state_clone.lock().unwrap();
-                        app_state.add_activity(format!("Retrying connection to {}", server_url), ActivityType::SyncStarted);
-                        app_state.sync_status.connection_state = "Connecting...".to_string();
-                    }
-                    
-                    // Continue the loop to retry
-                    continue;
-                }
+    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.token, &user_email).await {
+        Ok(engine) => {
+            {
+                let mut app_state = state.lock().unwrap();
+                app_state.add_activity("Sync engine initialized".to_string(), ActivityType::SyncStarted);
+                app_state.sync_status.connection_state = "Auto-connecting...".to_string();
             }
+            Arc::new(Mutex::new(Some(Arc::new(engine))))
         }
-    });
+        Err(e) => {
+            {
+                let mut app_state = state.lock().unwrap();
+                app_state.add_activity(format!("Engine initialization failed: {}", e), ActivityType::Error);
+                app_state.sync_status.connection_state = "Initialization failed".to_string();
+            }
+            Arc::new(Mutex::new(None))
+        }
+    };
 
-    // Run app (UI will start immediately while connection happens in background)
+    // Run app
+    debug_log("Starting run_app...");
     let res = run_app(&mut terminal, state.clone(), db.clone(), sync_engine, user_id).await;
+    debug_log(&format!("run_app finished with result: {:?}", res.is_ok()));
 
     // Restore terminal
     disable_raw_mode()?;
@@ -582,6 +540,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Err(err) = res {
         println!("{err:?}");
     }
+    
+    println!("\n📁 Database file: {}", db_file);
+    println!("   Full path: {}", std::path::Path::new(&db_file).canonicalize().unwrap_or_default().display());
 
     Ok(())
 }
@@ -593,12 +554,18 @@ async fn run_app<B: Backend>(
     sync_engine: Arc<Mutex<Option<Arc<SyncEngine>>>>,
     user_id: Uuid,
 ) -> io::Result<()> {
+    debug_log(&format!("run_app started for user: {}", user_id));
+    
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(250);
     
     // Flag to track if callbacks are registered
     let mut callbacks_registered = false;
     
+    // Track the last known connection state
+    let mut last_connection_state: Option<bool> = None;
+    
+    debug_log("Starting main loop...");
     loop {
         // Register callbacks on main thread if we have an engine but haven't registered yet
         if !callbacks_registered {
@@ -607,7 +574,7 @@ async fn run_app<B: Backend>(
                 let state_cb = state.clone();
                 
                 let _ = events.register_rust_callback(
-                    Box::new(move |event_type, document_id, title, _content, error, numeric_data, boolean_data, _context| {
+                    Box::new(move |event_type, document_id, title, _content, error, numeric_data, _boolean_data, _context| {
                         // Use panic protection in the callback
                         let result = std::panic::catch_unwind(|| {
                             let mut app_state = state_cb.lock().unwrap();
@@ -647,16 +614,14 @@ async fn run_app<B: Backend>(
                                     app_state.last_sync = Some(Instant::now());
                                     app_state.needs_refresh = true;
                                 }
-                                sync_client::events::EventType::ConnectionStateChanged => {
-                                    if boolean_data {
-                                        app_state.add_activity("Connected to server".to_string(), ActivityType::Connected);
-                                        app_state.sync_status.connected = true;
-                                        app_state.sync_status.connection_state = "Connected".to_string();
-                                    } else {
-                                        app_state.add_activity("Disconnected from server".to_string(), ActivityType::Disconnected);
-                                        app_state.sync_status.connected = false;
-                                        app_state.sync_status.connection_state = "Disconnected".to_string();
-                                    }
+                                sync_client::events::EventType::ConnectionLost => {
+                                    app_state.add_activity(
+                                        format!("Lost connection to {}", title.unwrap_or("server")),
+                                        ActivityType::Disconnected,
+                                    );
+                                    app_state.sync_status.connected = false;
+                                    app_state.sync_status.connection_state = "Disconnected".to_string();
+                                    app_state.needs_refresh = true;
                                 }
                                 sync_client::events::EventType::SyncError => {
                                     app_state.add_activity(
@@ -703,6 +668,36 @@ async fn run_app<B: Backend>(
                 Err(e) => eprintln!("Error processing events: {:?}", e),
                 _ => {}
             }
+            
+            // Check connection state and emit event if it changed
+            let current_connected = engine.is_connected();
+            match last_connection_state {
+                Some(last_connected) if last_connected != current_connected => {
+                    // Connection state changed
+                    let mut app_state = state.lock().unwrap();
+                    if current_connected {
+                        app_state.add_activity("Connected to server".to_string(), ActivityType::Connected);
+                        app_state.sync_status.connected = true;
+                        app_state.sync_status.connection_state = "Connected".to_string();
+                    } else {
+                        app_state.add_activity("Disconnected from server".to_string(), ActivityType::Disconnected);
+                        app_state.sync_status.connected = false;
+                        app_state.sync_status.connection_state = "Disconnected".to_string();
+                    }
+                }
+                None => {
+                    // First time checking - set initial state
+                    let mut app_state = state.lock().unwrap();
+                    app_state.sync_status.connected = current_connected;
+                    app_state.sync_status.connection_state = if current_connected { 
+                        "Connected".to_string() 
+                    } else { 
+                        "Disconnected".to_string() 
+                    };
+                }
+                _ => {} // No change
+            }
+            last_connection_state = Some(current_connected);
         }
 
         // Check if we should refresh tasks
@@ -718,14 +713,20 @@ async fn run_app<B: Backend>(
             };
             
             if should_refresh {
-                let _ = load_tasks(&db, user_id, state.clone()).await;
-                update_sync_status(&db, state.clone()).await;
-                
-                // Mark refresh time for visual feedback
-                {
+                // Load tasks with error handling
+                if let Err(e) = load_tasks(&db, user_id, state.clone()).await {
+                    let mut app_state = state.lock().unwrap();
+                    app_state.add_activity(
+                        format!("Failed to load tasks: {}", e),
+                        ActivityType::Error,
+                    );
+                } else {
+                    // Mark refresh time for visual feedback only on success
                     let mut app_state = state.lock().unwrap();
                     app_state.last_refresh = Some(Instant::now());
                 }
+                
+                update_sync_status(&db, state.clone()).await;
             }
         }
 
@@ -1474,6 +1475,34 @@ async fn handle_key_event(
                 // Edit task priority
                 state.lock().unwrap().start_edit(EditField::Priority);
             }
+            KeyCode::Char('c') => {
+                // Copy database path to clipboard
+                let (_db_name, db_path) = {
+                    let app_state = state.lock().unwrap();
+                    let name = app_state.database_name.clone();
+                    let path = format!("databases/{}.sqlite3", name);
+                    (name, path)
+                };
+                
+                // Try to copy to clipboard based on OS
+                let copy_result = copy_to_clipboard(&db_path);
+                
+                // Add activity log entry
+                {
+                    let mut app_state = state.lock().unwrap();
+                    if copy_result {
+                        app_state.add_activity(
+                            format!("Database path copied: {}", db_path), 
+                            ActivityType::SyncCompleted
+                        );
+                    } else {
+                        app_state.add_activity(
+                            format!("Copy failed - path: {}", db_path), 
+                            ActivityType::Error
+                        );
+                    }
+                }
+            }
             KeyCode::Enter => {
                 // Enter edit mode for task title
                 state.lock().unwrap().start_edit(EditField::Title);
@@ -1488,9 +1517,12 @@ async fn load_tasks(
     user_id: Uuid,
     state: SharedState,
 ) -> Result<(), Box<dyn Error>> {
+    // Log the query we're about to execute
+    debug_log(&format!("Loading tasks for user_id: {}", user_id));
+    
     let rows = sqlx::query(
         r#"
-        SELECT id, title, content, sync_status, created_at, updated_at, version
+        SELECT id, content, sync_status, created_at, updated_at, version
         FROM documents 
         WHERE user_id = ?1 AND deleted_at IS NULL
         ORDER BY created_at DESC
@@ -1499,11 +1531,12 @@ async fn load_tasks(
     .bind(user_id.to_string())
     .fetch_all(&db.pool)
     .await?;
+    
+    debug_log(&format!("Found {} documents", rows.len()));
 
     let mut tasks = Vec::new();
     for row in rows {
         let id = Uuid::parse_str(&row.try_get::<String, _>("id")?)?;
-        let title = row.try_get::<String, _>("title")?;
         let content_str = row.try_get::<String, _>("content")?;
         let sync_status = row.try_get::<Option<String>, _>("sync_status")?;
         let created_at = row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at")?;
@@ -1514,7 +1547,7 @@ async fn load_tasks(
         
         let task = Task {
             id,
-            title: content.get("title").and_then(|v| v.as_str()).unwrap_or(&title).to_string(),
+            title: content.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string(),
             description: content.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             status: content.get("status").and_then(|v| v.as_str()).unwrap_or("pending").to_string(),
             priority: content.get("priority").and_then(|v| v.as_str()).unwrap_or("medium").to_string(),
@@ -1612,7 +1645,13 @@ async fn toggle_task_completion(
     
     // Also reload tasks immediately for responsive UI
     if let Ok(user_id) = db.get_user_id().await {
-        let _ = load_tasks(db, user_id, state).await;
+        if let Err(e) = load_tasks(db, user_id, state.clone()).await {
+            let mut app_state = state.lock().unwrap();
+            app_state.add_activity(
+                format!("Failed to reload tasks: {}", e),
+                ActivityType::Error,
+            );
+        }
     }
 }
 
@@ -1633,13 +1672,12 @@ async fn create_sample_task(
     });
     
     if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
-        let _ = engine.create_document(title, content).await;
+        let _ = engine.create_document(content).await;
     } else {
         // Offline create
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            title,
             revision_id: Document::initial_revision(&content),
             content,
             version: 1,
@@ -1755,7 +1793,13 @@ async fn save_task_edit(
     
     // Also reload tasks immediately for responsive UI
     if let Ok(user_id) = db.get_user_id().await {
-        let _ = load_tasks(db, user_id, state).await;
+        if let Err(e) = load_tasks(db, user_id, state.clone()).await {
+            let mut app_state = state.lock().unwrap();
+            app_state.add_activity(
+                format!("Failed to reload tasks: {}", e),
+                ActivityType::Error,
+            );
+        }
     }
 }
 
@@ -1776,4 +1820,94 @@ async fn setup_user(
     .execute(&db.pool)
     .await?;
     Ok(())
+}
+
+fn copy_to_clipboard(text: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::{Command, Stdio};
+        use std::io::Write;
+        
+        match Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    if stdin.write_all(text.as_bytes()).is_ok() {
+                        drop(stdin);
+                        return child.wait().map(|s| s.success()).unwrap_or(false);
+                    }
+                }
+                false
+            }
+            Err(_) => false,
+        }
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::{Command, Stdio};
+        use std::io::Write;
+        
+        // Try xclip first
+        if let Ok(mut child) = Command::new("xclip")
+            .arg("-selection")
+            .arg("clipboard")
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    drop(stdin);
+                    return child.wait().map(|s| s.success()).unwrap_or(false);
+                }
+            }
+        }
+        
+        // Try xsel as fallback
+        if let Ok(mut child) = Command::new("xsel")
+            .arg("--clipboard")
+            .arg("--input")
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    drop(stdin);
+                    return child.wait().map(|s| s.success()).unwrap_or(false);
+                }
+            }
+        }
+        
+        false
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::{Command, Stdio};
+        use std::io::Write;
+        
+        match Command::new("cmd")
+            .args(&["/C", "clip"])
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    if stdin.write_all(text.as_bytes()).is_ok() {
+                        drop(stdin);
+                        return child.wait().map(|s| s.success()).unwrap_or(false);
+                    }
+                }
+                false
+            }
+            Err(_) => false,
+        }
+    }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        false
+    }
 }

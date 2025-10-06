@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     email: String,
+    #[allow(dead_code)]
     password: String,
 }
 

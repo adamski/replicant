@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS user_config (
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,                          -- UUID
     user_id TEXT NOT NULL,                        -- Owner UUID
-    title TEXT NOT NULL,
     content JSON NOT NULL,                        -- Document data
     revision_id TEXT NOT NULL,                    -- UUID for each revision
     version INTEGER NOT NULL DEFAULT 1,           -- Incremental version

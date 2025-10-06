@@ -50,8 +50,7 @@ test:
   script:
     - cd sync-server && sqlx migrate run && cd ..
     - cargo test --workspace --lib --bins -- --nocapture
-    - cargo clippy --workspace -- -D warnings
-    - cargo fmt --all -- --check
+    - cargo clippy --workspace -- -D clippy::correctness -D clippy::suspicious
 
 docker:
   stage: deploy

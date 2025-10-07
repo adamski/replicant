@@ -181,7 +181,8 @@ impl SyncEngine {
         tokio::spawn(async move {
             let mut reconnect_sync_rx = reconnect_sync_rx;
             tracing::info!("CLIENT {}: Reconnection sync handler started", client_id);
-            
+
+            #[allow(clippy::redundant_pattern_matching)] // Preserve drop order
             while let Some(_) = reconnect_sync_rx.recv().await {
                 tracing::info!("CLIENT {}: Received reconnection sync trigger", client_id);
                 

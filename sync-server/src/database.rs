@@ -7,6 +7,16 @@ use crate::queries::{document_to_params, parse_document};
 use sync_core::SyncResult;
 use tracing::instrument;
 
+pub struct ChangeEventParams<'a> {
+    pub document_id: &'a Uuid,
+    pub user_id: &'a Uuid,
+    pub event_type: ChangeEventType,
+    pub revision_id: &'a str,
+    pub forward_patch: Option<&'a serde_json::Value>,
+    pub reverse_patch: Option<&'a serde_json::Value>,
+    pub applied: bool,
+}
+
 pub struct ServerDatabase {
     pub pool: PgPool,
 }
@@ -114,7 +124,15 @@ impl ServerDatabase {
         // Log the create event
         // For CREATE: forward_patch contains the full document, reverse_patch is null
         let doc_json = serde_json::to_value(doc).map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
-        self.log_change_event(&mut tx, &doc.id, &doc.user_id, ChangeEventType::Create, &doc.revision_id, Some(&doc_json), None, true).await?;
+        self.log_change_event(&mut tx, ChangeEventParams {
+            document_id: &doc.id,
+            user_id: &doc.user_id,
+            event_type: ChangeEventType::Create,
+            revision_id: &doc.revision_id,
+            forward_patch: Some(&doc_json),
+            reverse_patch: None,
+            applied: true,
+        }).await?;
 
         tx.commit().await?;
         Ok(())
@@ -190,7 +208,15 @@ impl ServerDatabase {
             None
         };
 
-        self.log_change_event(tx, &doc.id, &doc.user_id, ChangeEventType::Update, &doc.revision_id, forward_patch_json.as_ref(), reverse_patch_json.as_ref(), true).await?;
+        self.log_change_event(tx, ChangeEventParams {
+            document_id: &doc.id,
+            user_id: &doc.user_id,
+            event_type: ChangeEventType::Update,
+            revision_id: &doc.revision_id,
+            forward_patch: forward_patch_json.as_ref(),
+            reverse_patch: reverse_patch_json.as_ref(),
+            applied: true,
+        }).await?;
 
         Ok(())
     }
@@ -212,8 +238,16 @@ impl ServerDatabase {
         // Log the delete event
         // For DELETE: forward_patch is null, reverse_patch contains the full document
         let doc_json = serde_json::to_value(&doc_to_delete).map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
-        self.log_change_event(&mut tx, document_id, user_id, ChangeEventType::Delete, revision_id, None, Some(&doc_json), true).await?;
-
+        self.log_change_event(&mut tx, ChangeEventParams {
+            document_id,
+            user_id,
+            event_type: ChangeEventType::Delete,
+            revision_id,
+            forward_patch: None,
+            reverse_patch: Some(&doc_json),
+            applied: true,
+        }).await?;
+        
         tx.commit().await?;
         Ok(())
 
@@ -251,14 +285,14 @@ impl ServerDatabase {
             ) VALUES ($1, $2, $3, $4, $5, $6)
         "#,
         )
-            .bind(doc.id)
-            .bind(&doc.revision_id)
-            .bind(serde_json::to_value(&doc.content).unwrap())
-            .bind(patch_json)
-            .bind(doc.version as i64)
-            .bind(doc.user_id)
-            .execute(&self.pool)
-            .await?;
+        .bind(doc.id)
+        .bind(&doc.revision_id)
+        .bind(serde_json::to_value(&doc.content).unwrap())
+        .bind(patch_json)
+        .bind(doc.version)
+        .bind(doc.user_id)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
 
@@ -300,30 +334,24 @@ impl ServerDatabase {
     pub async fn log_change_event(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        document_id: &Uuid,
-        user_id: &Uuid,
-        event_type: ChangeEventType,
-        revision_id: &str,
-        forward_patch: Option<&serde_json::Value>,
-        reverse_patch: Option<&serde_json::Value>,
-        applied: bool,
-    ) -> SyncResult<()> {
+        params: ChangeEventParams<'_>,
+    ) -> SyncResult<(), sqlx::Error> {
         sqlx::query(
             r#"
             INSERT INTO change_events (user_id, document_id, event_type, revision_id, forward_patch, reverse_patch, applied)
             VALUES ($1::UUID, $2::UUID, $3::TEXT, $4::TEXT, $5::JSONB, $6::JSONB, $7::BOOLEAN)
             "#
         )
-            .persistent(false)  // Disable prepared statement caching
-            .bind(user_id)
-            .bind(document_id)
-            .bind(event_type.to_string())
-            .bind(revision_id)
-            .bind(forward_patch)
-            .bind(reverse_patch)
-            .bind(applied)
-            .execute(&mut **tx)
-            .await?;
+        .persistent(false)  // Disable prepared statement caching
+        .bind(params.user_id)
+        .bind(params.document_id)
+        .bind(params.event_type.to_string())
+        .bind(params.revision_id)
+        .bind(params.forward_patch)
+        .bind(params.reverse_patch)
+        .bind(params.applied)
+        .execute(&mut **tx)
+        .await?;
 
         Ok(())
 

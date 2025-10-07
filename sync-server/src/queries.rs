@@ -2,6 +2,21 @@ use sqlx::{PgPool, postgres::PgRow, Row};
 use uuid::Uuid;
 use sync_core::{models::Document, SyncResult};
 
+/// Type alias for document parameters tuple
+pub type DocumentParams = (
+    Uuid,                                  // id
+    Uuid,                                  // user_id
+    serde_json::Value,                     // content
+    String,                                // revision_id
+    i64,                                   // version
+    serde_json::Value,                     // vector_clock
+    chrono::DateTime<chrono::Utc>,         // created_at
+    chrono::DateTime<chrono::Utc>,         // updated_at
+    Option<chrono::DateTime<chrono::Utc>>, // deleted_at
+    String,                                // checksum
+    i32,                                   // size_bytes
+);
+
 /// Parse a document from a database row
 pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
     Ok(Document {
@@ -24,21 +39,7 @@ pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
 }
 
 /// Prepare document values for database insertion
-pub fn document_to_params(
-    doc: &Document,
-) -> (
-    Uuid,                                  // id
-    Uuid,                                  // user_id
-    serde_json::Value,                     // content
-    String,                                // revision_id
-    i64,                                   // version
-    serde_json::Value,                     // vector_clock
-    chrono::DateTime<chrono::Utc>,         // created_at
-    chrono::DateTime<chrono::Utc>,         // updated_at
-    Option<chrono::DateTime<chrono::Utc>>, // deleted_at
-    String,                                // checksum
-    i32,                                   // size_bytes
-) {
+pub fn document_to_params(doc: &Document) -> DocumentParams {
     let content_str = doc.content.to_string();
     let checksum = sync_core::patches::calculate_checksum(&doc.content);
     let size_bytes = content_str.len() as i32;

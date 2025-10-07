@@ -255,7 +255,7 @@ impl ClientDatabase {
         operation_type: ChangeEventType,
         patch: Option<&json_patch::Patch>,
     ) -> SyncResult<()> {
-        let patch_json = patch.map(|p| serde_json::to_string(p)).transpose()?;
+        let patch_json = patch.map(serde_json::to_string).transpose()?;
 
         tracing::info!("DATABASE: queue_sync_operation called: doc_id={}, op_type={}, patch_size={}",
                      document_id, operation_type.to_string(), 

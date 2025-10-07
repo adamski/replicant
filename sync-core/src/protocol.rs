@@ -130,7 +130,7 @@ pub enum ConflictResolution {
     ServerWins,
     ClientWins,
     Manual {
-        server_document: Document,
+        server_document: Box<Document>,
         client_patch: DocumentPatch,
     },
 }

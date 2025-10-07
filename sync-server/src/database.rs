@@ -51,44 +51,38 @@ impl ServerDatabase {
     pub async fn create_user(
         &self,
         email: &str,
-        auth_token_hash: &str,
+        password_hash: &str,
     ) -> Result<Uuid, sqlx::Error> {
         let row = sqlx::query(
             r#"
-            INSERT INTO users (email, auth_token_hash)
+            INSERT INTO users (email, password_hash)
             VALUES ($1, $2)
             RETURNING id
         "#,
         )
         .bind(email)
-        .bind(auth_token_hash)
+        .bind(password_hash)
         .fetch_one(&self.pool)
         .await?;
 
         Ok(row.get("id"))
     }
-
-    pub async fn verify_auth_token(
+    
+    pub async fn verify_user_password(
         &self,
-        user_id: &Uuid,
-        token_hash: &str,
-    ) -> Result<bool, sqlx::Error> {
-        let row = sqlx::query(
-            r#"
-            SELECT COUNT(*) as count
-            FROM users
-            WHERE id = $1 AND auth_token_hash = $2
-        "#,
+        email: &str,
+    ) -> Result<Option<(Uuid, String)>, sqlx::Error> {
+        let result = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT id, password_hash FROM users WHERE email = $1"
         )
-        .bind(user_id)
-        .bind(token_hash)
-        .fetch_one(&self.pool)
+        .bind(email)
+        .fetch_optional(&self.pool)
         .await?;
-
-        let count: i64 = row.get("count");
-        Ok(count > 0)
+        
+        Ok(result)
     }
 
+    
     pub async fn create_document(&self, doc: &Document) -> Result<(), sqlx::Error> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;

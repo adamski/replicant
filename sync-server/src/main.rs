@@ -66,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // REST API
         .route("/api/auth/register", post(api::register))
         .route("/api/auth/login", post(api::login))
+        .route("/api/auth/create-api-key", post(api::create_api_key))
         .route("/api/documents", get(api::list_documents))
         .route("/api/documents/:id", get(api::get_document))
         // Health check

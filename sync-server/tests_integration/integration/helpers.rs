@@ -38,15 +38,14 @@ impl TestContext {
     }
     
     pub async fn create_test_user(&self, email: &str) -> Result<(Uuid, String), Box<dyn std::error::Error + Send + Sync>> {
-        // Register a new user via the server API
+        // Create a new user via the server API
         let client = reqwest::Client::new();
         let server_base = self.server_url.replace("ws://", "http://").replace("wss://", "https://");
         
         let response = client
-            .post(&format!("{}/api/auth/register", server_base))
+            .post(&format!("{}/api/auth/create-user", server_base))
             .json(&serde_json::json!({
-                "email": email,
-                "password": "test-password"
+                "email": email
             }))
             .send()
             .await?;
@@ -54,20 +53,20 @@ impl TestContext {
         if response.status().is_success() {
             let result: serde_json::Value = response.json().await?;
             let user_id = Uuid::parse_str(result["user_id"].as_str().unwrap())?;
-            let token = result["auth_token"].as_str().unwrap().to_string();
-            Ok((user_id, token))
+            let api_key = result["api_key"].as_str().unwrap().to_string();
+            Ok((user_id, api_key))
         } else {
             Err(format!("Failed to create user: {}", response.status()).into())
         }
     }
     
-    pub async fn create_test_client(&self, user_id: Uuid, token: &str) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn create_test_client(&self, user_id: Uuid, api_key: &str) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
         // Retry logic to handle authentication race conditions
         let max_retries = 3;
         let mut last_error = None;
         
         for attempt in 0..max_retries {
-            match self.create_test_client_attempt(user_id, token, attempt).await {
+            match self.create_test_client_attempt(user_id, api_key, attempt).await {
                 Ok(client) => return Ok(client),
                 Err(e) => {
                     last_error = Some(e);
@@ -84,7 +83,7 @@ impl TestContext {
         Err(last_error.unwrap_or_else(|| "Unknown error creating test client".into()))
     }
     
-    async fn create_test_client_attempt(&self, user_id: Uuid, token: &str, attempt: usize) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
+    async fn create_test_client_attempt(&self, user_id: Uuid, api_key: &str, attempt: usize) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
         // Use a block to ensure the permit is released after connection
         let (db_path, ws_url) = {
             // Acquire semaphore permit to limit concurrent connections
@@ -110,7 +109,7 @@ impl TestContext {
             .bind(user_id.to_string())
             .bind(client_id.to_string())
             .bind(&self.server_url)
-            .bind(token)
+            .bind(api_key)
             .execute(&db.pool)
             .await?;
             
@@ -126,7 +125,7 @@ impl TestContext {
         let engine = SyncClient::new(
             &db_path,
             &ws_url,
-            token,
+            api_key,
             &user_id.to_string()  // user_identifier for deterministic user ID
         ).await?;
 

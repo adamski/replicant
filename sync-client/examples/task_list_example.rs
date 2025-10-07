@@ -60,7 +60,7 @@ struct Cli {
     server: String,
 
     /// Authentication token
-    #[arg(short, long, default_value = "demo-token")]
+    #[arg(short, long, default_value = "sk_demo123456789012345678901234567890")]
     token: String,
 }
 

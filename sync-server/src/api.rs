@@ -7,75 +7,106 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
-use crate::{AppState, auth::AuthState};
+use crate::AppState;
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     email: String,
-    #[allow(dead_code)]
     password: String,
 }
 
 #[derive(Serialize)]
 pub struct RegisterResponse {
     user_id: Uuid,
-    auth_token: String,
+}
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    email: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+pub struct LoginResponse {
+    user_id: Uuid,
+    api_key: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateApiKeyRequest {
+    user_id: Uuid,
+    name: String,
+}
+
+#[derive(Serialize)]
+pub struct CreateApiKeyResponse {
+    api_key: String,
 }
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<RegisterResponse>, StatusCode> {
-    // Generate auth token
-    let auth_token = AuthState::generate_auth_token();
-    
-    // Hash the token for storage
-    let token_hash = AuthState::hash_token(&auth_token)
+    // Hash password
+    let password_hash = crate::auth::AuthState::hash_password(&req.password)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     // Create user
-    let user_id = state.db.create_user(&req.email, &token_hash)
+    let user_id = state.db.create_user(&req.email, &password_hash)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
-    // Create session
-    state.auth.create_session(user_id, auth_token.clone());
-    
-    Ok(Json(RegisterResponse {
-        user_id,
-        auth_token,
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct LoginRequest {
-    user_id: Uuid,
-    auth_token: String,
-}
-
-#[derive(Serialize)]
-pub struct LoginResponse {
-    session_id: Uuid,
+    Ok(Json(RegisterResponse { user_id }))
 }
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, StatusCode> {
-    // Verify token
-    let valid = state.auth.verify_token(&req.user_id, &req.auth_token)
+    // Verify email/password
+    let user_id = state.auth.verify_user_password(&req.email, &req.password)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    
+    // Check if user already has API keys
+    let existing_keys = sqlx::query_scalar::<_, String>(
+        "SELECT key_hash FROM api_keys WHERE user_id = $1 AND is_active = true LIMIT 1"
+    )
+    .bind(&user_id)
+    .fetch_optional(&state.db.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    let api_key = if let Some(_) = existing_keys {
+        // User already has API keys - don't create new one for login
+        return Err(StatusCode::BAD_REQUEST); // Should use existing API key
+    } else {
+        // Create new API key for this login
+        state.auth.create_api_key(&user_id, "Desktop Client API Key")
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    
+    Ok(Json(LoginResponse { user_id, api_key }))
+}
+
+pub async fn create_api_key(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateApiKeyRequest>,
+) -> Result<Json<CreateApiKeyResponse>, StatusCode> {
+    // Create API key
+    let api_key = state.auth.create_api_key(&req.user_id, &req.name)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
-    if !valid {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    
-    // Create session
-    let session_id = state.auth.create_session(req.user_id, req.auth_token);
-    
-    Ok(Json(LoginResponse { session_id }))
+    Ok(Json(CreateApiKeyResponse { api_key }))
 }
+
+
+
+
+
 
 #[derive(Deserialize)]
 pub struct AuthHeader {
@@ -87,7 +118,7 @@ pub async fn list_documents(
     State(state): State<Arc<AppState>>,
     Json(auth): Json<AuthHeader>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // Verify auth
+    // Verify API key
     let valid = state.auth.verify_token(&auth.user_id, &auth.auth_token)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -109,7 +140,7 @@ pub async fn get_document(
     Path(document_id): Path<Uuid>,
     Json(auth): Json<AuthHeader>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // Verify auth
+    // Verify API key
     let valid = state.auth.verify_token(&auth.user_id, &auth.auth_token)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

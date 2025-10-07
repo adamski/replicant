@@ -8,6 +8,7 @@ use argon2::{
 };
 use dashmap::DashMap;
 use std::sync::Arc;
+use rand::Rng;
 use crate::database::ServerDatabase;
 
 #[derive(Clone)]
@@ -33,6 +34,19 @@ impl AuthState {
         }
     }
     
+    pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
+        Ok(password_hash.to_string())
+    }
+    
+    pub fn verify_password(password: &str, hash: &str) -> Result<bool, argon2::password_hash::Error> {
+        let parsed_hash = PasswordHash::new(hash)?;
+        let argon2 = Argon2::default();
+        Ok(argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
+    }
+    
     pub fn hash_token(token: &str) -> Result<String, argon2::password_hash::Error> {
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
@@ -46,99 +60,35 @@ impl AuthState {
         Ok(argon2.verify_password(token.as_bytes(), &parsed_hash).is_ok())
     }
     
-    pub async fn verify_token(&self, user_id: &Uuid, token: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        tracing::debug!("Verifying token for user {}: token={}", user_id, token);
+    pub async fn verify_token(&self, user_id: &Uuid, api_key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        tracing::debug!("Verifying API key for user {}: key={}", user_id, &api_key[..std::cmp::min(10, api_key.len())]);
         
-        // First check if we have an active session
-        // But for demo-token, we always need to ensure the user exists in DB
-        if token != "demo-token" {
-            if let Some(session) = self.sessions.get(user_id) {
-                if session.token == token {
-                    tracing::debug!("Found active session for user {}", user_id);
-                    return Ok(true);
-                }
+        // Must be an API key
+        if !api_key.starts_with("sk_") {
+            tracing::warn!("Invalid token format - must start with sk_");
+            return Ok(false);
+        }
+        
+        // Check if we have an active session for this API key
+        if let Some(session) = self.sessions.get(user_id) {
+            if session.token == api_key {
+                tracing::debug!("Found active session for user {}", user_id);
+                return Ok(true);
             }
         }
         
-        // Special handling for demo token - auto-create user if needed
-        if token == "demo-token" {
-            tracing::debug!("Demo token detected for user {}", user_id);
-            
-            // Check if user exists
-            let exists = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM users WHERE id = $1"
-            )
-            .bind(user_id)
-            .fetch_one(&self.db.pool)
-            .await?;
-            
-            tracing::debug!("User {} exists: {}", user_id, exists > 0);
-            
-            if exists == 0 {
-                // Create demo user with this ID
-                let demo_hash = Self::hash_token("demo-token")
-                    .map_err(|e| format!("Failed to hash token: {:?}", e))?;
-                
-                tracing::info!("Creating demo user with ID: {} and email: demo_{}@example.com", user_id, user_id);
-                
-                match sqlx::query(
-                    "INSERT INTO users (id, email, auth_token_hash, created_at) VALUES ($1, $2, $3, NOW())"
-                )
-                .bind(user_id)
-                .bind(format!("demo_{}@example.com", user_id))
-                .bind(&demo_hash)
-                .execute(&self.db.pool)
-                .await {
-                    Ok(_) => {
-                        tracing::info!("Successfully created demo user with ID: {}", user_id);
-                    }
-                    Err(e) => {
-                        // Check if this is a duplicate key error (race condition)
-                        let error_string = e.to_string();
-                        if error_string.contains("duplicate key") || error_string.contains("unique constraint") {
-                            tracing::debug!("Demo user {} was created by another client concurrently - this is expected", user_id);
-                            // This is fine - another client created the user simultaneously
-                            // Continue with session creation
-                        } else {
-                            tracing::error!("Failed to create demo user with unexpected error: {}", e);
-                            return Err(Box::new(e));
-                        }
-                    }
-                }
-            } else {
-                tracing::debug!("Demo user {} already exists in database", user_id);
-            }
-            
-            // Create session
-            self.sessions.insert(*user_id, AuthSession {
-                user_id: *user_id,
-                token: token.to_string(),
-                created_at: chrono::Utc::now(),
-            });
-            
-            return Ok(true);
-        }
-        
-        // Otherwise, verify against database
-        let result = sqlx::query_as::<_, (String,)>(
-            "SELECT auth_token_hash FROM users WHERE id = $1"
-        )
-        .bind(user_id)
-        .fetch_optional(&self.db.pool)
-        .await?;
-        
-        if let Some((auth_token_hash,)) = result {
-            // Verify the token against the stored hash
-            match Self::verify_token_hash(token, &auth_token_hash) {
-                Ok(true) => {
-                    // Create a new session for future requests
+        // Verify API key and get user_id
+        match self.verify_api_key(api_key).await? {
+            Some(api_user_id) => {
+                if api_user_id == *user_id {
+                    // Create session
                     self.sessions.insert(*user_id, AuthSession {
                         user_id: *user_id,
-                        token: token.to_string(),
+                        token: api_key.to_string(),
                         created_at: chrono::Utc::now(),
                     });
                     
-                    // Update last seen
+                    // Update user last seen
                     sqlx::query(
                         "UPDATE users SET last_seen_at = NOW() WHERE id = $1"
                     )
@@ -147,56 +97,16 @@ impl AuthState {
                     .await?;
                     
                     return Ok(true);
+                } else {
+                    tracing::warn!("API key user_id {} does not match provided user_id {}", api_user_id, user_id);
+                    return Ok(false);
                 }
-                Ok(false) => return Ok(false),
-                Err(_) => return Ok(false), // Invalid hash format
             }
-        } else {
-            // TODO: Implement proper auto-registration for all authenticated users
-            // Currently, only demo-token users are auto-created. In a production system,
-            // we should auto-register any user with valid authentication credentials
-            // (e.g., JWT from auth provider, API key, etc.) to support true user auto-registration.
-            // This would eliminate foreign key constraint violations when new users connect.
-            
-            tracing::debug!("User {} not found in database, attempting auto-registration", user_id);
-            
-            // User doesn't exist - auto-register if we have a valid token
-            // In a real system, you'd validate the token format or check against an auth provider
-            // For now, we'll accept any non-empty token and create the user
-            if !token.is_empty() {
-                let token_hash = Self::hash_token(token)
-                    .map_err(|e| format!("Failed to hash token: {:?}", e))?;
-                
-                // Create user with provided ID
-                match sqlx::query(
-                    "INSERT INTO users (id, email, auth_token_hash, created_at) VALUES ($1, $2, $3, NOW())"
-                )
-                .bind(user_id)
-                .bind(format!("user_{}@example.com", user_id))
-                .bind(&token_hash)
-                .execute(&self.db.pool)
-                .await {
-                    Ok(_) => {
-                        tracing::info!("Auto-registered new user with ID: {}", user_id);
-                        
-                        // Create session
-                        self.sessions.insert(*user_id, AuthSession {
-                            user_id: *user_id,
-                            token: token.to_string(),
-                            created_at: chrono::Utc::now(),
-                        });
-                        
-                        return Ok(true);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to auto-register user: {}", e);
-                        return Ok(false);
-                    }
-                }
+            None => {
+                tracing::warn!("Invalid API key provided");
+                return Ok(false);
             }
         }
-        
-        Ok(false)
     }
     
     pub fn create_session(&self, user_id: Uuid, token: String) -> Uuid {
@@ -213,7 +123,56 @@ impl AuthState {
         self.sessions.remove(session_id);
     }
     
-    pub fn generate_auth_token() -> String {
-        Uuid::new_v4().to_string()
+    pub fn generate_api_key() -> String {
+        let mut rng = rand::thread_rng();
+        let random_bytes: [u8; 32] = rng.gen();
+        format!("sk_{}", hex::encode(random_bytes))
+    }
+    
+    
+    pub async fn create_api_key(&self, user_id: &Uuid, name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let api_key = Self::generate_api_key();
+        let key_hash = Self::hash_token(&api_key)
+            .map_err(|e| format!("Failed to hash API key: {:?}", e))?;
+        
+        sqlx::query(
+            "INSERT INTO api_keys (user_id, key_hash, name) VALUES ($1, $2, $3)"
+        )
+        .bind(user_id)
+        .bind(&key_hash)
+        .bind(name)
+        .execute(&self.db.pool)
+        .await?;
+        
+        Ok(api_key)
+    }
+    
+    pub async fn verify_api_key(&self, api_key: &str) -> Result<Option<Uuid>, Box<dyn std::error::Error + Send + Sync>> {
+        // Get all active API keys and verify one by one
+        let api_keys = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT user_id, key_hash FROM api_keys WHERE is_active = true"
+        )
+        .fetch_all(&self.db.pool)
+        .await?;
+        
+        for (user_id, key_hash) in api_keys {
+            if Self::verify_token_hash(api_key, &key_hash).unwrap_or(false) {
+                return Ok(Some(user_id));
+            }
+        }
+        
+        Ok(None)
+    }
+    
+    pub async fn verify_user_password(&self, email: &str, password: &str) -> Result<Option<Uuid>, Box<dyn std::error::Error + Send + Sync>> {
+        match self.db.verify_user_password(email).await? {
+            Some((user_id, password_hash)) => {
+                if Self::verify_password(password, &password_hash).unwrap_or(false) {
+                    return Ok(Some(user_id));
+                }
+            }
+            None => return Ok(None)
+        }
+        Ok(None)
     }
 }

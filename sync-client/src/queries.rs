@@ -4,6 +4,20 @@ use chrono::{DateTime, Utc};
 use sync_core::models::{Document, SyncStatus};
 use crate::errors::ClientError;
 
+/// Type alias for document parameters tuple
+pub type DocumentParams = (
+    String,          // id
+    String,          // user_id
+    String,          // content
+    String,          // revision_id
+    i64,             // version
+    String,          // vector_clock
+    String,          // created_at
+    String,          // updated_at
+    Option<String>,  // deleted_at
+    String,          // sync_status
+);
+
 /// SQL queries for client database operations
 pub struct Queries;
 
@@ -164,16 +178,13 @@ impl DbHelpers {
             vector_clock: serde_json::from_str(&vector_clock.unwrap_or_else(|| "{}".to_string()))?,
             created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
             updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
-            deleted_at: deleted_at.map(|dt| DateTime::parse_from_rfc3339(&dt).ok())
-                .flatten()
+            deleted_at: deleted_at.and_then(|dt| DateTime::parse_from_rfc3339(&dt).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
         })
     }
     
     /// Prepare document values for database insertion
-    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> Result<(
-        String, String, String, String, i64, String, String, String, Option<String>, String
-    ), ClientError> {
+    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> Result<DocumentParams, ClientError> {
         let status = sync_status.unwrap_or(SyncStatus::Pending).to_string();
         Ok((
             doc.id.to_string(),

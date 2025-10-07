@@ -78,7 +78,7 @@ extern "C" fn capture_callback(event: *const EventData, context: *mut c_void) {
     *capture.last_boolean_data.lock().unwrap() = event.boolean_data;
 }
 
-fn create_test_engine() -> *mut SyncEngine {
+unsafe fn create_test_engine() -> *mut SyncEngine {
     let db_url = CString::new("sqlite::memory:").unwrap();
     let server_url = CString::new("ws://localhost:8080/ws").unwrap();
     let auth_token = CString::new("test-token").unwrap();
@@ -94,340 +94,358 @@ fn create_test_engine() -> *mut SyncEngine {
 
 #[test]
 fn test_ffi_callback_registration() {
-    let engine = create_test_engine();
-    assert!(!engine.is_null(), "Failed to create sync engine");
-    
-    let capture = CallbackCapture::new();
-    
-    // Register callback for all events
-    let result = sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &capture as *const CallbackCapture as *mut c_void,
-        -1, // All events
-    );
-    
-    assert_eq!(result, SyncResult::Success);
-    
-    sync_engine_destroy(engine);
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        let capture = CallbackCapture::new();
+
+        // Register callback for all events
+        let result = sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &capture as *const CallbackCapture as *mut c_void,
+            -1, // All events
+        );
+
+        assert_eq!(result, SyncResult::Success);
+
+        sync_engine_destroy(engine);
+    }
 }
 
 #[test]
 fn test_ffi_callback_with_document_creation() {
-    let engine = create_test_engine();
-    assert!(!engine.is_null(), "Failed to create sync engine");
-    
-    let capture = CallbackCapture::new();
-    
-    // Register callback for document events
-    let result = sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &capture as *const CallbackCapture as *mut c_void,
-        0, // DocumentCreated
-    );
-    assert_eq!(result, SyncResult::Success);
-    
-    // Create a document (this should trigger the callback in offline mode)
-    let content = CString::new(r#"{"title":"Test Document","content":"test data","type":"note"}"#).unwrap();
-    let mut doc_id = [0u8; 37]; // UUID string + null terminator
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
 
-    let create_result = sync_engine_create_document(
-        engine,
-        content.as_ptr(),
-        doc_id.as_mut_ptr() as *mut i8,
-    );
+        let capture = CallbackCapture::new();
 
-    assert_eq!(create_result, SyncResult::Success);
+        // Register callback for document events
+        let result = sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &capture as *const CallbackCapture as *mut c_void,
+            0, // DocumentCreated
+        );
+        assert_eq!(result, SyncResult::Success);
 
-    // Process events to trigger callbacks
-    sync_engine_process_events(engine, ptr::null_mut());
+        // Create a document (this should trigger the callback in offline mode)
+        let content = CString::new(r#"{"title":"Test Document","content":"test data","type":"note"}"#).unwrap();
+        let mut doc_id = [0u8; 37]; // UUID string + null terminator
 
-    // Verify callback was called
-    assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-    assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::DocumentCreated));
+        let create_result = sync_engine_create_document(
+            engine,
+            content.as_ptr(),
+            doc_id.as_mut_ptr() as *mut i8,
+        );
 
-    let captured_title = capture.last_title.lock().unwrap();
-    assert_eq!(captured_title.as_ref().unwrap(), "Test Document");
-    
-    let captured_content = capture.last_content.lock().unwrap();
-    assert!(captured_content.is_some());
-    assert!(captured_content.as_ref().unwrap().contains("test data"));
-    
-    sync_engine_destroy(engine);
+        assert_eq!(create_result, SyncResult::Success);
+
+        // Process events to trigger callbacks
+        sync_engine_process_events(engine, ptr::null_mut());
+
+        // Verify callback was called
+        assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::DocumentCreated));
+
+        let captured_title = capture.last_title.lock().unwrap();
+        assert_eq!(captured_title.as_ref().unwrap(), "Test Document");
+
+        let captured_content = capture.last_content.lock().unwrap();
+        assert!(captured_content.is_some());
+        assert!(captured_content.as_ref().unwrap().contains("test data"));
+
+        sync_engine_destroy(engine);
+    }
 }
 
 #[test]
 fn test_ffi_callback_filtering() {
-    let engine = create_test_engine();
-    assert!(!engine.is_null(), "Failed to create sync engine");
-    
-    let created_capture = CallbackCapture::new();
-    let updated_capture = CallbackCapture::new();
-    
-    // Register callback only for created events
-    let result1 = sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &created_capture as *const CallbackCapture as *mut c_void,
-        0, // DocumentCreated
-    );
-    assert_eq!(result1, SyncResult::Success);
-    
-    // Register callback only for updated events
-    let result2 = sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &updated_capture as *const CallbackCapture as *mut c_void,
-        1, // DocumentUpdated
-    );
-    assert_eq!(result2, SyncResult::Success);
-    
-    #[cfg(debug_assertions)]
-    {
-        // Test with debug event emission
-        sync_engine_emit_test_event(engine, 0); // DocumentCreated
-        sync_engine_process_events(engine, ptr::null_mut());
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
 
-        assert_eq!(created_capture.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(updated_capture.call_count.load(Ordering::SeqCst), 0);
+        let created_capture = CallbackCapture::new();
+        let updated_capture = CallbackCapture::new();
 
-        sync_engine_emit_test_event(engine, 1); // DocumentUpdated
-        sync_engine_process_events(engine, ptr::null_mut());
+        // Register callback only for created events
+        let result1 = sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &created_capture as *const CallbackCapture as *mut c_void,
+            0, // DocumentCreated
+        );
+        assert_eq!(result1, SyncResult::Success);
 
-        assert_eq!(created_capture.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(updated_capture.call_count.load(Ordering::SeqCst), 1);
+        // Register callback only for updated events
+        let result2 = sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &updated_capture as *const CallbackCapture as *mut c_void,
+            1, // DocumentUpdated
+        );
+        assert_eq!(result2, SyncResult::Success);
 
-        sync_engine_emit_test_event(engine, 2); // DocumentDeleted (neither should trigger)
-        sync_engine_process_events(engine, ptr::null_mut());
+        #[cfg(debug_assertions)]
+        {
+            // Test with debug event emission
+            sync_engine_emit_test_event(engine, 0); // DocumentCreated
+            sync_engine_process_events(engine, ptr::null_mut());
 
-        assert_eq!(created_capture.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(updated_capture.call_count.load(Ordering::SeqCst), 1);
+            assert_eq!(created_capture.call_count.load(Ordering::SeqCst), 1);
+            assert_eq!(updated_capture.call_count.load(Ordering::SeqCst), 0);
+
+            sync_engine_emit_test_event(engine, 1); // DocumentUpdated
+            sync_engine_process_events(engine, ptr::null_mut());
+
+            assert_eq!(created_capture.call_count.load(Ordering::SeqCst), 1);
+            assert_eq!(updated_capture.call_count.load(Ordering::SeqCst), 1);
+
+            sync_engine_emit_test_event(engine, 2); // DocumentDeleted (neither should trigger)
+            sync_engine_process_events(engine, ptr::null_mut());
+
+            assert_eq!(created_capture.call_count.load(Ordering::SeqCst), 1);
+            assert_eq!(updated_capture.call_count.load(Ordering::SeqCst), 1);
+        }
+
+        sync_engine_destroy(engine);
     }
-    
-    sync_engine_destroy(engine);
 }
 
 #[test]
 fn test_ffi_multiple_callbacks() {
-    let engine = create_test_engine();
-    assert!(!engine.is_null(), "Failed to create sync engine");
-    
-    let capture1 = CallbackCapture::new();
-    let capture2 = CallbackCapture::new();
-    let capture3 = CallbackCapture::new();
-    
-    // Register three callbacks for all events
-    sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &capture1 as *const CallbackCapture as *mut c_void,
-        -1,
-    );
-    
-    sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &capture2 as *const CallbackCapture as *mut c_void,
-        -1,
-    );
-    
-    sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &capture3 as *const CallbackCapture as *mut c_void,
-        -1,
-    );
-    
-    #[cfg(debug_assertions)]
-    {
-        // Emit a test event
-        sync_engine_emit_test_event(engine, 3); // SyncStarted
-        sync_engine_process_events(engine, ptr::null_mut());
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
 
-        // All three should have been called
-        assert_eq!(capture1.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(capture2.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(capture3.call_count.load(Ordering::SeqCst), 1);
+        let capture1 = CallbackCapture::new();
+        let capture2 = CallbackCapture::new();
+        let capture3 = CallbackCapture::new();
 
-        assert_eq!(*capture1.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
-        assert_eq!(*capture2.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
-        assert_eq!(*capture3.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
+        // Register three callbacks for all events
+        sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &capture1 as *const CallbackCapture as *mut c_void,
+            -1,
+        );
+
+        sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &capture2 as *const CallbackCapture as *mut c_void,
+            -1,
+        );
+
+        sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &capture3 as *const CallbackCapture as *mut c_void,
+            -1,
+        );
+
+        #[cfg(debug_assertions)]
+        {
+            // Emit a test event
+            sync_engine_emit_test_event(engine, 3); // SyncStarted
+            sync_engine_process_events(engine, ptr::null_mut());
+
+            // All three should have been called
+            assert_eq!(capture1.call_count.load(Ordering::SeqCst), 1);
+            assert_eq!(capture2.call_count.load(Ordering::SeqCst), 1);
+            assert_eq!(capture3.call_count.load(Ordering::SeqCst), 1);
+
+            assert_eq!(*capture1.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
+            assert_eq!(*capture2.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
+            assert_eq!(*capture3.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
+        }
+
+        sync_engine_destroy(engine);
     }
-    
-    sync_engine_destroy(engine);
 }
 
 #[test]
 #[cfg(debug_assertions)]
 fn test_ffi_all_event_types() {
-    let engine = create_test_engine();
-    assert!(!engine.is_null(), "Failed to create sync engine");
-    
-    let capture = CallbackCapture::new();
-    
-    // Register for all events
-    sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &capture as *const CallbackCapture as *mut c_void,
-        -1,
-    );
-    
-    // Test all event types
-    for event_type in 0..8 {
-        capture.reset();
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
 
-        sync_engine_emit_test_event(engine, event_type);
-        sync_engine_process_events(engine, ptr::null_mut());
+        let capture = CallbackCapture::new();
 
-        assert_eq!(capture.call_count.load(Ordering::SeqCst), 1,
-                   "Event type {} was not emitted", event_type);
-        
-        let expected_type = match event_type {
-            0 => EventType::DocumentCreated,
-            1 => EventType::DocumentUpdated,
-            2 => EventType::DocumentDeleted,
-            3 => EventType::SyncStarted,
-            4 => EventType::SyncCompleted,
-            5 => EventType::SyncError,
-            6 => EventType::ConflictDetected,
-            7 => EventType::ConnectionLost,
-            _ => panic!("Unexpected event type"),
-        };
-        
-        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(expected_type));
+        // Register for all events
+        sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &capture as *const CallbackCapture as *mut c_void,
+            -1,
+        );
+
+        // Test all event types
+        for event_type in 0..8 {
+            capture.reset();
+
+            sync_engine_emit_test_event(engine, event_type);
+            sync_engine_process_events(engine, ptr::null_mut());
+
+            assert_eq!(capture.call_count.load(Ordering::SeqCst), 1,
+                       "Event type {} was not emitted", event_type);
+
+            let expected_type = match event_type {
+                0 => EventType::DocumentCreated,
+                1 => EventType::DocumentUpdated,
+                2 => EventType::DocumentDeleted,
+                3 => EventType::SyncStarted,
+                4 => EventType::SyncCompleted,
+                5 => EventType::SyncError,
+                6 => EventType::ConflictDetected,
+                7 => EventType::ConnectionLost,
+                _ => panic!("Unexpected event type"),
+            };
+
+            assert_eq!(*capture.last_event_type.lock().unwrap(), Some(expected_type));
+        }
+
+        sync_engine_destroy(engine);
     }
-    
-    sync_engine_destroy(engine);
 }
 
 #[test]
 #[cfg(debug_assertions)]
 #[ignore] // TODO: This test hangs - needs investigation (unrelated to title removal)
 fn test_ffi_event_data_integrity() {
-    let engine = create_test_engine();
-    assert!(!engine.is_null(), "Failed to create sync engine");
-    
-    let capture = CallbackCapture::new();
-    
-    sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &capture as *const CallbackCapture as *mut c_void,
-        -1,
-    );
-    
-    // Test sync completed event (has numeric data)
-    capture.reset();
-    sync_engine_emit_test_event(engine, 4); // SyncCompleted
-    sync_engine_process_events(engine, ptr::null_mut());
-
-    assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-    assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::SyncCompleted));
-    assert_eq!(*capture.last_numeric_data.lock().unwrap(), 5); // Test uses fixed value of 5
-
-    // Test sync error event (has error message)
-    capture.reset();
-    sync_engine_emit_test_event(engine, 5); // SyncError
-    sync_engine_process_events(engine, ptr::null_mut());
-
-    assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-    assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::SyncError));
-    let error_msg = capture.last_error.lock().unwrap();
-    assert!(error_msg.is_some());
-    assert!(error_msg.as_ref().unwrap().contains("Test error message"));
-    
-    // Test connection state changed (has boolean data)
-    capture.reset();
-    sync_engine_emit_test_event(engine, 7); // ConnectionLost
-    sync_engine_process_events(engine, ptr::null_mut());
-
-    assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-    assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::ConnectionLost));
-    assert_eq!(*capture.last_boolean_data.lock().unwrap(), true); // Test uses fixed value of true
-    
-    sync_engine_destroy(engine);
-}
-
-#[test]
-#[cfg(debug_assertions)]
-fn test_ffi_event_burst() {
-    let engine = create_test_engine();
-    assert!(!engine.is_null(), "Failed to create sync engine");
-    
-    let capture = CallbackCapture::new();
-    
-    sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        &capture as *const CallbackCapture as *mut c_void,
-        0, // Only DocumentCreated events
-    );
-    
-    // Emit a burst of 5 events
-    sync_engine_emit_test_event_burst(engine, 5);
-    sync_engine_process_events(engine, ptr::null_mut());
-
-    // Should have received all 5 events
-    assert_eq!(capture.call_count.load(Ordering::SeqCst), 5);
-    assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::DocumentCreated));
-    
-    // The last event should have sequence 4 in the title
-    let last_title = capture.last_title.lock().unwrap();
-    assert!(last_title.is_some());
-    assert!(last_title.as_ref().unwrap().contains("4")); // Sequence is 0-indexed
-    
-    sync_engine_destroy(engine);
-}
-
-#[test]
-fn test_ffi_null_pointer_safety() {
-    // Test that null pointers are handled safely
-    
-    // Test null engine
-    let result = sync_engine_register_event_callback(
-        ptr::null_mut(),
-        capture_callback,
-        ptr::null_mut(),
-        -1,
-    );
-    assert_eq!(result, SyncResult::ErrorInvalidInput);
-    
-    // Test with valid engine but invalid filter
-    let engine = create_test_engine();
-    if !engine.is_null() {
-        let result = sync_engine_register_event_callback(
-            engine,
-            capture_callback,
-            ptr::null_mut(),
-            999, // Invalid event type
-        );
-        assert_eq!(result, SyncResult::ErrorInvalidInput);
-        
-        sync_engine_destroy(engine);
-    }
-}
-
-#[test]
-fn test_ffi_engine_lifecycle() {
-    // Test creating and destroying multiple engines
-    for _ in 0..3 {
+    unsafe {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
-        
+
         let capture = CallbackCapture::new();
-        
-        let result = sync_engine_register_event_callback(
+
+        sync_engine_register_event_callback(
             engine,
             capture_callback,
             &capture as *const CallbackCapture as *mut c_void,
             -1,
         );
-        assert_eq!(result, SyncResult::Success);
-        
+
+        // Test sync completed event (has numeric data)
+        capture.reset();
+        sync_engine_emit_test_event(engine, 4); // SyncCompleted
+        sync_engine_process_events(engine, ptr::null_mut());
+
+        assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::SyncCompleted));
+        assert_eq!(*capture.last_numeric_data.lock().unwrap(), 5); // Test uses fixed value of 5
+
+        // Test sync error event (has error message)
+        capture.reset();
+        sync_engine_emit_test_event(engine, 5); // SyncError
+        sync_engine_process_events(engine, ptr::null_mut());
+
+        assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::SyncError));
+        let error_msg = capture.last_error.lock().unwrap();
+        assert!(error_msg.is_some());
+        assert!(error_msg.as_ref().unwrap().contains("Test error message"));
+
+        // Test connection state changed (has boolean data)
+        capture.reset();
+        sync_engine_emit_test_event(engine, 7); // ConnectionLost
+        sync_engine_process_events(engine, ptr::null_mut());
+
+        assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::ConnectionLost));
+        assert_eq!(*capture.last_boolean_data.lock().unwrap(), true); // Test uses fixed value of true
+
         sync_engine_destroy(engine);
-        // After destruction, the engine pointer should not be used
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn test_ffi_event_burst() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        let capture = CallbackCapture::new();
+
+        sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            &capture as *const CallbackCapture as *mut c_void,
+            0, // Only DocumentCreated events
+        );
+
+        // Emit a burst of 5 events
+        sync_engine_emit_test_event_burst(engine, 5);
+        sync_engine_process_events(engine, ptr::null_mut());
+
+        // Should have received all 5 events
+        assert_eq!(capture.call_count.load(Ordering::SeqCst), 5);
+        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::DocumentCreated));
+
+        // The last event should have sequence 4 in the title
+        let last_title = capture.last_title.lock().unwrap();
+        assert!(last_title.is_some());
+        assert!(last_title.as_ref().unwrap().contains("4")); // Sequence is 0-indexed
+
+        sync_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_ffi_null_pointer_safety() {
+    unsafe {
+        // Test that null pointers are handled safely
+
+        // Test null engine
+        let result = sync_engine_register_event_callback(
+            ptr::null_mut(),
+            capture_callback,
+            ptr::null_mut(),
+            -1,
+        );
+        assert_eq!(result, SyncResult::ErrorInvalidInput);
+
+        // Test with valid engine but invalid filter
+        let engine = create_test_engine();
+        if !engine.is_null() {
+            let result = sync_engine_register_event_callback(
+                engine,
+                capture_callback,
+                ptr::null_mut(),
+                999, // Invalid event type
+            );
+            assert_eq!(result, SyncResult::ErrorInvalidInput);
+
+            sync_engine_destroy(engine);
+        }
+    }
+}
+
+#[test]
+fn test_ffi_engine_lifecycle() {
+    unsafe {
+        // Test creating and destroying multiple engines
+        for _ in 0..3 {
+            let engine = create_test_engine();
+            assert!(!engine.is_null(), "Failed to create sync engine");
+
+            let capture = CallbackCapture::new();
+
+            let result = sync_engine_register_event_callback(
+                engine,
+                capture_callback,
+                &capture as *const CallbackCapture as *mut c_void,
+                -1,
+            );
+            assert_eq!(result, SyncResult::Success);
+
+            sync_engine_destroy(engine);
+            // After destruction, the engine pointer should not be used
+        }
     }
 }
 
@@ -435,48 +453,50 @@ fn test_ffi_engine_lifecycle() {
 fn test_ffi_callback_thread_safety() {
     use std::thread;
     use std::time::Duration;
-    
-    let engine = create_test_engine();
-    assert!(!engine.is_null(), "Failed to create sync engine");
-    
-    let capture = Arc::new(CallbackCapture::new());
-    let capture_clone = capture.clone();
-    
-    // Register callback
-    sync_engine_register_event_callback(
-        engine,
-        capture_callback,
-        Arc::as_ptr(&capture_clone) as *mut c_void,
-        -1,
-    );
-    
-    #[cfg(debug_assertions)]
-    {
-        // Emit events from multiple threads (simulated stress test)
-        let engine_ptr = engine as usize; // Store as usize for thread safety
-        
-        let handles: Vec<_> = (0..3).map(|_i| {
-            let _capture = capture.clone();
-            thread::spawn(move || {
-                let engine = engine_ptr as *mut SyncEngine;
-                for _ in 0..2 {
-                    sync_engine_emit_test_event(engine, 3); // SyncStarted
-                    thread::sleep(Duration::from_millis(1));
-                }
-            })
-        }).collect();
-        
-        // Wait for all threads
-        for handle in handles {
-            handle.join().unwrap();
+
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        let capture = Arc::new(CallbackCapture::new());
+        let capture_clone = capture.clone();
+
+        // Register callback
+        sync_engine_register_event_callback(
+            engine,
+            capture_callback,
+            Arc::as_ptr(&capture_clone) as *mut c_void,
+            -1,
+        );
+
+        #[cfg(debug_assertions)]
+        {
+            // Emit events from multiple threads (simulated stress test)
+            let engine_ptr = engine as usize; // Store as usize for thread safety
+
+            let handles: Vec<_> = (0..3).map(|_i| {
+                let _capture = capture.clone();
+                thread::spawn(move || {
+                    let engine = engine_ptr as *mut SyncEngine;
+                    for _ in 0..2 {
+                        sync_engine_emit_test_event(engine, 3); // SyncStarted
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                })
+            }).collect();
+
+            // Wait for all threads
+            for handle in handles {
+                handle.join().unwrap();
+            }
+
+            // Process all queued events
+            sync_engine_process_events(engine, ptr::null_mut());
+
+            // Should have received 6 events total (3 threads × 2 events each)
+            assert_eq!(capture.call_count.load(Ordering::SeqCst), 6);
         }
 
-        // Process all queued events
-        sync_engine_process_events(engine, ptr::null_mut());
-
-        // Should have received 6 events total (3 threads × 2 events each)
-        assert_eq!(capture.call_count.load(Ordering::SeqCst), 6);
+        sync_engine_destroy(engine);
     }
-    
-    sync_engine_destroy(engine);
 }

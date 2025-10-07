@@ -75,13 +75,15 @@ impl SyncHandler {
 
                             self.db.log_change_event(
                                 &mut tx,
-                                &document.id,
-                                &user_id,
-                                sync_core::protocol::ChangeEventType::Create,
-                                &existing_doc.revision_id,
-                                Some(&server_content_json),
-                                None,
-                                false  // applied = false (conflict loser)
+                                crate::database::ChangeEventParams {
+                                    document_id: &document.id,
+                                    user_id: &user_id,
+                                    event_type: sync_core::protocol::ChangeEventType::Create,
+                                    revision_id: &existing_doc.revision_id,
+                                    forward_patch: Some(&server_content_json),
+                                    reverse_patch: None,
+                                    applied: false,
+                                }
                             ).await
                             .map_err(|e| format!("Failed to log conflict: {}", e))?;
 
@@ -219,13 +221,15 @@ impl SyncHandler {
 
                         self.db.log_change_event(
                             &mut tx,
-                            &doc.id,
-                            &user_id,
-                            sync_core::protocol::ChangeEventType::Update,
-                            &server_revision_before,
-                            Some(&server_content_json),
-                            None,
-                            false  // applied = false (conflict loser)
+                            crate::database::ChangeEventParams {
+                                document_id: &doc.id,
+                                user_id: &user_id,
+                                event_type: sync_core::protocol::ChangeEventType::Update,
+                                revision_id: &server_revision_before,
+                                forward_patch: Some(&server_content_json),
+                                reverse_patch: None,
+                                applied: false,
+                            }
                         ).await
                         .map_err(|e| format!("Failed to log conflict: {}", e))?;
 

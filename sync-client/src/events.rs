@@ -357,6 +357,7 @@ impl EventDispatcher {
     }
 
     /// Queue an event for later processing on the callback thread
+    #[allow(clippy::too_many_arguments)] // FFI callback constraints
     fn queue_event(
         &self,
         event_type: EventType,
@@ -377,7 +378,7 @@ impl EventDispatcher {
             boolean_data,
         };
 
-        if let Err(_) = self.event_sender.send(queued_event) {
+        if self.event_sender.send(queued_event).is_err() {
             tracing::error!("Failed to queue event - receiver may have been dropped");
         }
     }
@@ -490,10 +491,7 @@ impl EventDispatcher {
     pub fn pending_event_count(&self) -> usize {
         // We can't easily check the channel length without consuming from it,
         // so we'll estimate by trying to process events and counting them
-        match self.process_events() {
-            Ok(count) => count,
-            Err(_) => 0,
-        }
+        self.process_events().unwrap_or_default()
     }
 }
 

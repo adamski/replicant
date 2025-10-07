@@ -2,7 +2,7 @@ use chrono::Local;
 use colored::*;
 use sync_core::protocol::{ClientMessage, ServerMessage};
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub enum LogMessage {

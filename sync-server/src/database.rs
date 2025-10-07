@@ -335,7 +335,7 @@ impl ServerDatabase {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         params: ChangeEventParams<'_>,
-    ) -> SyncResult<(), sqlx::Error> {
+    ) -> SyncResult<()> {
         sqlx::query(
             r#"
             INSERT INTO change_events (user_id, document_id, event_type, revision_id, forward_patch, reverse_patch, applied)

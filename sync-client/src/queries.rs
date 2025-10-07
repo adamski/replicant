@@ -183,7 +183,7 @@ impl DbHelpers {
     }
     
     /// Prepare document values for database insertion
-    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> Result<DocumentParams, ClientError> {
+    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> SyncResult<DocumentParams> {
         let status = sync_status.unwrap_or(SyncStatus::Pending).to_string();
 
         Ok((

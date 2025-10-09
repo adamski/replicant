@@ -1,13 +1,13 @@
+use crate::{auth::AuthState, AppState};
+use sync_core::{SyncResult, errors::ApiError};
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    Json,
     response::IntoResponse,
+    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
-use crate::AppState;
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -46,29 +46,35 @@ pub struct CreateApiKeyResponse {
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
-) -> Result<Json<RegisterResponse>, StatusCode> {
+) -> SyncResult<Json<RegisterResponse>> {
     // Hash password
-    let password_hash = crate::auth::AuthState::hash_password(&req.password)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+    let password_hash = AuthState::hash_password(&req.password)
+        .map_err(|_| ApiError::internal("Failed to hash password"))?;
+
     // Create user
     let user_id = state.db.create_user(&req.email, &password_hash)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|e| {
+            tracing::error!(%e, "Failed to create user");
+            ApiError::bad_request(
+                "Failed to create user",
+                Some(format!("email: {}", req.email)),
+            )
+        })?;
+
     Ok(Json(RegisterResponse { user_id }))
 }
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, StatusCode> {
+) -> SyncResult<Json<LoginResponse>> {
     // Verify email/password
     let user_id = state.auth.verify_user_password(&req.email, &req.password)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    
+        .map_err(|_| ApiError::internal("Authentication failed"))?
+        .ok_or_else(|| ApiError::unauthorized("Invalid credentials"))?;
+
     // Check if user already has API keys
     let existing_keys = sqlx::query_scalar::<_, String>(
         "SELECT key_hash FROM api_keys WHERE user_id = $1 AND is_active = true LIMIT 1"
@@ -76,37 +82,41 @@ pub async fn login(
     .bind(&user_id)
     .fetch_optional(&state.db.pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
-    let api_key = if let Some(_) = existing_keys {
+    .map_err(|e| {
+        tracing::error!(%e, "Failed to check existing API keys");
+        ApiError::internal("Database error")
+    })?;
+
+    let api_key = if existing_keys.is_some() {
         // User already has API keys - don't create new one for login
-        return Err(StatusCode::BAD_REQUEST); // Should use existing API key
+        return Err(ApiError::bad_request("User already has API keys", None))?;
     } else {
         // Create new API key for this login
         state.auth.create_api_key(&user_id, "Desktop Client API Key")
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|e| {
+                tracing::error!(%e, "Failed to create API key");
+                ApiError::internal("Failed to create API key")
+            })?
     };
-    
+
     Ok(Json(LoginResponse { user_id, api_key }))
 }
 
 pub async fn create_api_key(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateApiKeyRequest>,
-) -> Result<Json<CreateApiKeyResponse>, StatusCode> {
+) -> SyncResult<Json<CreateApiKeyResponse>> {
     // Create API key
     let api_key = state.auth.create_api_key(&req.user_id, &req.name)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|e| {
+            tracing::error!(%e, "Failed to create API key");
+            ApiError::internal("Failed to create API key")
+        })?;
+
     Ok(Json(CreateApiKeyResponse { api_key }))
 }
-
-
-
-
-
 
 #[derive(Deserialize)]
 pub struct AuthHeader {
@@ -117,21 +127,34 @@ pub struct AuthHeader {
 pub async fn list_documents(
     State(state): State<Arc<AppState>>,
     Json(auth): Json<AuthHeader>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> SyncResult<impl IntoResponse> {
     // Verify API key
-    let valid = state.auth.verify_token(&auth.user_id, &auth.auth_token)
+    let valid = state
+        .auth
+        .verify_token(&auth.user_id, &auth.auth_token)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|_| ApiError::internal("Invalid Token"))?;
+
     if !valid {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(ApiError::unauthorized("Unauthorized Token"))?;
     }
-    
+
     // Get documents
-    let documents = state.db.get_user_documents(&auth.user_id)
+    let documents = state
+        .db
+        .get_user_documents(&auth.user_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|e| {
+            tracing::error!(%e, "Failed to retrieve documents");
+            ApiError::bad_request(
+                "Invalid credentials",
+                Some(format!(
+                    "user_id: {}, auth_token: {}",
+                    auth.user_id, auth.auth_token
+                )),
+            )
+        })?;
+
     Ok(Json(documents))
 }
 
@@ -139,25 +162,34 @@ pub async fn get_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<Uuid>,
     Json(auth): Json<AuthHeader>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> SyncResult<impl IntoResponse> {
     // Verify API key
-    let valid = state.auth.verify_token(&auth.user_id, &auth.auth_token)
+    let valid = state
+        .auth
+        .verify_token(&auth.user_id, &auth.auth_token)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+        .map_err(|_| ApiError::internal("Invalid Token"))?;
+
     if !valid {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(ApiError::unauthorized("Unauthorized Token"))?;
     }
-    
+
     // Get document
-    let document = state.db.get_document(&document_id)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    
+    let document = state.db.get_document(&document_id).await.map_err(|e| {
+        tracing::error!(%e, "Failed to retrieve documents");
+        ApiError::bad_request(
+            "Invalid credentials",
+            Some(format!(
+                "user_id: {}, auth_token: {}, document: {}",
+                auth.user_id, auth.auth_token, document_id
+            )),
+        )
+    })?;
+
     // Verify ownership
     if document.user_id != auth.user_id {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(ApiError::unauthorized(""))?;
     }
-    
+
     Ok(Json(document))
 }

@@ -1,6 +1,6 @@
-use sqlx::{postgres::PgRow, PgPool, Row};
-use sync_core::models::Document;
+use sqlx::{PgPool, postgres::PgRow, Row};
 use uuid::Uuid;
+use sync_core::{models::Document, SyncResult};
 
 /// Type alias for document parameters tuple
 pub type DocumentParams = (
@@ -18,7 +18,7 @@ pub type DocumentParams = (
 );
 
 /// Parse a document from a database row
-pub fn parse_document(row: &PgRow) -> Result<Document, sqlx::Error> {
+pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
     Ok(Document {
         id: row.try_get("id")?,
         user_id: row.try_get("user_id")?,
@@ -63,7 +63,7 @@ pub fn document_to_params(doc: &Document) -> DocumentParams {
 pub async fn get_document_stats(
     pool: &PgPool,
     user_id: &Uuid,
-) -> Result<DocumentStats, sqlx::Error> {
+) -> SyncResult<DocumentStats> {
     let row = sqlx::query(
         r#"
             SELECT
@@ -75,9 +75,9 @@ pub async fn get_document_stats(
             WHERE user_id = $1
             "#,
     )
-    .bind(user_id)
-    .fetch_one(pool)
-    .await?;
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
 
     Ok(DocumentStats {
         total: row.try_get::<i64, _>("total")? as u64,

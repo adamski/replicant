@@ -8,11 +8,11 @@ use sync_core::{
     models::{Document, VectorClock, SyncStatus},
     protocol::{ClientMessage, ServerMessage},
     patches::{create_patch, apply_patch},
+    SyncResult, errors::ClientError,
 };
 use crate::{
     database::ClientDatabase,
     websocket::WebSocketClient,
-    errors::ClientError,
     events::EventDispatcher,
 };
 
@@ -31,6 +31,7 @@ enum UploadType {
     Update,
     Delete,
 }
+
 
 pub struct SyncEngine {
     db: Arc<ClientDatabase>,
@@ -58,7 +59,7 @@ impl SyncEngine {
         server_url: &str,
         auth_token: &str,
         user_identifier: &str,
-    ) -> Result<Self, ClientError> {
+    ) -> SyncResult<Self> {
         let db = Arc::new(ClientDatabase::new(database_url).await?);
         db.run_migrations().await?;
         
@@ -129,7 +130,7 @@ impl SyncEngine {
         self.event_dispatcher.clone()
     }
     
-    async fn spawn_background_tasks(&mut self) -> Result<(), ClientError> {
+    async fn spawn_background_tasks(&mut self) -> SyncResult<()> {
         // Take the receiver - can only start once
         let rx = self.message_rx.take()
             .ok_or_else(|| ClientError::WebSocket("SyncEngine already started".to_string()))?;
@@ -266,7 +267,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    pub async fn create_document(&self, content: serde_json::Value) -> Result<Document, ClientError> {
+    pub async fn create_document(&self, content: serde_json::Value) -> SyncResult<Document> {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id: self.user_id,
@@ -300,7 +301,7 @@ impl SyncEngine {
         Ok(doc)
     }
     
-    pub async fn update_document(&self, id: Uuid, new_content: serde_json::Value) -> Result<(), ClientError> {
+    pub async fn update_document(&self, id: Uuid, new_content: serde_json::Value) -> SyncResult<()> {
         let mut doc = self.db.get_document(&id).await?;
         let old_content = doc.content.clone();
         let old_revision = doc.revision_id.clone();
@@ -391,7 +392,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    pub async fn delete_document(&self, id: Uuid) -> Result<(), ClientError> {
+    pub async fn delete_document(&self, id: Uuid) -> SyncResult<()> {
         let doc = self.db.get_document(&id).await?;
         
         // Mark as deleted locally first
@@ -420,7 +421,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    pub async fn get_all_documents(&self) -> Result<Vec<Document>, ClientError> {
+    pub async fn get_all_documents(&self) -> SyncResult<Vec<Document>> {
         let docs = self.db.get_all_documents().await?;
         tracing::info!("CLIENT: get_all_documents() returning {} documents", docs.len());
         for doc in &docs {
@@ -429,19 +430,18 @@ impl SyncEngine {
         Ok(docs)
     }
     
-    pub async fn count_documents(&self) -> Result<usize, ClientError> {
+    pub async fn count_documents(&self) -> SyncResult<usize> {
         let docs = self.db.get_all_documents().await?;
         Ok(docs.len())
     }
     
-    pub async fn count_pending_sync(&self) -> Result<usize, ClientError> {
+    pub async fn count_pending_sync(&self) -> SyncResult<usize> {
         let pending_docs = self.db.get_pending_documents().await?;
         Ok(pending_docs.len())
     }
     
-    async fn sync_pending_documents(&self) -> Result<(), ClientError> {
+    async fn sync_pending_documents(&self) -> SyncResult<()> {
         let pending_docs = self.db.get_pending_documents().await?;
-        
         // Also check sync_queue for debugging
         let sync_queue_result = sqlx::query("SELECT COUNT(*) as count FROM sync_queue")
             .fetch_one(&self.db.pool)
@@ -515,7 +515,7 @@ impl SyncEngine {
                                 revision_id: doc.revision_id.clone(),
                             }).await?;
                         } else {
-                            return Err(ClientError::WebSocket("Not connected".to_string()));
+                            return Err(ClientError::WebSocket("Not connected".to_string()))?;
                         }
                         
                         UploadType::Delete
@@ -539,7 +539,7 @@ impl SyncEngine {
                                 document: doc.clone() 
                             }).await?;
                         } else {
-                            return Err(ClientError::WebSocket("Not connected".to_string()));
+                            return Err(ClientError::WebSocket("Not connected".to_string()))?;
                         }
                         
                         UploadType::Create
@@ -582,7 +582,7 @@ impl SyncEngine {
                                         patch: document_patch 
                                     }).await?;
                                 } else {
-                                    return Err(ClientError::WebSocket("Not connected".to_string()));
+                                    return Err(ClientError::WebSocket("Not connected".to_string()))?;
                                 }
                             }
                             None => {
@@ -598,7 +598,7 @@ impl SyncEngine {
                                         if let Some(client) = ws_client.as_ref() {
                                             client.send(update_message).await?;
                                         } else {
-                                            return Err(ClientError::WebSocket("Not connected".to_string()));
+                                            return Err(ClientError::WebSocket("Not connected".to_string()))?;
                                         }
                                     }
                                     Err(e) => {
@@ -612,7 +612,7 @@ impl SyncEngine {
                                                 document: doc.clone() 
                                             }).await?;
                                         } else {
-                                            return Err(ClientError::WebSocket("Not connected".to_string()));
+                                            return Err(ClientError::WebSocket("Not connected".to_string()))?;
                                         }
                                     }
                                 }
@@ -645,7 +645,7 @@ impl SyncEngine {
         pending_uploads: &Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
         upload_complete_notifier: &Arc<Notify>,
         sync_protection_mode: &Arc<AtomicBool>
-    ) -> Result<(), ClientError> {
+    ) -> SyncResult<()> {
         match &msg {
             // Handle upload confirmations first
             ServerMessage::DocumentCreatedResponse { document_id, success, .. } |
@@ -711,7 +711,7 @@ impl SyncEngine {
         uploads.contains_key(document_id)
     }
 
-    async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid, event_dispatcher: &Arc<EventDispatcher>) -> Result<(), ClientError> {
+    async fn handle_server_message(msg: ServerMessage, db: &Arc<ClientDatabase>, client_id: Uuid, event_dispatcher: &Arc<EventDispatcher>) -> SyncResult<()> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
                 // Apply patch from server
@@ -901,7 +901,7 @@ impl SyncEngine {
     }
     
     // Retry failed uploads by re-checking pending documents
-    async fn retry_failed_uploads(&self) -> Result<(), ClientError> {
+    async fn retry_failed_uploads(&self) -> SyncResult<()> {
         tracing::info!("CLIENT {}: Starting upload retry for failed operations", self.client_id);
         
         // Get current pending uploads (these are the ones that timed out)
@@ -945,7 +945,7 @@ impl SyncEngine {
         Ok(())
     }
     
-    pub async fn sync_all(&self) -> Result<(), ClientError> {
+    pub async fn sync_all(&self) -> SyncResult<()> {
         // Request full sync on startup to get all documents
         tracing::debug!("Requesting full sync from server");
         
@@ -954,7 +954,7 @@ impl SyncEngine {
             client.send(ClientMessage::RequestFullSync).await?;
         } else {
             tracing::warn!("CLIENT {}: Cannot sync - not connected", self.client_id);
-            return Err(ClientError::WebSocket("Not connected".to_string()));
+            return Err(ClientError::WebSocket("Not connected".to_string()))?;
         }
         
         Ok(())
@@ -966,14 +966,14 @@ impl SyncEngine {
     }
     
     /// Attempt to sync a single document immediately if connected
-    async fn try_immediate_sync(&self, document: &Document) -> Result<(), ClientError> {
+    async fn try_immediate_sync(&self, document: &Document) -> SyncResult<()> {
         let connected = self.is_connected();
         tracing::info!("CLIENT {}: 🔍 Connection status check: connected={}", self.client_id, connected);
         
         if !connected {
             tracing::warn!("CLIENT {}: 📴 OFFLINE - Document {} cannot sync immediately, returning error to mark as pending", 
                          self.client_id, document.id);
-            return Err(ClientError::WebSocket("Client is offline - document should remain pending".to_string()));
+            return Err(ClientError::WebSocket("Client is offline - document should remain pending".to_string()))?;
         }
         
         tracing::info!("CLIENT {}: 🚀 IMMEDIATE SYNC attempt for document {}", self.client_id, document.id);
@@ -1039,13 +1039,13 @@ impl SyncEngine {
                     let mut uploads = self.pending_uploads.lock().await;
                     uploads.remove(&document.id);
                 }
-                Err(ClientError::WebSocket("Not connected".to_string()))
+                Err(ClientError::WebSocket("Not connected".to_string()))?
             }
         }
     }
     
     /// Create an UpdateDocument message with proper patch from last synced revision
-    async fn create_update_message(&self, current_doc: &Document, _last_synced_revision: &str) -> Result<ClientMessage, ClientError> {
+    async fn create_update_message(&self, current_doc: &Document, _last_synced_revision: &str) -> SyncResult<ClientMessage> {
         use sync_core::models::DocumentPatch;
         use sync_core::patches::{create_patch, calculate_checksum};
         
@@ -1273,7 +1273,7 @@ impl SyncEngine {
         ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
         client_id: Uuid,
         pending_uploads: &Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
-    ) -> Result<(), ClientError> {
+    ) -> SyncResult<()> {
         tracing::info!("CLIENT {}: Starting post-reconnection pending sync using real engine components", client_id);
         
         let pending_docs = db.get_pending_documents().await?;
@@ -1305,7 +1305,7 @@ impl SyncEngine {
                                 revision_id: doc.revision_id.clone(),
                             }).await?;
                         } else {
-                            return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()));
+                            return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()))?;
                         }
                     } else {
                         // Handle pending update/create - check last_synced_revision to determine message type
@@ -1354,7 +1354,7 @@ impl SyncEngine {
                                     patch: patch_result,
                                 }).await?;
                             } else {
-                                return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()));
+                                return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()))?;
                             }
                         } else {
                             tracing::info!("CLIENT {}: Using CreateDocument for doc {} (never synced)", 
@@ -1372,7 +1372,7 @@ impl SyncEngine {
                                     document: doc.clone(),
                                 }).await?;
                             } else {
-                                return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()));
+                                return Err(ClientError::WebSocket("Not connected during reconnection sync".to_string()))?;
                             }
                         }
                     }

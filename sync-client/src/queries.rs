@@ -1,8 +1,7 @@
 use sqlx::{SqlitePool, Row, sqlite::SqliteRow};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use sync_core::models::{Document, SyncStatus};
-use crate::errors::ClientError;
+use sync_core::{models::{Document, SyncStatus}, SyncResult};
 
 /// Type alias for document parameters tuple
 pub type DocumentParams = (
@@ -150,7 +149,7 @@ pub struct DbHelpers;
 
 impl DbHelpers {
     /// Initialize the database schema
-    pub async fn init_schema(pool: &SqlitePool) -> Result<(), ClientError> {
+    pub async fn init_schema(pool: &SqlitePool) -> SyncResult<()> {
         sqlx::query(Queries::SCHEMA)
             .execute(pool)
             .await?;
@@ -158,7 +157,7 @@ impl DbHelpers {
     }
     
     /// Parse a document from a database row
-    pub fn parse_document(row: &SqliteRow) -> Result<Document, ClientError> {
+    pub fn parse_document(row: &SqliteRow) -> SyncResult<Document> {
         let id: String = row.get("id");
         let user_id: String = row.get("user_id");
         let content: String = row.get("content");
@@ -184,8 +183,9 @@ impl DbHelpers {
     }
     
     /// Prepare document values for database insertion
-    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> Result<DocumentParams, ClientError> {
+    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> SyncResult<DocumentParams> {
         let status = sync_status.unwrap_or(SyncStatus::Pending).to_string();
+
         Ok((
             doc.id.to_string(),
             doc.user_id.to_string(),
@@ -204,7 +204,7 @@ impl DbHelpers {
     pub async fn count_by_status(
         pool: &SqlitePool,
         status: SyncStatus,
-    ) -> Result<i64, ClientError> {
+    ) -> SyncResult<i64> {
         let row = sqlx::query(Queries::COUNT_BY_SYNC_STATUS)
             .bind(status.to_string())
             .fetch_one(pool)

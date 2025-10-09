@@ -1,8 +1,7 @@
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row};
 use uuid::Uuid;
-use sync_core::models::{Document, SyncStatus};
+use sync_core::{models::{Document, SyncStatus}, SyncResult};
 use sync_core::protocol::ChangeEventType;
-use crate::errors::ClientError;
 use crate::queries::{DbHelpers, Queries};
 use json_patch;
 
@@ -18,7 +17,7 @@ pub struct ClientDatabase {
 }
 
 impl ClientDatabase {
-    pub async fn new(database_url: &str) -> Result<Self, ClientError> {
+    pub async fn new(database_url: &str) -> SyncResult<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect(database_url)
@@ -27,7 +26,7 @@ impl ClientDatabase {
         Ok(Self { pool })
     }
 
-    pub async fn run_migrations(&self) -> Result<(), ClientError> {
+    pub async fn run_migrations(&self) -> SyncResult<()> {
         sqlx::migrate!("./migrations").run(&self.pool).await?;
         Ok(())
     }
@@ -36,7 +35,7 @@ impl ClientDatabase {
         &self,
         server_url: &str,
         auth_token: &str,
-    ) -> Result<(), ClientError> {
+    ) -> SyncResult<()> {
         // Check if user_config already exists
         let exists = sqlx::query("SELECT COUNT(*) as count FROM user_config")
             .fetch_one(&self.pool)
@@ -61,7 +60,7 @@ impl ClientDatabase {
         Ok(())
     }
     
-    pub async fn ensure_user_config_with_identifier(&self, server_url: &str, auth_token: &str, user_identifier: &str) -> Result<(), ClientError> {
+    pub async fn ensure_user_config_with_identifier(&self, server_url: &str, auth_token: &str, user_identifier: &str) -> SyncResult<()> {
         // Check if user_config already exists
         let exists = sqlx::query("SELECT COUNT(*) as count FROM user_config")
             .fetch_one(&self.pool)
@@ -98,7 +97,7 @@ impl ClientDatabase {
         Uuid::new_v5(&app_namespace, user_identifier.as_bytes())
     }
     
-    pub async fn get_user_id(&self) -> Result<Uuid, ClientError> {
+    pub async fn get_user_id(&self) -> SyncResult<Uuid> {
         let row = sqlx::query(Queries::GET_USER_ID)
             .fetch_one(&self.pool)
             .await?;
@@ -107,7 +106,7 @@ impl ClientDatabase {
         Ok(Uuid::parse_str(&user_id)?)
     }
 
-    pub async fn get_client_id(&self) -> Result<Uuid, ClientError> {
+    pub async fn get_client_id(&self) -> SyncResult<Uuid> {
         let row = sqlx::query(Queries::GET_CLIENT_ID)
             .fetch_one(&self.pool)
             .await?;
@@ -116,7 +115,7 @@ impl ClientDatabase {
         Ok(Uuid::parse_str(&client_id)?)
     }
 
-    pub async fn get_user_and_client_id(&self) -> Result<(Uuid, Uuid), ClientError> {
+    pub async fn get_user_and_client_id(&self) -> SyncResult<(Uuid, Uuid)> {
         let row = sqlx::query(Queries::GET_USER_AND_CLIENT_ID)
             .fetch_one(&self.pool)
             .await?;
@@ -126,7 +125,7 @@ impl ClientDatabase {
         Ok((Uuid::parse_str(&user_id)?, Uuid::parse_str(&client_id)?))
     }
 
-    pub async fn get_document(&self, id: &Uuid) -> Result<Document, ClientError> {
+    pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query(r#"
             SELECT id, user_id, content, revision_id, version, vector_clock, created_at, updated_at, deleted_at
             FROM documents
@@ -139,14 +138,15 @@ impl ClientDatabase {
         DbHelpers::parse_document(&row)
     }
 
-    pub async fn save_document(&self, doc: &Document) -> Result<(), ClientError> {
+    pub async fn save_document(&self, doc: &Document) -> SyncResult<()> {
         self.save_document_with_status(doc, None).await
     }
     
-    pub(crate) async fn save_document_with_status(&self, doc: &Document, sync_status: Option<SyncStatus>) -> Result<(), ClientError> {
+    pub(crate) async fn save_document_with_status(&self, doc: &Document, sync_status: Option<SyncStatus>) -> SyncResult<()> {
         let status_str = sync_status.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "synced".to_string());
         tracing::info!("DATABASE: 💾 Saving document {} with status: {}, revision: {}", 
                      doc.id, status_str, doc.revision_id);
+
         
         let params = DbHelpers::document_to_params(doc, sync_status)?;
 
@@ -168,9 +168,8 @@ impl ClientDatabase {
         Ok(())
     }
     
-    pub async fn get_pending_documents(&self) -> Result<Vec<PendingDocumentInfo>, ClientError> {
+    pub async fn get_pending_documents(&self) -> SyncResult<Vec<PendingDocumentInfo>> {
         tracing::info!("DATABASE: 🔍 Querying for pending documents...");
-        
         let rows = sqlx::query(Queries::GET_PENDING_DOCUMENTS)
             .bind(SyncStatus::Pending.to_string())
             .fetch_all(&self.pool)
@@ -199,7 +198,7 @@ impl ClientDatabase {
         Ok(pending_docs)
     }
     
-    pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &str) -> Result<(), ClientError> {
+    pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &str) -> SyncResult<()> {
         tracing::info!("DATABASE: 🔄 Marking document {} as synced with revision {}", document_id, revision_id);
         
         let result = sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
@@ -230,7 +229,7 @@ impl ClientDatabase {
         Ok(())
     }
 
-    pub async fn delete_document(&self, document_id: &Uuid) -> Result<(), ClientError> {
+    pub async fn delete_document(&self, document_id: &Uuid) -> SyncResult<()> {
         sqlx::query("UPDATE documents SET deleted_at = datetime('now'), sync_status = ? WHERE id = ?")
             .bind(SyncStatus::Pending.to_string())
             .bind(document_id.to_string())
@@ -240,7 +239,7 @@ impl ClientDatabase {
         Ok(())
     }
 
-    pub async fn get_all_documents(&self) -> Result<Vec<Document>, ClientError> {
+    pub async fn get_all_documents(&self) -> SyncResult<Vec<Document>> {
         let rows = sqlx::query("SELECT * FROM documents WHERE deleted_at IS NULL")
             .fetch_all(&self.pool)
             .await?;
@@ -255,7 +254,7 @@ impl ClientDatabase {
         document_id: &Uuid,
         operation_type: ChangeEventType,
         patch: Option<&json_patch::Patch>,
-    ) -> Result<(), ClientError> {
+    ) -> SyncResult<()> {
         let patch_json = patch.map(serde_json::to_string).transpose()?;
 
         tracing::info!("DATABASE: queue_sync_operation called: doc_id={}, op_type={}, patch_size={}",
@@ -291,7 +290,7 @@ impl ClientDatabase {
         Ok(())
     }
     
-    pub async fn get_queued_patch(&self, document_id: &Uuid) -> Result<Option<json_patch::Patch>, ClientError> {
+    pub async fn get_queued_patch(&self, document_id: &Uuid) -> SyncResult<Option<json_patch::Patch>> {
         let row = sqlx::query(
             "SELECT patch FROM sync_queue WHERE document_id = ? AND operation_type = 'update' ORDER BY created_at DESC LIMIT 1"
         )
@@ -311,7 +310,7 @@ impl ClientDatabase {
         }
     }
     
-    pub async fn remove_from_sync_queue(&self, document_id: &Uuid) -> Result<(), ClientError> {
+    pub async fn remove_from_sync_queue(&self, document_id: &Uuid) -> SyncResult<()> {
         sqlx::query("DELETE FROM sync_queue WHERE document_id = ?")
             .bind(document_id.to_string())
             .execute(&self.pool)

@@ -54,6 +54,7 @@ use std::ffi::{c_char, c_void, CString};
 use std::sync::{Mutex, mpsc};
 use std::thread::{self, ThreadId};
 use uuid::Uuid;
+use sync_core::{errors::ClientError, SyncResult};
 
 /// Event types that can be emitted by the sync client
 #[repr(C)]
@@ -160,7 +161,7 @@ unsafe impl Send for CallbackEntry {}
 unsafe impl Sync for CallbackEntry {}
 
 #[derive(Debug, Clone)]
-struct QueuedEvent {
+pub struct QueuedEvent {
     event_type: EventType,
     document_id: Option<String>,
     title: Option<String>,
@@ -227,11 +228,11 @@ impl EventDispatcher {
         callback: EventCallback,
         context: *mut c_void,
         event_filter: Option<EventType>,
-    ) -> Result<(), &'static str> {
+    ) -> SyncResult<()> {
         // Set the callback thread ID on first registration
         {
             let mut thread_id = self.callback_thread_id.lock()
-                .map_err(|_| "Failed to acquire thread ID lock")?;
+                .map_err(|_| ClientError::LockError("thread ID".into()))?;
             if thread_id.is_none() {
                 *thread_id = Some(thread::current().id());
                 tracing::info!("Event callbacks will be processed on thread: {:?}", thread::current().id());
@@ -239,7 +240,7 @@ impl EventDispatcher {
         }
 
         let mut callbacks = self.callbacks.lock()
-            .map_err(|_| "Failed to acquire callback lock")?;
+            .map_err(|_|  ClientError::LockError("callbacks".into()))?;
         
         callbacks.push(CallbackEntry {
             callback: CallbackType::CFfi(callback),
@@ -289,11 +290,11 @@ impl EventDispatcher {
         callback: RustEventCallback,
         context: *mut c_void,
         event_filter: Option<EventType>,
-    ) -> Result<(), &'static str> {
+    ) -> SyncResult<()> {
         // Set the callback thread ID on first registration
         {
             let mut thread_id = self.callback_thread_id.lock()
-                .map_err(|_| "Failed to acquire thread ID lock")?;
+                .map_err(|_| ClientError::LockError("thread ID".into()))?;
             if thread_id.is_none() {
                 *thread_id = Some(thread::current().id());
                 tracing::info!("Event callbacks will be processed on thread: {:?}", thread::current().id());
@@ -301,7 +302,7 @@ impl EventDispatcher {
         }
 
         let mut callbacks = self.callbacks.lock()
-            .map_err(|_| "Failed to acquire callback lock")?;
+            .map_err(|_| ClientError::LockError("callbacks".into()))?;
         
         callbacks.push(CallbackEntry {
             callback: CallbackType::Rust(callback),
@@ -341,7 +342,7 @@ impl EventDispatcher {
     }
 
     pub fn emit_conflict_detected(&self, document_id: &Uuid) {
-        self.queue_event(EventType::ConflictDetected, Some(document_id), None, None, None, 0, false);
+       self.queue_event(EventType::ConflictDetected, Some(document_id), None, None, None, 0, false);
     }
 
     pub fn emit_connection_lost(&self, server_url: &str) {
@@ -384,29 +385,29 @@ impl EventDispatcher {
     }
 
     /// Process all queued events. This MUST be called on the same thread where callbacks were registered.
-    pub fn process_events(&self) -> Result<usize, &'static str> {
+    pub fn process_events(&self) -> SyncResult<usize> {
         // Verify we're on the correct thread
         {
             let thread_id = self.callback_thread_id.lock()
-                .map_err(|_| "Failed to acquire thread ID lock")?;
+                .map_err(|_| ClientError::LockError("thread ID".into()))?;
             if let Some(expected_thread_id) = *thread_id {
                 if thread::current().id() != expected_thread_id {
-                    return Err("process_events() must be called on the same thread where callbacks were registered");
+                    return Err(ClientError::ThreadSafetyViolation.into());
                 }
             } else {
-                return Err("No callbacks registered yet");
+                return Err(ClientError::NoCallbacksRegistered.into());
             }
         }
 
         let callbacks = self.callbacks.lock()
-            .map_err(|_| "Failed to acquire callback lock")?;
+            .map_err(|_| ClientError::LockError("callbacks".into()))?;
 
         if callbacks.is_empty() {
             return Ok(0);
         }
 
         let receiver = self.event_queue.lock()
-            .map_err(|_| "Failed to acquire event queue lock")?;
+            .map_err(|_| ClientError::LockError("event queue".into()))?;
 
         let mut processed_count = 0;
         let mut temp_strings = Vec::new();

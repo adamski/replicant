@@ -1,9 +1,11 @@
-use crate::queries::{document_to_params, parse_document};
-use json_patch::Patch;
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use sqlx::{PgPool, postgres::PgPoolOptions, Row};
+use uuid::Uuid;
 use sync_core::models::Document;
 use sync_core::protocol::{ChangeEvent, ChangeEventType};
-use uuid::Uuid;
+use json_patch::Patch;
+use crate::queries::{document_to_params, parse_document};
+use sync_core::SyncResult;
+use tracing::instrument;
 
 pub struct ChangeEventParams<'a> {
     pub document_id: &'a Uuid,
@@ -20,31 +22,32 @@ pub struct ServerDatabase {
 }
 
 impl ServerDatabase {
-    pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
+
+    #[instrument(skip(database_url))]
+    pub async fn new(database_url: &str) -> SyncResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .connect(database_url)
             .await?;
-
+        
         Ok(Self { pool })
     }
-
-    pub async fn new_with_options(
-        database_url: &str,
-        max_connections: u32,
-    ) -> Result<Self, sqlx::Error> {
+    
+    pub async fn new_with_options(database_url: &str, max_connections: u32) -> SyncResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
-            .max_lifetime(std::time::Duration::from_secs(30)) // Short lifetime for tests
+            .max_lifetime(std::time::Duration::from_secs(30))  // Short lifetime for tests
             .idle_timeout(std::time::Duration::from_secs(10))
             .connect(database_url)
             .await?;
-
+        
         Ok(Self { pool })
     }
-
-    pub async fn run_migrations(&self) -> Result<(), sqlx::Error> {
-        sqlx::migrate!("./migrations").run(&self.pool).await?;
+    
+    pub async fn run_migrations(&self) -> SyncResult<()> {
+        sqlx::migrate!("./migrations")
+            .run(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -52,7 +55,7 @@ impl ServerDatabase {
         &self,
         email: &str,
         password_hash: &str,
-    ) -> Result<Uuid, sqlx::Error> {
+    ) -> SyncResult<Uuid> {
         let row = sqlx::query(
             r#"
             INSERT INTO users (email, password_hash)
@@ -67,23 +70,22 @@ impl ServerDatabase {
 
         Ok(row.get("id"))
     }
-    
+
     pub async fn verify_user_password(
         &self,
         email: &str,
-    ) -> Result<Option<(Uuid, String)>, sqlx::Error> {
+    ) -> SyncResult<Option<(Uuid, String)>> {
         let result = sqlx::query_as::<_, (Uuid, String)>(
             "SELECT id, password_hash FROM users WHERE email = $1"
         )
         .bind(email)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(result)
     }
 
-    
-    pub async fn create_document(&self, doc: &Document) -> Result<(), sqlx::Error> {
+    pub async fn create_document(&self, doc: &Document) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
         let params = document_to_params(doc);
@@ -103,20 +105,20 @@ impl ServerDatabase {
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         "#,
         )
-        .persistent(false) // Disable caching
-        .bind(params.0)  // id
-        .bind(params.1)  // user_id
-        .bind(params.2)  // content_json
-        .bind(params.3)  // revision_id
-        .bind(params.4)  // version
-        .bind(params.5)  // vector_clock_json
-        .bind(params.6)  // created_at
-        .bind(params.7)  // updated_at
-        .bind(params.8)  // deleted_at
-        .bind(params.9)  // checksum
-        .bind(params.10) // size_bytes
-        .execute(&mut *tx)
-        .await?;
+            .persistent(false) // Disable caching
+            .bind(params.0)  // id
+            .bind(params.1)  // user_id
+            .bind(params.2)  // content_json
+            .bind(params.3)  // revision_id
+            .bind(params.4)  // version
+            .bind(params.5)  // vector_clock_json
+            .bind(params.6)  // created_at
+            .bind(params.7)  // updated_at
+            .bind(params.8)  // deleted_at
+            .bind(params.9)  // checksum
+            .bind(params.10) // size_bytes
+            .execute(&mut *tx)
+            .await?;
 
         // Log the create event
         // For CREATE: forward_patch contains the full document, reverse_patch is null
@@ -133,9 +135,10 @@ impl ServerDatabase {
 
         tx.commit().await?;
         Ok(())
-    }
 
-    pub async fn get_document(&self, id: &Uuid) -> Result<Document, sqlx::Error> {
+    }
+    
+    pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query(r#"
             SELECT id, user_id, content, revision_id, version, vector_clock, created_at, updated_at, deleted_at
             FROM documents
@@ -146,27 +149,25 @@ impl ServerDatabase {
             .await?;
 
         parse_document(&row)
-    }
 
-    pub async fn update_document(
-        &self,
-        doc: &Document,
-        patch: Option<&Patch>,
-    ) -> Result<(), sqlx::Error> {
+    }
+    
+    pub async fn update_document(&self, doc: &Document, patch: Option<&Patch>) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
         self.update_document_in_tx(&mut tx, doc, patch).await?;
         tx.commit().await?;
         Ok(())
-    }
 
+    }
+    
     // Update document within an existing transaction
     pub async fn update_document_in_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         doc: &Document,
         patch: Option<&Patch>
-    ) -> Result<(), sqlx::Error> {
+    ) -> SyncResult<()> {
         // Get the original document state before update (for computing reverse patch)
         let original_doc = self.get_document(&doc.id).await?;
 
@@ -182,17 +183,17 @@ impl ServerDatabase {
             WHERE id = $1
         "#,
         )
-        .bind(params.0)  // id
-        .bind(params.2)  // content_json
-        .bind(params.3)  // revision_id
-        .bind(params.4)  // version
-        .bind(params.5)  // vector_clock_json
-        .bind(params.7)  // updated_at
-        .bind(params.8)  // deleted_at
-        .bind(params.9)  // checksum
-        .bind(params.10) // size_bytes
-        .execute(&mut **tx)
-        .await?;
+            .bind(params.0)  // id
+            .bind(params.2)  // content_json
+            .bind(params.3)  // revision_id
+            .bind(params.4)  // version
+            .bind(params.5)  // vector_clock_json
+            .bind(params.7)  // updated_at
+            .bind(params.8)  // deleted_at
+            .bind(params.9)  // checksum
+            .bind(params.10) // size_bytes
+            .execute(&mut **tx)
+            .await?;
 
         // Compute patches for the event log
         let forward_patch_json = patch.map(|p| serde_json::to_value(p).unwrap());
@@ -219,12 +220,7 @@ impl ServerDatabase {
         Ok(())
     }
 
-    pub async fn delete_document(
-        &self,
-        document_id: &Uuid,
-        user_id: &Uuid,
-        revision_id: &str,
-    ) -> Result<(), sqlx::Error> {
+    pub async fn delete_document(&self, document_id: &Uuid, user_id: &Uuid, revision_id: &str) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
 
@@ -253,9 +249,10 @@ impl ServerDatabase {
         
         tx.commit().await?;
         Ok(())
-    }
 
-    pub async fn get_user_documents(&self, user_id: &Uuid) -> Result<Vec<Document>, sqlx::Error> {
+    }
+    
+    pub async fn get_user_documents(&self, user_id: &Uuid) -> SyncResult<Vec<Document>> {
         let rows = sqlx::query(
             r#"
             SELECT id, user_id, content, revision_id, version,
@@ -265,18 +262,19 @@ impl ServerDatabase {
             ORDER BY updated_at DESC
         "#,
         )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?;
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
 
         rows.into_iter().map(|row| parse_document(&row)).collect()
-    }
 
+    }
+    
     pub async fn create_revision(
         &self,
         doc: &Document,
         patch: Option<&Patch>,
-    ) -> Result<(), sqlx::Error> {
+    ) -> SyncResult<()> {
         let patch_json = patch.map(|p| serde_json::to_value(p).unwrap());
 
         sqlx::query(
@@ -296,13 +294,10 @@ impl ServerDatabase {
         .await?;
 
         Ok(())
-    }
 
-    pub async fn add_active_connection(
-        &self,
-        user_id: &Uuid,
-        connection_id: &Uuid,
-    ) -> Result<(), sqlx::Error> {
+    }
+    
+    pub async fn add_active_connection(&self, user_id: &Uuid, connection_id: &Uuid) -> SyncResult<()> {
         sqlx::query(
             r#"
             INSERT INTO active_connections (user_id, connection_id)
@@ -311,25 +306,27 @@ impl ServerDatabase {
             SET connection_id = $2, last_ping_at = NOW()
         "#,
         )
-        .bind(user_id)
-        .bind(connection_id)
-        .execute(&self.pool)
-        .await?;
+            .bind(user_id)
+            .bind(connection_id)
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
-    }
 
-    pub async fn remove_active_connection(&self, user_id: &Uuid) -> Result<(), sqlx::Error> {
+    }
+    
+    pub async fn remove_active_connection(&self, user_id: &Uuid) -> SyncResult<()> {
         sqlx::query(
             r#"
             DELETE FROM active_connections WHERE user_id = $1
         "#,
         )
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
+
     }
 
     // Event logging for sequence-based sync
@@ -337,7 +334,7 @@ impl ServerDatabase {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         params: ChangeEventParams<'_>,
-    ) -> Result<(), sqlx::Error> {
+    ) -> SyncResult<()> {
         sqlx::query(
             r#"
             INSERT INTO change_events (user_id, document_id, event_type, revision_id, forward_patch, reverse_patch, applied)
@@ -356,15 +353,11 @@ impl ServerDatabase {
         .await?;
 
         Ok(())
+
     }
 
     // Get changes since a specific sequence number for sync
-    pub async fn get_changes_since(
-        &self,
-        user_id: &Uuid,
-        last_sequence: u64,
-        limit: Option<u32>,
-    ) -> Result<Vec<ChangeEvent>, sqlx::Error> {
+    pub async fn get_changes_since(&self, user_id: &Uuid, last_sequence: u64, limit: Option<u32>) -> SyncResult<Vec<ChangeEvent>> {
         let limit = limit.unwrap_or(100).min(1000); // Cap at 1000 for safety
 
         let rows = sqlx::query(
@@ -376,11 +369,11 @@ impl ServerDatabase {
             LIMIT $3
             "#
         )
-        .bind(user_id)
-        .bind(last_sequence as i64)
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+            .bind(user_id)
+            .bind(last_sequence as i64)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut events = Vec::new();
         for row in rows {
@@ -403,10 +396,11 @@ impl ServerDatabase {
         }
 
         Ok(events)
+
     }
 
     // Get the latest sequence number for a user
-    pub async fn get_latest_sequence(&self, user_id: &Uuid) -> Result<u64, sqlx::Error> {
+    pub async fn get_latest_sequence(&self, user_id: &Uuid) -> SyncResult<u64> {
         let row = sqlx::query(
             r#"
             SELECT COALESCE(MAX(sequence), 0) as latest_sequence
@@ -414,15 +408,15 @@ impl ServerDatabase {
             WHERE user_id = $1
             "#,
         )
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(row.get::<i64, _>("latest_sequence") as u64)
-    }
 
+    }
     // Get unapplied changes for a document (conflict losers)
-    pub async fn get_unapplied_changes(&self, document_id: &Uuid) -> Result<Vec<ChangeEvent>, sqlx::Error> {
+    pub async fn get_unapplied_changes(&self, document_id: &Uuid) -> SyncResult<Vec<ChangeEvent>> {
         let rows = sqlx::query(
             r#"
             SELECT sequence, document_id, user_id, event_type, revision_id,
@@ -432,9 +426,9 @@ impl ServerDatabase {
             ORDER BY sequence DESC
             "#
         )
-        .bind(document_id)
-        .fetch_all(&self.pool)
-        .await?;
+            .bind(document_id)
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut events = Vec::new();
         for row in rows {

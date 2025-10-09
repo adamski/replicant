@@ -4,6 +4,8 @@ use uuid::Uuid;
 use sync_core::{
     protocol::{ClientMessage, ServerMessage, ConflictResolution, ErrorCode},
     patches::{apply_patch, calculate_checksum},
+    SyncResult,
+    errors::ServerError,
 };
 use crate::{database::ServerDatabase, monitoring::MonitoringLayer, AppState};
 
@@ -36,8 +38,8 @@ impl SyncHandler {
         self.client_id = Some(client_id);
     }
     
-    pub async fn handle_message(&mut self, msg: ClientMessage) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let user_id = self.user_id.ok_or("Not authenticated")?;
+    pub async fn handle_message(&mut self, msg: ClientMessage) -> SyncResult<()> {
+        let user_id = self.user_id.ok_or(ServerError::ServerSync("Unauthorized: user_id not found".to_string()))?;
         
         match msg {
             ClientMessage::CreateDocument { document } => {
@@ -59,7 +61,6 @@ impl SyncHandler {
                                      existing_doc.revision_id, document.revision_id);
                         tracing::warn!("   Server content: {:?}", existing_doc.content);
                         tracing::warn!("   Client content: {:?}", document.content);
-                        
                         // Apply last-write-wins strategy (client version replaces server version entirely)
                         // Note: This is NOT a merge - server version is completely overwritten
                         tracing::info!("🔧 Applying last-write-wins: Client version will replace server version");
@@ -204,7 +205,7 @@ impl SyncHandler {
                     // Update revision and vector clock
                     let old_revision = doc.revision_id.clone();
                     doc.revision_id = doc.next_revision(&doc.content);
-                    doc.vector_clock.increment(&self.user_id.ok_or("Not authenticated")?.to_string());
+                    doc.vector_clock.increment(&self.user_id.ok_or(ServerError::ServerSync("Unauthorized: user_id not found".to_string()))?.to_string());
                     doc.updated_at = chrono::Utc::now();
 
                     tracing::warn!("   Server content after conflict resolution: {:?}", doc.content);
@@ -268,7 +269,6 @@ impl SyncHandler {
                             return Ok(());
                         }
                     }
-                    
                     // Broadcast the final state to ALL clients to ensure convergence
                     // This ensures all clients get the authoritative state after conflict resolution
                     tracing::info!("🔸 Broadcasting final document state after conflict resolution");
@@ -432,7 +432,7 @@ impl SyncHandler {
         Ok(())
     }
     
-    async fn send_error(&self, code: ErrorCode, message: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn send_error(&self, code: ErrorCode, message: &str) -> SyncResult<()> {
         self.tx.send(ServerMessage::Error {
             code,
             message: message.to_string(),
@@ -444,7 +444,7 @@ impl SyncHandler {
         &self,
         user_id: Uuid,
         message: ServerMessage,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> SyncResult<()> {
         self.broadcast_to_user_except(user_id, None, message).await
     }
     
@@ -453,7 +453,7 @@ impl SyncHandler {
         user_id: Uuid,
         exclude_client_id: Option<Uuid>,
         message: ServerMessage,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> SyncResult<()> {
         // Get all connected client IDs for this user
         if let Some(client_ids) = self.app_state.user_clients.get(&user_id) {
             let total_clients = client_ids.len();

@@ -87,14 +87,14 @@ mod tests {
     
     #[test]
     fn test_auth_token_generation() {
-        let token1 = auth::AuthState::generate_auth_token();
-        let token2 = auth::AuthState::generate_auth_token();
-        
+        let token1 = auth::AuthState::generate_api_key();
+        let token2 = auth::AuthState::generate_api_key();
+
         // Tokens should be unique
         assert_ne!(token1, token2);
-        
-        // Tokens should be valid UUIDs
-        assert!(Uuid::parse_str(&token1).is_ok());
-        assert!(Uuid::parse_str(&token2).is_ok());
+
+        // Tokens should start with rpa_ prefix
+        assert!(token1.starts_with("rpa_"));
+        assert!(token2.starts_with("rpa_"));
     }
 }

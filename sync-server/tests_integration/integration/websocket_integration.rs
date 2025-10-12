@@ -54,7 +54,9 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
     let auth_msg = ClientMessage::Authenticate {
         user_id,
         client_id,
-        auth_token: token.to_string(),
+        api_key: Some(token.to_string()),
+        signature: None,
+        timestamp: None,
     };
     let json_msg = serde_json::to_string(&auth_msg).unwrap();
     ws.send(Message::Text(json_msg)).await.unwrap();
@@ -84,7 +86,9 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
     let bad_auth_msg = ClientMessage::Authenticate {
         user_id,
         client_id,
-        auth_token: "invalid-token".to_string(),
+        api_key: Some("invalid-token".to_string()),
+        signature: None,
+        timestamp: None,
     };
     ws.send(Message::Text(serde_json::to_string(&bad_auth_msg).unwrap())).await.unwrap();
     

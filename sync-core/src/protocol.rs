@@ -10,7 +10,12 @@ pub enum ClientMessage {
     Authenticate {
         user_id: Uuid,
         client_id: Uuid,
-        auth_token: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timestamp: Option<i64>,
     },
     
     // Document operations

@@ -55,43 +55,65 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                     }
                     
                     match client_msg {
-                        ClientMessage::Authenticate { user_id, client_id, auth_token } => {
-                            match state.auth.verify_token(&user_id, &auth_token).await {
-                                Ok(true) => {
-                                    authenticated_user_id = Some(user_id);
-                                    authenticated_client_id = Some(client_id);
-                                    handler.set_user_id(user_id);
-                                    handler.set_client_id(client_id);
-                                    
-                                    // Register client in the registry with both user_id and client_id
-                                    state.clients.insert((user_id, client_id), tx.clone());
-                                    
-                                    // Update user_clients mapping
-                                    state.user_clients.entry(user_id)
-                                        .and_modify(|clients| {
-                                            clients.insert(client_id);
-                                        })
-                                        .or_insert_with(|| {
-                                            let mut set = HashSet::new();
-                                            set.insert(client_id);
-                                            set
-                                        });
-                                    
-                                    // Log total client count
-                                    let client_count = state.user_clients.get(&user_id).map(|c| c.len()).unwrap_or(0);
-                                    tracing::info!("User {} now has {} total connected clients", user_id, client_count);
-                                    
-                                    let _ = tx.send(ServerMessage::AuthSuccess {
-                                        session_id: Uuid::new_v4(),
-                                        client_id,
-                                    }).await;
+                        ClientMessage::Authenticate { user_id, client_id, api_key, signature, timestamp } => {
+                            // HMAC authentication if signature provided, otherwise API key authentication
+                            let auth_success = if let (Some(api_key), Some(signature), Some(timestamp)) =
+                                (api_key.as_ref(), signature.as_ref(), timestamp) {
+                                // HMAC authentication with signature verification
+                                match state.auth.verify_hmac(
+                                    &api_key,
+                                    &signature,
+                                    timestamp,
+                                    &user_id.to_string(),
+                                    ""
+                                ).await {
+                                    Ok(true) => true,
+                                    _ => {
+                                        // Fall back to user-specific API key verification
+                                        state.auth.verify_token(&user_id, &api_key).await.unwrap_or(false)
+                                    }
                                 }
-                                _ => {
-                                    let _ = tx.send(ServerMessage::AuthError {
-                                        reason: "Invalid credentials".to_string(),
-                                    }).await;
-                                    break;
-                                }
+                            } else if let Some(api_key) = api_key.as_ref() {
+                                // API key authentication without HMAC
+                                state.auth.verify_token(&user_id, &api_key).await.unwrap_or(false)
+                            } else {
+                                // No authentication provided
+                                false
+                            };
+
+                            if auth_success {
+                                authenticated_user_id = Some(user_id);
+                                authenticated_client_id = Some(client_id);
+                                handler.set_user_id(user_id);
+                                handler.set_client_id(client_id);
+
+                                // Register client in the registry with both user_id and client_id
+                                state.clients.insert((user_id, client_id), tx.clone());
+
+                                // Update user_clients mapping
+                                state.user_clients.entry(user_id)
+                                    .and_modify(|clients| {
+                                        clients.insert(client_id);
+                                    })
+                                    .or_insert_with(|| {
+                                        let mut set = HashSet::new();
+                                        set.insert(client_id);
+                                        set
+                                    });
+
+                                // Log total client count
+                                let client_count = state.user_clients.get(&user_id).map(|c| c.len()).unwrap_or(0);
+                                tracing::info!("User {} now has {} total connected clients", user_id, client_count);
+
+                                let _ = tx.send(ServerMessage::AuthSuccess {
+                                    session_id: Uuid::new_v4(),
+                                    client_id,
+                                }).await;
+                            } else {
+                                let _ = tx.send(ServerMessage::AuthError {
+                                    reason: "Invalid credentials".to_string(),
+                                }).await;
+                                break;
                             }
                         }
                         _ => {

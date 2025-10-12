@@ -6,6 +6,10 @@ use sync_core::{protocol::{ClientMessage, ServerMessage}, SyncResult, errors::Cl
 use crate::events::EventDispatcher;
 use backoff::{future::retry, ExponentialBackoff};
 use std::sync::Arc;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone)]
 pub struct WebSocketClient {
@@ -69,13 +73,92 @@ impl WebSocketClient {
             rx: rx_recv,
         };
         
-        // Send authentication
+        // Send authentication with API key
         client.send(ClientMessage::Authenticate {
             user_id,
             client_id,
-            auth_token: auth_token.to_string(),
+            api_key: Some(auth_token.to_string()),
+            signature: None,
+            timestamp: None,
         }).await?;
-        
+
+        Ok((client, receiver))
+    }
+
+    pub async fn connect_with_hmac(
+        server_url: &str,
+        user_id: Uuid,
+        client_id: Uuid,
+        api_key: &str,
+        api_secret: &str,
+        event_dispatcher: Option<Arc<EventDispatcher>>,
+    ) -> SyncResult<(Self, WebSocketReceiver)> {
+        let ws_stream = Self::connect_with_retry(server_url, 3, event_dispatcher).await?;
+
+        let (write, read) = ws_stream.split();
+
+        // Create channels for communication
+        let (tx_send, mut rx_send) = mpsc::channel::<ClientMessage>(100);
+        let (tx_recv, rx_recv) = mpsc::channel::<ServerMessage>(100);
+
+        // Spawn writer task
+        tokio::spawn(async move {
+            let mut write = write;
+            while let Some(msg) = rx_send.recv().await {
+                let json = serde_json::to_string(&msg).unwrap();
+                if write.send(Message::Text(json)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Spawn reader task
+        tokio::spawn(async move {
+            let mut read = read;
+            while let Some(msg) = read.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(server_msg) = serde_json::from_str::<ServerMessage>(&text) {
+                            if tx_recv.send(server_msg).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Message::Close(_)) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let client = Self {
+            tx: tx_send.clone(),
+        };
+
+        let receiver = WebSocketReceiver {
+            rx: rx_recv,
+        };
+
+        // Create timestamp
+        let timestamp = chrono::Utc::now().timestamp();
+
+        // Create HMAC signature
+        let signature = Self::create_hmac_signature(
+            api_secret,
+            timestamp,
+            &user_id.to_string(),
+            api_key,
+            "", // Empty body for auth
+        );
+
+        // Send authentication with HMAC signature
+        client.send(ClientMessage::Authenticate {
+            user_id,
+            client_id,
+            api_key: Some(api_key.to_string()),
+            signature: Some(signature),
+            timestamp: Some(timestamp),
+        }).await?;
+
         Ok((client, receiver))
     }
     
@@ -129,6 +212,22 @@ impl WebSocketClient {
             .await
             .map_err(|_| ClientError::WebSocket("Failed to send message".to_string()))?;
         Ok(())
+    }
+
+    fn create_hmac_signature(
+        secret: &str,
+        timestamp: i64,
+        user_id: &str,
+        api_key: &str,
+        body: &str,
+    ) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .expect("HMAC can take key of any size");
+
+        let message = format!("{}.{}.{}.{}", timestamp, user_id, api_key, body);
+        mac.update(message.as_bytes());
+
+        hex::encode(mac.finalize().into_bytes())
     }
 }
 

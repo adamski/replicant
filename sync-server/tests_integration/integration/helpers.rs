@@ -159,7 +159,9 @@ impl TestContext {
         let auth_msg = ClientMessage::Authenticate {
             user_id,
             client_id,
-            auth_token: token.to_string(),
+            api_key: Some(token.to_string()),
+            signature: None,
+            timestamp: None,
         };
         let json_msg = serde_json::to_string(&auth_msg).unwrap();
         ws_stream.send(Message::Text(json_msg)).await.unwrap();

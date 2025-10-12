@@ -2,11 +2,11 @@ use sync_server::auth::AuthState;
 
 #[test]
 fn test_token_generation_format() {
-    let token = AuthState::generate_auth_token();
-    
-    // Should be a valid UUID
-    assert_eq!(token.len(), 36);
-    assert!(uuid::Uuid::parse_str(&token).is_ok());
+    let token = AuthState::generate_api_key();
+
+    // Should start with rpa_ prefix and be 67 characters total (rpa_ + 64 hex chars)
+    assert!(token.starts_with("rpa_"));
+    assert_eq!(token.len(), 67);
 }
 
 #[test]

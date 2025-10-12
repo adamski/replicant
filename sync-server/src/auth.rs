@@ -72,8 +72,8 @@ impl AuthState {
         tracing::debug!("Verifying API key for user {}: key={}", user_id, &api_key[..std::cmp::min(10, api_key.len())]);
 
         // Verify API key format
-        if !api_key.starts_with("sk_") && !api_key.starts_with("rpa_") {
-            tracing::warn!("Invalid token format - must start with sk_ or rpa_");
+        if !api_key.starts_with("rpa_") {
+            tracing::warn!("Invalid token format - must start with rpa_");
             return Ok(false);
         }
 
@@ -234,10 +234,10 @@ impl AuthState {
     pub async fn verify_hmac(
         &self,
         api_key: &str,
-        signature: &str,
+        _signature: &str,
         timestamp: i64,
-        user_id: &str,
-        body: &str,
+        _user_id: &str,
+        _body: &str,
     ) -> SyncResult<bool> {
         // Check timestamp is within 5 minutes
         let now = chrono::Utc::now().timestamp();

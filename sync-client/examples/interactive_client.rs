@@ -20,9 +20,9 @@ struct Cli {
     #[arg(short, long, default_value = "ws://localhost:8080/ws")]
     server: String,
 
-    /// Authentication token
-    #[arg(short, long, default_value = "sk_demo123456789012345678901234567890")]
-    token: String,
+    /// API key for authentication
+    #[arg(short = 'k', long, default_value = "rpa_demo123456789012345678901234567890")]
+    api_key: String,
 
     /// User ID (will be generated if not provided)
     #[arg(short, long)]
@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let id = Uuid::new_v4();
                     println!("🆕 Creating new user: {}", id.to_string().yellow());
                     let client_id = Uuid::new_v4();
-                    setup_user(&db, id, client_id, &cli.server, &cli.token).await?;
+                    setup_user(&db, id, client_id, &cli.server, &cli.api_key).await?;
                     id
                 }
             }
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Create sync engine (auto-starts with built-in reconnection)
-    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.token, &user_id.to_string()).await {
+    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.api_key, &user_id.to_string()).await {
         Ok(engine) => {
             println!("✅ Sync engine initialized (auto-connecting)!");
             Some(engine)
@@ -137,7 +137,7 @@ async fn setup_user(
     user_id: Uuid,
     client_id: Uuid,
     server_url: &str,
-    token: &str,
+    api_key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     sqlx::query(
         "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)",
@@ -145,7 +145,7 @@ async fn setup_user(
     .bind(user_id.to_string())
     .bind(client_id.to_string())
     .bind(server_url)
-    .bind(token)
+    .bind(api_key)
     .execute(&db.pool)
     .await?;
     Ok(())

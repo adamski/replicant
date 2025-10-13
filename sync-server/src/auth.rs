@@ -29,9 +29,7 @@ pub struct AuthState {
 
 #[derive(Clone)]
 struct AuthSession {
-    user_id: Uuid,
     token: String,
-    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl AuthState {
@@ -42,18 +40,6 @@ impl AuthState {
         }
     }
 
-    pub fn hash_password(password: &str) -> SyncResult<String> {
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
-        Ok(password_hash.to_string())
-    }
-
-    pub fn verify_password(password: &str, hash: &str) -> SyncResult<bool> {
-        let parsed_hash = PasswordHash::new(hash)?;
-        let argon2 = Argon2::default();
-        Ok(argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
-    }
 
     pub fn hash_token(token: &str) -> SyncResult<String> {
         let salt = SaltString::generate(&mut OsRng);
@@ -91,9 +77,7 @@ impl AuthState {
                 if api_user_id == *user_id {
                     // Create session
                     self.sessions.insert(*user_id, AuthSession {
-                        user_id: *user_id,
                         token: api_key.to_string(),
-                        created_at: chrono::Utc::now(),
                     });
 
                     // Update user last seen
@@ -117,12 +101,10 @@ impl AuthState {
         }
     }
 
-    pub fn create_session(&self, user_id: Uuid, token: String) -> Uuid {
+    pub fn create_session(&self, _user_id: Uuid, token: String) -> Uuid {
         let session_id = Uuid::new_v4();
         self.sessions.insert(session_id, AuthSession {
-            user_id,
             token,
-            created_at: chrono::Utc::now(),
         });
         session_id
     }
@@ -203,17 +185,6 @@ impl AuthState {
         Ok(None)
     }
 
-    pub async fn verify_user_password(&self, email: &str, password: &str) -> SyncResult<Option<Uuid>> {
-        match self.db.verify_user_password(email).await? {
-            Some((user_id, password_hash)) => {
-                if Self::verify_password(password, &password_hash).unwrap_or(false) {
-                    return Ok(Some(user_id));
-                }
-            }
-            None => return Ok(None)
-        }
-        Ok(None)
-    }
 
     pub fn create_hmac_signature(
         secret: &str,

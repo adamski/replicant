@@ -154,8 +154,7 @@ async fn run_server() -> sync_core::SyncResult<()> {
         // WebSocket endpoint
         .route("/ws", get(websocket_handler))
         // REST API
-        .route("/api/auth/register", post(api::register))
-        .route("/api/auth/login", post(api::login))
+        .route("/api/auth/create-user", post(api::create_user))
         .route("/api/auth/create-api-key", post(api::create_api_key))
         .route("/api/documents", get(api::list_documents))
         .route("/api/documents/:id", get(api::get_document))

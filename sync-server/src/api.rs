@@ -1,4 +1,4 @@
-use crate::{auth::AuthState, AppState};
+use crate::AppState;
 use sync_core::{SyncResult, errors::ApiError};
 use axum::{
     extract::{Path, State},
@@ -10,26 +10,15 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
-pub struct RegisterRequest {
+pub struct CreateUserRequest {
     email: String,
-    password: String,
+    #[serde(default)]
+    username: Option<String>,
 }
 
 #[derive(Serialize)]
-pub struct RegisterResponse {
+pub struct CreateUserResponse {
     user_id: Uuid,
-}
-
-#[derive(Deserialize)]
-pub struct LoginRequest {
-    email: String,
-    password: String,
-}
-
-#[derive(Serialize)]
-pub struct LoginResponse {
-    user_id: Uuid,
-    api_key: String,
 }
 
 #[derive(Deserialize)]
@@ -43,64 +32,22 @@ pub struct CreateApiKeyResponse {
     api_key: String,
 }
 
-pub async fn register(
+pub async fn create_user(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<RegisterRequest>,
-) -> SyncResult<Json<RegisterResponse>> {
-    // Hash password
-    let password_hash = AuthState::hash_password(&req.password)
-        .map_err(|_| ApiError::internal("Failed to hash password"))?;
-
-    // Create user
-    let user_id = state.db.create_user(&req.email, &password_hash)
+    Json(req): Json<CreateUserRequest>,
+) -> SyncResult<Json<CreateUserResponse>> {
+    // Create user with email and optional username
+    let user_id = state.db.create_user(&req.email, req.username.as_deref())
         .await
         .map_err(|e| {
             tracing::error!(%e, "Failed to create user");
             ApiError::bad_request(
                 "Failed to create user",
-                Some(format!("email: {}", req.email)),
+                Some(format!("email: {}, username: {:?}", req.email, req.username)),
             )
         })?;
 
-    Ok(Json(RegisterResponse { user_id }))
-}
-
-pub async fn login(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<LoginRequest>,
-) -> SyncResult<Json<LoginResponse>> {
-    // Verify email/password
-    let user_id = state.auth.verify_user_password(&req.email, &req.password)
-        .await
-        .map_err(|_| ApiError::internal("Authentication failed"))?
-        .ok_or_else(|| ApiError::unauthorized("Invalid credentials"))?;
-
-    // Check if user already has API keys
-    let existing_keys = sqlx::query_scalar::<_, String>(
-        "SELECT key_hash FROM api_keys WHERE user_id = $1 AND is_active = true LIMIT 1"
-    )
-    .bind(&user_id)
-    .fetch_optional(&state.db.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(%e, "Failed to check existing API keys");
-        ApiError::internal("Database error")
-    })?;
-
-    let api_key = if existing_keys.is_some() {
-        // User already has API keys - don't create new one for login
-        return Err(ApiError::bad_request("User already has API keys", None))?;
-    } else {
-        // Create new API key for this login
-        state.auth.create_api_key(&user_id, "Desktop Client API Key")
-            .await
-            .map_err(|e| {
-                tracing::error!(%e, "Failed to create API key");
-                ApiError::internal("Failed to create API key")
-            })?
-    };
-
-    Ok(Json(LoginResponse { user_id, api_key }))
+    Ok(Json(CreateUserResponse { user_id }))
 }
 
 pub async fn create_api_key(

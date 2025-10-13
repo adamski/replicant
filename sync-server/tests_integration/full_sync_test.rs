@@ -52,8 +52,7 @@ mod full_sync_tests {
         
         // Create test user
         let test_user_id = Uuid::new_v4();
-        let test_token_hash = "test_hash"; // In real scenario, this would be hashed
-        db.create_user("test@example.com", test_token_hash)
+        db.create_user("test@example.com", Some("testuser"))
             .await
             .expect("Failed to create test user");
         

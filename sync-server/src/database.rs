@@ -54,29 +54,29 @@ impl ServerDatabase {
     pub async fn create_user(
         &self,
         email: &str,
-        password_hash: &str,
+        username: Option<&str>,
     ) -> SyncResult<Uuid> {
         let row = sqlx::query(
             r#"
-            INSERT INTO users (email, password_hash)
+            INSERT INTO users (email, username)
             VALUES ($1, $2)
             RETURNING id
         "#,
         )
         .bind(email)
-        .bind(password_hash)
+        .bind(username)
         .fetch_one(&self.pool)
         .await?;
 
         Ok(row.get("id"))
     }
 
-    pub async fn verify_user_password(
+    pub async fn get_user_by_email(
         &self,
         email: &str,
-    ) -> SyncResult<Option<(Uuid, String)>> {
-        let result = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, password_hash FROM users WHERE email = $1"
+    ) -> SyncResult<Option<Uuid>> {
+        let result = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM users WHERE email = $1"
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -84,6 +84,21 @@ impl ServerDatabase {
 
         Ok(result)
     }
+
+    pub async fn get_user_by_username(
+        &self,
+        username: &str,
+    ) -> SyncResult<Option<Uuid>> {
+        let result = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM users WHERE username = $1"
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result)
+    }
+
 
     pub async fn create_document(&self, doc: &Document) -> SyncResult<()> {
         // Start a transaction to ensure atomicity

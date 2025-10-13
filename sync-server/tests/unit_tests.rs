@@ -4,9 +4,9 @@ use sync_server::auth::AuthState;
 fn test_token_generation_format() {
     let token = AuthState::generate_api_key();
 
-    // Should start with rpa_ prefix and be 67 characters total (rpa_ + 64 hex chars)
+    // Should start with rpa_ prefix and be 68 characters total (rpa_ = 4 chars + 64 hex chars)
     assert!(token.starts_with("rpa_"));
-    assert_eq!(token.len(), 67);
+    assert_eq!(token.len(), 68);
 }
 
 #[test]
@@ -65,12 +65,14 @@ mod database_tests {
         sqlx::query("DELETE FROM document_revisions").execute(&db.pool).await?;
         sqlx::query("DELETE FROM active_connections").execute(&db.pool).await?;
         sqlx::query("DELETE FROM documents").execute(&db.pool).await?;
+        sqlx::query("DELETE FROM api_keys").execute(&db.pool).await?;
         sqlx::query("DELETE FROM users").execute(&db.pool).await?;
-        
+        sqlx::query("DELETE FROM api_credentials").execute(&db.pool).await?;
+
         // Reset sequences if needed (PostgreSQL specific)
         sqlx::query("ALTER SEQUENCE IF EXISTS change_events_sequence_seq RESTART WITH 1")
             .execute(&db.pool).await?;
-        
+
         Ok(())
     }
 
@@ -85,7 +87,7 @@ mod database_tests {
         };
         
         // Create a test user
-        let user_id = db.create_user("test@example.com", "hashed_token")
+        let user_id = db.create_user("test@example.com", Some("testuser"))
             .await
             .expect("Failed to create user");
         
@@ -133,7 +135,7 @@ mod database_tests {
         };
         
         // Create a test user
-        let user_id = db.create_user("eventtest@example.com", "hashed_token")
+        let user_id = db.create_user("eventtest@example.com", Some("eventtest"))
             .await
             .expect("Failed to create user");
         
@@ -244,8 +246,9 @@ mod database_tests {
         };
 
         // Create test user
-        let email = format!("conflict_test_{}@example.com", Uuid::new_v4());
-        let user_id = db.create_user(&email, "test-token-hash").await.expect("Failed to create user");
+        let username = format!("conflict_test_{}", &Uuid::new_v4().to_string()[..8]);
+        let email = format!("{}@example.com", username);
+        let user_id = db.create_user(&email, Some(&username)).await.expect("Failed to create user");
 
         // Create document v1 on "server"
         let doc_id = Uuid::new_v4();
@@ -335,8 +338,9 @@ mod database_tests {
         };
 
         // Create test user
-        let email = format!("conflict_update_{}@example.com", Uuid::new_v4());
-        let user_id = db.create_user(&email, "test-token-hash").await.expect("Failed to create user");
+        let username = format!("conflict_update_{}", &Uuid::new_v4().to_string()[..8]);
+        let email = format!("{}@example.com", username);
+        let user_id = db.create_user(&email, Some(&username)).await.expect("Failed to create user");
 
         // Create initial document
         let doc_id = Uuid::new_v4();
@@ -417,8 +421,9 @@ mod database_tests {
         };
 
         // Create test user
-        let email = format!("query_test_{}@example.com", Uuid::new_v4());
-        let user_id = db.create_user(&email, "test-token-hash").await.expect("Failed to create user");
+        let username = format!("query_test_{}", &Uuid::new_v4().to_string()[..8]);
+        let email = format!("{}@example.com", username);
+        let user_id = db.create_user(&email, Some(&username)).await.expect("Failed to create user");
 
         // Create document with multiple conflicts
         let doc_id = Uuid::new_v4();

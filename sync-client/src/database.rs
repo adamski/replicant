@@ -227,7 +227,8 @@ impl ClientDatabase {
     }
 
     pub async fn delete_document(&self, document_id: &Uuid) -> SyncResult<()> {
-        sqlx::query("UPDATE documents SET deleted_at = datetime('now'), sync_status = ? WHERE id = ?")
+        sqlx::query("UPDATE documents SET deleted_at = ?, sync_status = ? WHERE id = ?")
+            .bind(chrono::Utc::now())
             .bind(SyncStatus::Pending.to_string())
             .bind(document_id.to_string())
             .execute(&self.pool)

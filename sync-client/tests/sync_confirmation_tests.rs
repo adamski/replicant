@@ -1,122 +1,67 @@
-use sync_client::ClientDatabase;
-use sync_core::models::{Document, VectorClock};
+mod common;
+
+use common::*;
 use sqlx::Row;
 use uuid::Uuid;
-use chrono::Utc;
-use serde_json::json;
 
+
+/// This test verifies that documents received from the server are immediately
+/// marked as synced, not pending
 #[tokio::test]
 async fn test_documents_from_server_are_saved_as_synced() {
-    // This test verifies that documents received from the server are immediately
-    // marked as synced, not pending
-    
-    let db_url = "sqlite::memory:";
-    let db = ClientDatabase::new(db_url).await.unwrap();
-    db.run_migrations().await.unwrap();
-    
-    // Create a document that simulates one coming from the server
+   
+    let db = setup_test_db().await;
     let user_id = Uuid::new_v4();
-    let doc_id = Uuid::new_v4();
-    let content = json!({"title": "Server Document", "text": "Content from server"});
-    let doc = Document {
-        id: doc_id,
-        user_id,
-        content: content.clone(),
-        revision_id: "2-server123".to_string(),
-        version: 2,
-        vector_clock: VectorClock::new(),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        deleted_at: None,
-    };
-    
+    let mut doc = make_document(user_id, "Server Document", "Content from server", 2);
+        
     // When sync engine receives documents from server, it saves them and marks as synced
     // We'll simulate this by saving and then marking as synced
     db.save_document(&doc).await.unwrap();
-    db.mark_synced(&doc_id, &doc.revision_id).await.unwrap();
-    
+
+    db.mark_synced(&doc.id, &doc.revision_id).await.unwrap();
+
+    let sync_status = get_sync_status(&db, doc.id).await;
+
     // Verify it's marked as synced
-    let sync_status = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
-        .bind(doc_id.to_string())
-        .fetch_one(&db.pool)
-        .await
-        .unwrap()
-        .get::<String, _>(0);
-    
     assert_eq!(sync_status, "synced", "Documents from server should be marked as synced");
 }
 
+
+/// This test verifies that new local documents start as pending
 #[tokio::test]
 async fn test_new_local_documents_are_pending() {
-    // This test verifies that new local documents start as pending
-    
-    let db_url = "sqlite::memory:";
-    let db = ClientDatabase::new(db_url).await.unwrap();
-    db.run_migrations().await.unwrap();
-    
-    // Create a document locally (using default save_document method)
+
+
+    let db = setup_test_db().await;
     let user_id = Uuid::new_v4();
-    let doc_id = Uuid::new_v4();
-    let content = json!({"title": "Local Document", "text": "Local content"});
-    let doc = Document {
-        id: doc_id,
-        user_id,
-        content: content.clone(),
-        revision_id: Document::initial_revision(&content),
-        version: 1,
-        vector_clock: VectorClock::new(),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        deleted_at: None,
-    };
-    
+    let doc = make_document(user_id, "Local Document", "Local content", 1);
+
     // Save without specifying status (should default to pending)
     db.save_document(&doc).await.unwrap();
-    
-    // Verify it's marked as pending
-    let sync_status = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
-        .bind(doc_id.to_string())
-        .fetch_one(&db.pool)
-        .await
-        .unwrap()
-        .get::<String, _>(0);
-    
+
+    let sync_status = get_sync_status(&db, doc.id).await;    
     assert_eq!(sync_status, "pending", "New local documents should be marked as pending");
 }
 
+
+/// This test verifies the get_pending_documents method works correctly
 #[tokio::test]
 async fn test_pending_documents_can_be_retrieved() {
-    // This test verifies the get_pending_documents method works correctly
     
-    let db_url = "sqlite::memory:";
-    let db = ClientDatabase::new(db_url).await.unwrap();
-    db.run_migrations().await.unwrap();
-    
+    let db = setup_test_db().await;
     let user_id = Uuid::new_v4();
     let mut doc_ids = Vec::new();
     
     // Create mix of pending and synced documents
     for i in 0..5 {
-        let doc_id = Uuid::new_v4();
-        let content = json!({"title": format!("Document {}", i), "text": format!("Content {}", i)});
-        let doc = Document {
-            id: doc_id,
-            user_id,
-            content: content.clone(),
-            revision_id: format!("1-hash{}", i),
-            version: 1,
-            vector_clock: VectorClock::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            deleted_at: None,
-        };
+        let doc = make_document(user_id, &format!("Document {}", i), &format!("Content {}", i), 1);
         
-        doc_ids.push(doc_id);
+        doc_ids.push(doc.id);
         
         // Save every other document as synced, rest as pending
         if i % 2 == 0 {
             db.save_document(&doc).await.unwrap();
-            db.mark_synced(&doc_id, &doc.revision_id).await.unwrap();
+            db.mark_synced(&doc.id, &doc.revision_id).await.unwrap();
         } else {
             db.save_document(&doc).await.unwrap(); // defaults to pending
         }
@@ -136,52 +81,28 @@ async fn test_pending_documents_can_be_retrieved() {
     assert!(!pending_doc_ids.iter().any(|p| p.id == doc_ids[4]), "Document 4 should not be pending");
 }
 
+
+/// This test verifies that mark_synced properly updates the sync status
 #[tokio::test]
 async fn test_mark_synced_updates_status() {
-    // This test verifies that mark_synced properly updates the sync status
-    
-    let db_url = "sqlite::memory:";
-    let db = ClientDatabase::new(db_url).await.unwrap();
-    db.run_migrations().await.unwrap();
-    
+
+    let db = setup_test_db().await;
     let user_id = Uuid::new_v4();
-    let doc_id = Uuid::new_v4();
-    let content = json!({"title": "Test Document", "text": "Test content"});
-    let doc = Document {
-        id: doc_id,
-        user_id,
-        content: content.clone(),
-        revision_id: Document::initial_revision(&content),
-        version: 1,
-        vector_clock: VectorClock::new(),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        deleted_at: None,
-    };
+    let doc = make_document(user_id, "Test Document", "Test content", 1);
     
     // Save as pending
     db.save_document(&doc).await.unwrap();
     
     // Verify it's pending
-    let sync_status = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
-        .bind(doc_id.to_string())
-        .fetch_one(&db.pool)
-        .await
-        .unwrap()
-        .get::<String, _>(0);
+    let sync_status = get_sync_status(&db, doc.id).await;
     
     assert_eq!(sync_status, "pending", "Should start as pending");
     
     // Mark as synced
-    db.mark_synced(&doc_id, "2-confirmed").await.unwrap();
+    db.mark_synced(&doc.id, "2-confirmed").await.unwrap();
     
     // Verify it's now synced
-    let sync_status = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
-        .bind(doc_id.to_string())
-        .fetch_one(&db.pool)
-        .await
-        .unwrap()
-        .get::<String, _>(0);
-    
+    let sync_status = get_sync_status(&db, doc.id).await;
+
     assert_eq!(sync_status, "synced", "Should be marked as synced");
 }

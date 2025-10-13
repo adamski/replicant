@@ -52,3 +52,4 @@ target-docker/
 
 # Development test scripts
 test_*.sh
+.sqlx

@@ -66,27 +66,28 @@ impl AuthState {
             tracing::debug!("Demo token detected for user {}", user_id);
             
             // Check if user exists
-            let exists = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM users WHERE id = $1"
+            let exists = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM users WHERE id = $1",
+                user_id
             )
-            .bind(user_id)
             .fetch_one(&self.db.pool)
             .await?;
             
-            tracing::debug!("User {} exists: {}", user_id, exists > 0);
-            
-            if exists == 0 {
+            tracing::debug!("User {} exists: {}", user_id, exists.unwrap_or(0) > 0);
+
+            if exists.unwrap_or(0) == 0 {
                 // Create demo user with this ID
                 let demo_hash = Self::hash_token("demo-token")?;
                 
                 tracing::info!("Creating demo user with ID: {} and email: demo_{}@example.com", user_id, user_id);
-                
-                match sqlx::query(
-                    "INSERT INTO users (id, email, auth_token_hash, created_at) VALUES ($1, $2, $3, NOW())"
+
+                let email = format!("demo_{}@example.com", user_id);
+                match sqlx::query!(
+                    "INSERT INTO users (id, email, auth_token_hash, created_at) VALUES ($1, $2, $3, NOW())",
+                    user_id,
+                    email,
+                    demo_hash
                 )
-                .bind(user_id)
-                .bind(format!("demo_{}@example.com", user_id))
-                .bind(&demo_hash)
                 .execute(&self.db.pool)
                 .await {
                     Ok(_) => {
@@ -120,16 +121,16 @@ impl AuthState {
         }
         
         // Otherwise, verify against database
-        let result = sqlx::query_as::<_, (String,)>(
-            "SELECT auth_token_hash FROM users WHERE id = $1"
+        let result = sqlx::query!(
+            "SELECT auth_token_hash FROM users WHERE id = $1",
+            user_id
         )
-        .bind(user_id)
         .fetch_optional(&self.db.pool)
         .await?;
         
-        if let Some((auth_token_hash,)) = result {
+        if let Some(row) = result {
             // Verify the token against the stored hash
-            match Self::verify_token_hash(token, &auth_token_hash) {
+            match Self::verify_token_hash(token, &row.auth_token_hash) {
                 Ok(true) => {
                     // Create a new session for future requests
                     self.sessions.insert(*user_id, AuthSession {
@@ -139,10 +140,10 @@ impl AuthState {
                     });
                     
                     // Update last seen
-                    sqlx::query(
-                        "UPDATE users SET last_seen_at = NOW() WHERE id = $1"
+                    sqlx::query!(
+                        "UPDATE users SET last_seen_at = NOW() WHERE id = $1",
+                        user_id
                     )
-                    .bind(user_id)
                     .execute(&self.db.pool)
                     .await?;
                     
@@ -165,14 +166,15 @@ impl AuthState {
             // For now, we'll accept any non-empty token and create the user
             if !token.is_empty() {
                 let token_hash = Self::hash_token(token)?;
-                
+
                 // Create user with provided ID
-                match sqlx::query(
-                    "INSERT INTO users (id, email, auth_token_hash, created_at) VALUES ($1, $2, $3, NOW())"
+                let email = format!("user_{}@example.com", user_id);
+                match sqlx::query!(
+                    "INSERT INTO users (id, email, auth_token_hash, created_at) VALUES ($1, $2, $3, NOW())",
+                    user_id,
+                    email,
+                    token_hash
                 )
-                .bind(user_id)
-                .bind(format!("user_{}@example.com", user_id))
-                .bind(&token_hash)
                 .execute(&self.db.pool)
                 .await {
                     Ok(_) => {

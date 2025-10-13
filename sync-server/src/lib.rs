@@ -51,7 +51,7 @@ mod tests {
         
         // Create test user
         let email = format!("test_{}@example.com", Uuid::new_v4());
-        let user_id = db.create_user(&email, "hashed_token").await.unwrap();
+        let user_id = db.create_user(&email, None).await.unwrap();
         
         // Create test document
         let content = json!({

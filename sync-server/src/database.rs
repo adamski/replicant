@@ -54,17 +54,15 @@ impl ServerDatabase {
     pub async fn create_user(
         &self,
         email: &str,
-        username: Option<&str>,
     ) -> SyncResult<Uuid> {
         let row = sqlx::query(
             r#"
-            INSERT INTO users (email, username)
-            VALUES ($1, $2)
+            INSERT INTO users (email)
+            VALUES ($1)
             RETURNING id
         "#,
         )
         .bind(email)
-        .bind(username)
         .fetch_one(&self.pool)
         .await?;
 
@@ -84,21 +82,6 @@ impl ServerDatabase {
 
         Ok(result)
     }
-
-    pub async fn get_user_by_username(
-        &self,
-        username: &str,
-    ) -> SyncResult<Option<Uuid>> {
-        let result = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM users WHERE username = $1"
-        )
-        .bind(username)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(result)
-    }
-
 
     pub async fn create_document(&self, doc: &Document) -> SyncResult<()> {
         // Start a transaction to ensure atomicity

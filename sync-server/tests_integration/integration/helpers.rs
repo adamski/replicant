@@ -37,11 +37,34 @@ impl TestContext {
         }
     }
     
-    pub async fn create_test_user(&self, email: &str) -> Result<(Uuid, String), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn generate_test_credentials(&self, name: &str) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+        // Connect to test database
+        let pool = sqlx::postgres::PgPool::connect(&self.db_url).await?;
+
+        // Generate credentials using AuthState's generate_api_credentials()
+        use sync_server::auth::AuthState;
+        let credentials = AuthState::generate_api_credentials();
+
+        // Save to api_credentials table
+        sqlx::query(
+            "INSERT INTO api_credentials (api_key, secret, name) VALUES ($1, $2, $3)"
+        )
+        .bind(&credentials.api_key)
+        .bind(&credentials.secret)
+        .bind(name)
+        .execute(&pool)
+        .await?;
+
+        pool.close().await;
+
+        Ok((credentials.api_key, credentials.secret))
+    }
+
+    pub async fn create_test_user(&self, email: &str) -> Result<Uuid, Box<dyn std::error::Error + Send + Sync>> {
         // Create a new user via the server API
         let client = reqwest::Client::new();
         let server_base = self.server_url.replace("ws://", "http://").replace("wss://", "https://");
-        
+
         let response = client
             .post(&format!("{}/api/auth/create-user", server_base))
             .json(&serde_json::json!({
@@ -49,24 +72,23 @@ impl TestContext {
             }))
             .send()
             .await?;
-        
+
         if response.status().is_success() {
             let result: serde_json::Value = response.json().await?;
             let user_id = Uuid::parse_str(result["user_id"].as_str().unwrap())?;
-            let api_key = result["api_key"].as_str().unwrap().to_string();
-            Ok((user_id, api_key))
+            Ok(user_id)
         } else {
             Err(format!("Failed to create user: {}", response.status()).into())
         }
     }
     
-    pub async fn create_test_client(&self, user_id: Uuid, api_key: &str) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn create_test_client(&self, email: &str, user_id: Uuid, api_key: &str, api_secret: &str) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
         // Retry logic to handle authentication race conditions
         let max_retries = 3;
         let mut last_error = None;
-        
+
         for attempt in 0..max_retries {
-            match self.create_test_client_attempt(user_id, api_key, attempt).await {
+            match self.create_test_client_attempt(email, user_id, api_key, api_secret, attempt).await {
                 Ok(client) => return Ok(client),
                 Err(e) => {
                     last_error = Some(e);
@@ -79,11 +101,11 @@ impl TestContext {
                 }
             }
         }
-        
+
         Err(last_error.unwrap_or_else(|| "Unknown error creating test client".into()))
     }
-    
-    async fn create_test_client_attempt(&self, user_id: Uuid, api_key: &str, attempt: usize) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
+
+    async fn create_test_client_attempt(&self, email: &str, user_id: Uuid, api_key: &str, api_secret: &str, attempt: usize) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
         // Use a block to ensure the permit is released after connection
         let (db_path, ws_url) = {
             // Acquire semaphore permit to limit concurrent connections
@@ -125,8 +147,9 @@ impl TestContext {
         let engine = SyncClient::new(
             &db_path,
             &ws_url,
-            api_key,
-            &user_id.to_string()  // user_identifier for deterministic user ID
+            email,
+            api_key,      // rpa_ prefixed key
+            api_secret    // rps_ prefixed secret
         ).await?;
 
         // Small delay to ensure connection is established
@@ -141,23 +164,23 @@ impl TestContext {
         Ok(engine)
     }
     
-    pub async fn create_authenticated_websocket(&self, user_id: Uuid, token: &str) -> WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>> {
+    pub async fn create_authenticated_websocket(&self, email: &str, token: &str) -> WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>> {
         use futures_util::SinkExt;
         use tokio_tungstenite::tungstenite::Message;
         use sync_core::protocol::ClientMessage;
-        
+
         let url = format!("{}/ws", self.server_url);
-        
+
         let (mut ws_stream, _) = connect_async(&url)
             .await
             .expect("Failed to connect to WebSocket");
-        
+
         // Generate a unique client_id for this test connection
         let client_id = Uuid::new_v4();
-        
+
         // Send authentication message
         let auth_msg = ClientMessage::Authenticate {
-            user_id,
+            email: email.to_string(),
             client_id,
             api_key: Some(token.to_string()),
             signature: None,

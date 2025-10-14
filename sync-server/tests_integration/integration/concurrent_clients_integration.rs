@@ -6,20 +6,29 @@ use tokio::sync::Barrier;
 use futures_util::future;
 
 crate::integration_test!(test_many_concurrent_clients, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
+    let email = "alice@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-alice").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     let client_count = 20;
     
     // Create many clients concurrently
     let mut handles = Vec::new();
     let barrier = Arc::new(Barrier::new(client_count));
-    
+
     for i in 0..client_count {
         let ctx_clone = ctx.clone();
         let barrier_clone = barrier.clone();
-        
+        let api_key_clone = api_key.clone();
+        let api_secret_clone = api_secret.clone();
+
         let handle = tokio::spawn(async move {
-            let client = ctx_clone.create_test_client(user_id, token).await.expect("Failed to create client");
+            let client = ctx_clone.create_test_client(email, user_id, &api_key_clone, &api_secret_clone).await.expect("Failed to create client");
             
             // Wait for all clients to be ready
             barrier_clone.wait().await;
@@ -65,12 +74,19 @@ crate::integration_test!(test_many_concurrent_clients, |ctx: TestContext| async 
 });
 
 crate::integration_test!(test_concurrent_updates_same_document, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
+    let email = "bob@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-bob").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     let client_count = 10;
-    
+
     // First client creates the document
-    let client0 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let client0 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     let doc = client0.create_document(json!({"title": "Concurrent Update Target", "test": true})).await.unwrap();
     let doc_id = doc.id;
     
@@ -80,13 +96,15 @@ crate::integration_test!(test_concurrent_updates_same_document, |ctx: TestContex
     // Create multiple clients
     let mut handles = Vec::new();
     let barrier = Arc::new(Barrier::new(client_count));
-    
+
     for i in 0..client_count {
         let ctx_clone = ctx.clone();
         let barrier_clone = barrier.clone();
-        
+        let api_key_clone = api_key.clone();
+        let api_secret_clone = api_secret.clone();
+
         let handle = tokio::spawn(async move {
-            let client = ctx_clone.create_test_client(user_id, token).await.expect("Failed to create client");
+            let client = ctx_clone.create_test_client(email, user_id, &api_key_clone, &api_secret_clone).await.expect("Failed to create client");
             
             // Wait for automatic sync to get the document
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -134,7 +152,6 @@ crate::integration_test!(test_concurrent_updates_same_document, |ctx: TestContex
 });
 
 crate::integration_test!(test_server_under_load, |ctx: TestContext| async move {
-    let token = "demo-token";
     let user_count = 10;
     let docs_per_user = 20;
     
@@ -142,10 +159,17 @@ crate::integration_test!(test_server_under_load, |ctx: TestContext| async move {
     
     for user_idx in 0..user_count {
         let ctx_clone = ctx.clone();
-        
+
         let handle = tokio::spawn(async move {
-            let user_id = Uuid::new_v4();
-            let client = ctx_clone.create_test_client(user_id, token).await.expect("Failed to create client");
+            // Generate credentials for this user
+            let email = format!("user{}@test.local", user_idx);
+            let (api_key, api_secret) = ctx_clone.generate_test_credentials(&format!("test-user{}", user_idx)).await
+                .expect("Failed to generate credentials");
+
+            // Create user
+            let user_id = ctx_clone.create_test_user(&email).await.expect("Failed to create user");
+
+            let client = ctx_clone.create_test_client(&email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
             
             // Each user creates multiple documents
             for doc_idx in 0..docs_per_user {
@@ -194,8 +218,14 @@ crate::integration_test!(test_server_under_load, |ctx: TestContext| async move {
 });
 
 crate::integration_test!(test_connection_stability, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
+    let email = "charlie@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-charlie").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
     
     // Create multiple clients that connect and disconnect
     for round in 0..5 {
@@ -203,7 +233,7 @@ crate::integration_test!(test_connection_stability, |ctx: TestContext| async mov
         
         // Connect several clients
         for i in 0..5 {
-            let client = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+            let client = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
             
             // Create a document
             let _doc = client.create_document(
@@ -224,7 +254,7 @@ crate::integration_test!(test_connection_stability, |ctx: TestContext| async mov
     }
     
     // Final client should see all documents
-    let final_client = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let final_client = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     // Wait for automatic sync
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     

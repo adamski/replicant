@@ -47,7 +47,9 @@ pub struct SyncEngine {
     is_connected: Arc<AtomicBool>,
     last_ping_time: Arc<Mutex<Option<Instant>>>,
     server_url: String,
-    auth_token: String,
+    email: String,
+    api_key: String,
+    api_secret: String,
     // Channel for triggering pending sync after reconnection
     reconnect_sync_tx: mpsc::Sender<()>,
     reconnect_sync_rx: Option<mpsc::Receiver<()>>,
@@ -57,33 +59,35 @@ impl SyncEngine {
     pub async fn new(
         database_url: &str,
         server_url: &str,
-        auth_token: &str,
-        user_identifier: &str,
+        email: &str,
+        api_key: &str,
+        api_secret: &str,
     ) -> SyncResult<Self> {
         let db = Arc::new(ClientDatabase::new(database_url).await?);
         db.run_migrations().await?;
-        
-        // Ensure user_config exists with deterministic user ID based on identifier
-        db.ensure_user_config_with_identifier(server_url, auth_token, user_identifier).await?;
-        
+
+        // Ensure user_config exists with deterministic user ID based on email
+        db.ensure_user_config_with_identifier(server_url, email, email).await?;
+
         let (user_id, client_id) = db.get_user_and_client_id().await?;
         let node_id = format!("client_{}", user_id);
-        
+
         // Create the event dispatcher first
         let event_dispatcher = Arc::new(EventDispatcher::new());
-        
+
         // Create a channel for messages
         let (tx, rx) = mpsc::channel(100);
-        
+
         // Create a channel for reconnection sync triggers
         let (reconnect_sync_tx, reconnect_sync_rx) = mpsc::channel(10);
-        
+
         // Try to connect to WebSocket, but don't fail if offline
         let (ws_client, is_connected, initial_ping_time) = match WebSocketClient::connect(
-            server_url, 
-            user_id, 
-            client_id, 
-            auth_token,
+            server_url,
+            email,
+            client_id,
+            api_key,
+            api_secret,
             Some(event_dispatcher.clone())
         ).await {
             Ok((client, receiver)) => {
@@ -115,7 +119,9 @@ impl SyncEngine {
             is_connected: Arc::new(AtomicBool::new(is_connected)),
             last_ping_time: Arc::new(Mutex::new(initial_ping_time)),
             server_url: server_url.to_string(),
-            auth_token: auth_token.to_string(),
+            email: email.to_string(),
+            api_key: api_key.to_string(),
+            api_secret: api_secret.to_string(),
             reconnect_sync_tx,
             reconnect_sync_rx: Some(reconnect_sync_rx),
         };
@@ -1079,7 +1085,9 @@ impl SyncEngine {
         let is_connected = self.is_connected.clone();
         let ws_client = self.ws_client.clone();
         let server_url = self.server_url.clone();
-        let auth_token = self.auth_token.clone();
+        let email = self.email.clone();
+        let api_key = self.api_key.clone();
+        let api_secret = self.api_secret.clone();
         let user_id = self.user_id;
         let client_id = self.client_id;
         let event_dispatcher = self.event_dispatcher.clone();
@@ -1106,9 +1114,10 @@ impl SyncEngine {
                     // Try to connect
                     match WebSocketClient::connect(
                         &server_url,
-                        user_id,
+                        &email,
                         client_id,
-                        &auth_token,
+                        &api_key,
+                        &api_secret,
                         Some(event_dispatcher.clone())
                     ).await {
                         Ok((new_client, receiver)) => {

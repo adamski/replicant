@@ -159,12 +159,13 @@ private:
     SyncEngine* engine_;
     
 public:
-    simple_sync_engine(const std::string& database_url, 
-                      const std::string& server_url, 
-                      const std::string& auth_token,
-                      const std::string& user_identifier)
+    simple_sync_engine(const std::string& database_url,
+                      const std::string& server_url,
+                      const std::string& email,
+                      const std::string& api_key,
+                      const std::string& api_secret)
     {
-        engine_ = sync_engine_create(database_url.c_str(), server_url.c_str(), auth_token.c_str(), user_identifier.c_str());
+        engine_ = sync_engine_create(database_url.c_str(), server_url.c_str(), email.c_str(), api_key.c_str(), api_secret.c_str());
         if (!engine_)
         {
             throw std::runtime_error("Failed to create sync engine");
@@ -236,8 +237,8 @@ int main()
     
     try
     {
-        // Create sync engine
-        simple_sync_engine engine("sqlite::memory:", "ws://localhost:8080/ws", "simple-test-token", "simple-cpp-test@example.com");
+        // Create sync engine with HMAC authentication
+        simple_sync_engine engine("sqlite::memory:", "ws://localhost:8080/ws", "simple-cpp-test@example.com", "rpa_test_api_key_example_12345", "rps_test_api_secret_example_67890");
         std::cout << "✓ Sync engine created\n";
         
         // Register callback - this sets the callback thread to the current thread

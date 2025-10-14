@@ -36,20 +36,24 @@ pub async fn create_user(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateUserRequest>,
 ) -> SyncResult<Json<CreateUserResponse>> {
-    // Create user with email and optional username
-    let user_id = state.db.create_user(&req.email, req.username.as_deref())
+    // Create user with email only
+    let user_id = state.db.create_user(&req.email)
         .await
         .map_err(|e| {
             tracing::error!(%e, "Failed to create user");
             ApiError::bad_request(
                 "Failed to create user",
-                Some(format!("email: {}, username: {:?}", req.email, req.username)),
+                Some(format!("email: {}", req.email)),
             )
         })?;
 
     Ok(Json(CreateUserResponse { user_id }))
 }
 
+// TODO: These REST endpoints need to be updated to use HMAC authentication
+// Commented out temporarily to focus on WebSocket authentication
+
+/*
 pub async fn create_api_key(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateApiKeyRequest>,
@@ -78,7 +82,7 @@ pub async fn list_documents(
     // Verify API key
     let valid = state
         .auth
-        .verify_token(&auth.user_id, &auth.auth_token)
+        .verify_token(&auth.user_id, &auth.token)
         .await
         .map_err(|_| ApiError::internal("Invalid Token"))?;
 
@@ -140,3 +144,4 @@ pub async fn get_document(
 
     Ok(Json(document))
 }
+*/

@@ -44,13 +44,14 @@ pub struct Document {
 }
 
 /// Create a new sync engine instance
-/// 
+///
 /// # Arguments
 /// * `database_url` - SQLite database URL (e.g., "sqlite:client.db?mode=rwc")
-/// * `server_url` - WebSocket server URL (e.g., "ws://localhost:8080/ws")  
-/// * `auth_token` - Authentication token
-/// * `user_identifier` - User identifier (email or username)
-/// 
+/// * `server_url` - WebSocket server URL (e.g., "ws://localhost:8080/ws")
+/// * `email` - User email address
+/// * `api_key` - Application API key (rpa_ prefix)
+/// * `api_secret` - Application API secret (rps_ prefix)
+///
 /// # Returns
 /// * Pointer to SyncEngine on success, null on failure
 ///
@@ -60,10 +61,11 @@ pub struct Document {
 pub unsafe extern "C" fn sync_engine_create(
     database_url: *const c_char,
     server_url: *const c_char,
-    auth_token: *const c_char,
-    user_identifier: *const c_char,
+    email: *const c_char,
+    api_key: *const c_char,
+    api_secret: *const c_char,
 ) -> *mut SyncEngine {
-    if database_url.is_null() || server_url.is_null() || auth_token.is_null() || user_identifier.is_null() {
+    if database_url.is_null() || server_url.is_null() || email.is_null() || api_key.is_null() || api_secret.is_null() {
         return ptr::null_mut();
     }
 
@@ -77,12 +79,17 @@ pub unsafe extern "C" fn sync_engine_create(
         Err(_) => return ptr::null_mut(),
     };
 
-    let auth_token = match CStr::from_ptr(auth_token).to_str() {
+    let email = match CStr::from_ptr(email).to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
 
-    let user_identifier = match CStr::from_ptr(user_identifier).to_str() {
+    let api_key = match CStr::from_ptr(api_key).to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let api_secret = match CStr::from_ptr(api_secret).to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
@@ -110,7 +117,7 @@ pub unsafe extern "C" fn sync_engine_create(
 
     // Try to create sync engine (optional - can work offline)
     let engine = runtime.block_on(async {
-        let sync_engine = CoreSyncEngine::new(database_url, server_url, auth_token, user_identifier).await.ok()?;
+        let sync_engine = CoreSyncEngine::new(database_url, server_url, email, api_key, api_secret).await.ok()?;
         // We can't easily replace the event dispatcher in an existing SyncEngine,
         // so we'll use separate dispatchers for now. In a production system,
         // you'd want to refactor to share the same dispatcher.

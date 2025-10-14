@@ -50,26 +50,38 @@ mod full_sync_tests {
             .await
             .expect("Failed to run migrations");
         
+        // This test creates its own server, so it needs proper credential setup
+        // Generate HMAC credentials for testing
+        let credentials = sync_server::auth::AuthState::generate_api_credentials();
+
+        // Store credentials in database
+        sqlx::query(
+            "INSERT INTO api_credentials (api_key, secret, name) VALUES ($1, $2, $3)"
+        )
+        .bind(&credentials.api_key)
+        .bind(&credentials.secret)
+        .bind("full-sync-test")
+        .execute(&db.pool)
+        .await
+        .expect("Failed to insert API credentials");
+
         // Create test user
-        let test_user_id = Uuid::new_v4();
-        db.create_user("test@example.com", Some("testuser"))
+        let email = "test@example.com";
+        let test_user_id = db.create_user(email, Some("testuser"))
             .await
             .expect("Failed to create test user");
-        
+
         // App state
         #[derive(Clone)]
         struct AppState {
             db: Arc<ServerDatabase>,
             auth: AuthState,
         }
-        
+
         let app_state = Arc::new(AppState {
             db,
             auth: AuthState::new(),
         });
-        
-        // Create simple auth state for testing
-        app_state.auth.create_session(test_user_id, "test-token".to_string());
         
         // Build router
         let app = Router::new()
@@ -146,23 +158,25 @@ mod full_sync_tests {
         .expect("Failed to create schema");
         
         // Insert user config
-        let user_id = Uuid::new_v4();
+        let client_id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)"
+            "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)"
         )
-        .bind(user_id.to_string())
+        .bind(test_user_id.to_string())
+        .bind(client_id.to_string())
         .bind(&server_url)
-        .bind("test-token")
+        .bind(&credentials.api_key)
         .execute(&client_database.pool)
         .await
         .expect("Failed to insert user config");
-        
-        // Create sync engine
+
+        // Create sync engine with proper HMAC credentials
         let sync_engine = sync_client::SyncEngine::new(
             client_db,
             &server_url,
-            "test-token",
-            "test-user@example.com"
+            email,
+            &credentials.api_key,
+            &credentials.secret
         )
         .await
         .expect("Failed to create sync engine");

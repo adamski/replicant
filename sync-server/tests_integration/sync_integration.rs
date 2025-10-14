@@ -88,7 +88,8 @@ mod integration_tests {
         .await
         .expect("Failed to create schema");
         
-        // Insert test user config
+        // This test uses direct database operations, not the helper functions
+        // so it still uses a simple token for now
         let user_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)"

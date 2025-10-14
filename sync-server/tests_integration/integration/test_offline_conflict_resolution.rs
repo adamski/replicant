@@ -50,11 +50,13 @@ async fn create_persistent_client(
     .await?;
     
     // Create sync engine with persistent database
+    // Note: In these special tests that use persistent clients, we use the token as both api_key and placeholder secret
     let engine = SyncEngine::new(
         db_path,
         &format!("{}/ws", server_url),
+        "test-user@example.com",
         token,
-        "test-user@example.com"
+        token
     ).await?;
     
     // Give it time to connect (connection starts automatically)
@@ -85,9 +87,15 @@ async fn conflict_phase1_setup_and_sync() {
     let ctx = TestContext::new();
     
     // Create a test user
-    let (user_id, token) = ctx.create_test_user("conflict-test@example.com")
-        .await
-        .expect("Failed to create test user");
+    let email = "conflict-test@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-conflict").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+    let token = api_key.clone();  // Keep token variable for state persistence
     
     // Create two clients with persistent database files
     let test_dir = format!("/tmp/conflict_test_{}", user_id);
@@ -298,12 +306,17 @@ async fn conflict_phase3_server_recovery_and_resolution() {
     
     // Create clients that will reconnect and attempt to sync
     tracing::info!("Creating clients - they should reconnect and attempt sync...");
-    
-    let client1 = ctx.create_test_client(state.user_id, &state.token)
+
+    // We don't have email/credentials saved in state, so we'll create new ones
+    let email = "conflict-test@example.com";
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-conflict-recovery").await
+        .expect("Failed to generate credentials");
+
+    let client1 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 1");
-    
-    let client2 = ctx.create_test_client(state.user_id, &state.token)
+
+    let client2 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 2");
     
@@ -381,15 +394,19 @@ async fn conflict_phase4_detailed_analysis() {
     let ctx = TestContext::new();
     
     // Create multiple clients to verify final state consistency
-    let client1 = ctx.create_test_client(state.user_id, &state.token)
+    let email = "conflict-test@example.com";
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-conflict-verify").await
+        .expect("Failed to generate credentials");
+
+    let client1 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 1");
-    
-    let client2 = ctx.create_test_client(state.user_id, &state.token)
+
+    let client2 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 2");
-    
-    let client3 = ctx.create_test_client(state.user_id, &state.token)
+
+    let client3 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 3");
     

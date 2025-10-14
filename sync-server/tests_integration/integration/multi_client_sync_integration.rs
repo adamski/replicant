@@ -18,15 +18,20 @@ async fn test_multiple_clients_same_user_create_update_delete() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create a test user
-    let (user_id, token) = ctx.create_test_user("multi-client-test@example.com")
-        .await
-        .expect("Failed to create test user");
-    
+    let email = "multi-client-test@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-multi-client").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Create three clients for the same user
     tracing::info!("Creating 3 clients for user {}", user_id);
-    let client1 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 1");
-    let client2 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 2");
-    let client3 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 3");
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 1");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 2");
+    let client3 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 3");
     
     // Give clients time to fully connect and sync
     sleep(Duration::from_millis(500)).await;
@@ -111,17 +116,22 @@ async fn test_concurrent_document_creation_same_user() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create a test user
-    let (user_id, token) = ctx.create_test_user("concurrent-test@example.com")
-        .await
-        .expect("Failed to create test user");
-    
+    let email = "concurrent-test@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-concurrent").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Create multiple clients
     let num_clients = 5;
     let mut clients = Vec::new();
-    
+
     tracing::info!("Creating {} clients for concurrent testing", num_clients);
     for i in 0..num_clients {
-        let client = ctx.create_test_client(user_id, &token)
+        let client = ctx.create_test_client(email, user_id, &api_key, &api_secret)
             .await
             .expect(&format!("Failed to create client {}", i));
         clients.push(client);
@@ -184,11 +194,16 @@ async fn test_no_duplicate_broadcast_to_sender() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create a test user with single client
-    let (user_id, token) = ctx.create_test_user("no-duplicate@example.com")
-        .await
-        .expect("Failed to create test user");
-    
-    let client = ctx.create_test_client(user_id, &token).await.expect("Failed to create client");
+    let email = "no-duplicate@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-no-dup").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let client = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Give client time to connect
     sleep(Duration::from_millis(300)).await;
@@ -225,12 +240,17 @@ async fn test_offline_sync_recovery() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create a test user
-    let (user_id, token) = ctx.create_test_user("offline-test@example.com")
-        .await
-        .expect("Failed to create test user");
-    
+    let email = "offline-test@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-offline").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Create first client and add documents
-    let client1 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 1");
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 1");
     
     sleep(Duration::from_millis(300)).await;
     
@@ -256,7 +276,7 @@ async fn test_offline_sync_recovery() {
     
     // Now create and start client 2
     tracing::info!("Starting client 2 to test sync recovery");
-    let client2 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 2");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 2");
     
     // Verify client 2 receives all documents with latest state
     let expected_doc1_id = doc1.id;
@@ -288,13 +308,18 @@ async fn test_rapid_concurrent_updates() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create a test user
-    let (user_id, token) = ctx.create_test_user("rapid-update@example.com")
-        .await
-        .expect("Failed to create test user");
-    
+    let email = "rapid-update@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-rapid").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Create two clients
-    let client1 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 1");
-    let client2 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 2");
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 1");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 2");
     
     sleep(Duration::from_millis(300)).await;
     

@@ -2,24 +2,24 @@
 #include <iostream>
 #include <string>
 
-int main() 
+int main()
 {
-    try 
+    try
     {
-        // Create sync engine
+        // Create sync engine with HMAC authentication
         SyncClient::sync_engine engine(
             "sqlite:client.db?mode=rwc",
-            "ws://localhost:8080/ws", 
-            "demo-token",
-            "test-user@example.com"
+            "ws://localhost:8080/ws",
+            "test-user@example.com",
+            "rpa_test_api_key_example_12345",
+            "rps_test_api_secret_example_67890"
         );
         
         std::cout << "Sync client version: " << SyncClient::sync_engine::get_version() << std::endl;
-        
+
         // Create a document
         std::string doc_id = engine.create_document(
-            "My Document",
-            R"({"content":"Hello World","type":"note","priority":"medium"})"
+            R"({"title":"My Document","content":"Hello World","type":"note","priority":"medium"})"
         );
         
         std::cout << "Created document: " << doc_id << std::endl;

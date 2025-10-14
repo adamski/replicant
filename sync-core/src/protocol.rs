@@ -8,7 +8,7 @@ use strum::{Display, EnumString};
 pub enum ClientMessage {
     // Authentication
     Authenticate {
-        user_id: Uuid,
+        email: String,
         client_id: Uuid,
         #[serde(skip_serializing_if = "Option::is_none")]
         api_key: Option<String>,

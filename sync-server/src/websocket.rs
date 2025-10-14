@@ -55,66 +55,83 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                     }
                     
                     match client_msg {
-                        ClientMessage::Authenticate { user_id, client_id, api_key, signature, timestamp } => {
-                            // HMAC authentication if signature provided, otherwise API key authentication
-                            let auth_success = if let (Some(api_key), Some(signature), Some(timestamp)) =
-                                (api_key.as_ref(), signature.as_ref(), timestamp) {
-                                // HMAC authentication with signature verification
-                                match state.auth.verify_hmac(
-                                    &api_key,
-                                    &signature,
-                                    timestamp,
-                                    &user_id.to_string(),
-                                    ""
-                                ).await {
-                                    Ok(true) => true,
-                                    _ => {
-                                        // Fall back to user-specific API key verification
-                                        state.auth.verify_token(&user_id, &api_key).await.unwrap_or(false)
-                                    }
-                                }
-                            } else if let Some(api_key) = api_key.as_ref() {
-                                // API key authentication without HMAC
-                                state.auth.verify_token(&user_id, &api_key).await.unwrap_or(false)
-                            } else {
-                                // No authentication provided
-                                false
+                        ClientMessage::Authenticate { email, client_id, api_key, signature, timestamp } => {
+                            // All HMAC fields required
+                            let (Some(api_key), Some(signature), Some(timestamp)) =
+                                (api_key, signature, timestamp) else {
+                                let _ = tx.send(ServerMessage::AuthError {
+                                    reason: "Missing required authentication fields".to_string(),
+                                }).await;
+                                break;
                             };
 
-                            if auth_success {
-                                authenticated_user_id = Some(user_id);
-                                authenticated_client_id = Some(client_id);
-                                handler.set_user_id(user_id);
-                                handler.set_client_id(client_id);
+                            // Verify HMAC signature
+                            let auth_success = state.auth.verify_hmac(
+                                &api_key,
+                                &signature,
+                                timestamp,
+                                &email,
+                                ""
+                            ).await.unwrap_or(false);
 
-                                // Register client in the registry with both user_id and client_id
-                                state.clients.insert((user_id, client_id), tx.clone());
-
-                                // Update user_clients mapping
-                                state.user_clients.entry(user_id)
-                                    .and_modify(|clients| {
-                                        clients.insert(client_id);
-                                    })
-                                    .or_insert_with(|| {
-                                        let mut set = HashSet::new();
-                                        set.insert(client_id);
-                                        set
-                                    });
-
-                                // Log total client count
-                                let client_count = state.user_clients.get(&user_id).map(|c| c.len()).unwrap_or(0);
-                                tracing::info!("User {} now has {} total connected clients", user_id, client_count);
-
-                                let _ = tx.send(ServerMessage::AuthSuccess {
-                                    session_id: Uuid::new_v4(),
-                                    client_id,
-                                }).await;
-                            } else {
+                            if !auth_success {
                                 let _ = tx.send(ServerMessage::AuthError {
                                     reason: "Invalid credentials".to_string(),
                                 }).await;
                                 break;
                             }
+
+                            // Get or create user by email
+                            let user_id = match state.db.get_user_by_email(&email).await {
+                                Ok(Some(id)) => id,
+                                Ok(None) => {
+                                    match state.db.create_user(&email).await {
+                                        Ok(id) => id,
+                                        Err(e) => {
+                                            tracing::error!("Failed to create user: {}", e);
+                                            let _ = tx.send(ServerMessage::AuthError {
+                                                reason: "Failed to create user".to_string(),
+                                            }).await;
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to query user: {}", e);
+                                    let _ = tx.send(ServerMessage::AuthError {
+                                        reason: "Database error".to_string(),
+                                    }).await;
+                                    break;
+                                }
+                            };
+
+                            authenticated_user_id = Some(user_id);
+                            authenticated_client_id = Some(client_id);
+                            handler.set_user_id(user_id);
+                            handler.set_client_id(client_id);
+
+                            // Register client in the registry with both user_id and client_id
+                            state.clients.insert((user_id, client_id), tx.clone());
+
+                            // Update user_clients mapping
+                            state.user_clients.entry(user_id)
+                                .and_modify(|clients| {
+                                    clients.insert(client_id);
+                                })
+                                .or_insert_with(|| {
+                                    let mut set = HashSet::new();
+                                    set.insert(client_id);
+                                    set
+                                });
+
+                            // Log total client count
+                            let client_count = state.user_clients.get(&user_id).map(|c| c.len()).unwrap_or(0);
+                            tracing::info!("User {} (email: {}) now has {} total connected clients", user_id, email, client_count);
+
+                            let _ = tx.send(ServerMessage::AuthSuccess {
+                                session_id: Uuid::new_v4(),
+                                client_id,
+                            }).await;
                         }
                         _ => {
                             // Require authentication first

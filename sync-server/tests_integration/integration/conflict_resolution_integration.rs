@@ -4,11 +4,17 @@ use serde_json::json;
 use futures_util::future;
 
 crate::integration_test!(test_concurrent_edit_conflict_resolution, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let email = "alice@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-alice").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Both clients start with the same document
     let doc = client1.create_document(json!({"title": "Conflict Test", "test": true})).await.expect("Failed to create document");
@@ -37,11 +43,17 @@ crate::integration_test!(test_concurrent_edit_conflict_resolution, |ctx: TestCon
 });
 
 crate::integration_test!(test_delete_update_conflict, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let email = "bob@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-bob").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Create and sync document
     let doc = client1.create_document(json!({"title": "Delete-Update Conflict", "test": true})).await.expect("Failed to create document");
@@ -65,13 +77,19 @@ crate::integration_test!(test_delete_update_conflict, |ctx: TestContext| async m
 });
 
 crate::integration_test!(test_rapid_concurrent_updates, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
+    let email = "charlie@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-charlie").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Create multiple clients
     let mut clients = Vec::new();
     for _ in 0..5 {
-        clients.push(ctx.create_test_client(user_id, token).await.expect("Failed to create client"));
+        clients.push(ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client"));
     }
     
     // First client creates document
@@ -121,12 +139,18 @@ crate::integration_test!(test_rapid_concurrent_updates, |ctx: TestContext| async
 });
 
 crate::integration_test!(test_vector_clock_convergence, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client3 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let email = "dave@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-dave").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client3 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Create document on client 1
     let doc = client1.create_document(json!({"title": "Vector Clock Test", "test": true})).await.unwrap();

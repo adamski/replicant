@@ -153,11 +153,12 @@ async fn run_server() -> sync_core::SyncResult<()> {
     let app = Router::new()
         // WebSocket endpoint
         .route("/ws", get(websocket_handler))
-        // REST API
+        // REST API (partially disabled - update to use HMAC authentication)
         .route("/api/auth/create-user", post(api::create_user))
-        .route("/api/auth/create-api-key", post(api::create_api_key))
-        .route("/api/documents", get(api::list_documents))
-        .route("/api/documents/:id", get(api::get_document))
+        // TODO: Re-enable these after updating to use HMAC
+        // .route("/api/auth/create-api-key", post(api::create_api_key))
+        // .route("/api/documents", get(api::list_documents))
+        // .route("/api/documents/:id", get(api::get_document))
         // Health check
         .route("/health", get(|| async { "OK" }))
         .route("/test/reset", post(reset_server_state))

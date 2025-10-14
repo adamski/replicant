@@ -1,38 +1,21 @@
 use sync_server::auth::AuthState;
 
 #[test]
-fn test_token_generation_format() {
-    let token = AuthState::generate_api_key();
+fn test_api_credentials_generation() {
+    let creds = AuthState::generate_api_credentials();
 
-    // Should start with rpa_ prefix and be 68 characters total (rpa_ = 4 chars + 64 hex chars)
-    assert!(token.starts_with("rpa_"));
-    assert_eq!(token.len(), 68);
-}
+    // API key should start with rpa_ prefix and be 68 characters total
+    assert!(creds.api_key.starts_with("rpa_"));
+    assert_eq!(creds.api_key.len(), 68);
 
-#[test]
-fn test_token_hashing() {
-    let token = "test-token";
-    let hash1 = AuthState::hash_token(token).unwrap();
-    let hash2 = AuthState::hash_token(token).unwrap();
-    
-    // Same token should produce different hashes (due to salt)
-    assert_ne!(hash1, hash2);
-    
-    // Both hashes should verify correctly
-    assert!(AuthState::verify_token_hash(token, &hash1).unwrap());
-    assert!(AuthState::verify_token_hash(token, &hash2).unwrap());
-}
+    // Secret should start with rps_ prefix and be 68 characters total
+    assert!(creds.secret.starts_with("rps_"));
+    assert_eq!(creds.secret.len(), 68);
 
-#[test]
-fn test_invalid_hash_verification() {
-    let token = "test-token";
-    
-    // Invalid hash format should return error
-    assert!(AuthState::verify_token_hash(token, "invalid-hash").is_err());
-    
-    // Wrong token should fail verification
-    let hash = AuthState::hash_token(token).unwrap();
-    assert!(!AuthState::verify_token_hash("wrong-token", &hash).unwrap());
+    // Generate another set - should be unique
+    let creds2 = AuthState::generate_api_credentials();
+    assert_ne!(creds.api_key, creds2.api_key);
+    assert_ne!(creds.secret, creds2.secret);
 }
 
 #[cfg(test)]
@@ -87,7 +70,7 @@ mod database_tests {
         };
         
         // Create a test user
-        let user_id = db.create_user("test@example.com", Some("testuser"))
+        let user_id = db.create_user("test@example.com")
             .await
             .expect("Failed to create user");
         
@@ -135,7 +118,7 @@ mod database_tests {
         };
         
         // Create a test user
-        let user_id = db.create_user("eventtest@example.com", Some("eventtest"))
+        let user_id = db.create_user("eventtest@example.com")
             .await
             .expect("Failed to create user");
         
@@ -246,9 +229,8 @@ mod database_tests {
         };
 
         // Create test user
-        let username = format!("conflict_test_{}", &Uuid::new_v4().to_string()[..8]);
-        let email = format!("{}@example.com", username);
-        let user_id = db.create_user(&email, Some(&username)).await.expect("Failed to create user");
+        let email = format!("conflict_test_{}@example.com", &Uuid::new_v4().to_string()[..8]);
+        let user_id = db.create_user(&email).await.expect("Failed to create user");
 
         // Create document v1 on "server"
         let doc_id = Uuid::new_v4();
@@ -338,9 +320,8 @@ mod database_tests {
         };
 
         // Create test user
-        let username = format!("conflict_update_{}", &Uuid::new_v4().to_string()[..8]);
-        let email = format!("{}@example.com", username);
-        let user_id = db.create_user(&email, Some(&username)).await.expect("Failed to create user");
+        let email = format!("conflict_update_{}@example.com", &Uuid::new_v4().to_string()[..8]);
+        let user_id = db.create_user(&email).await.expect("Failed to create user");
 
         // Create initial document
         let doc_id = Uuid::new_v4();
@@ -421,9 +402,8 @@ mod database_tests {
         };
 
         // Create test user
-        let username = format!("query_test_{}", &Uuid::new_v4().to_string()[..8]);
-        let email = format!("{}@example.com", username);
-        let user_id = db.create_user(&email, Some(&username)).await.expect("Failed to create user");
+        let email = format!("query_test_{}@example.com", &Uuid::new_v4().to_string()[..8]);
+        let user_id = db.create_user(&email).await.expect("Failed to create user");
 
         // Create document with multiple conflicts
         let doc_id = Uuid::new_v4();

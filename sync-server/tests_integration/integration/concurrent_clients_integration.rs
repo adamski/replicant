@@ -1,5 +1,4 @@
 use crate::integration::helpers::*;
-use uuid::Uuid;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Barrier;

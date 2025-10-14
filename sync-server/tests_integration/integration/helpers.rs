@@ -6,6 +6,7 @@ use serde_json::json;
 use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
+use anyhow::{Result, Context};
 
 // Global semaphore to limit concurrent client connections in tests
 static CLIENT_CONNECTION_SEMAPHORE: tokio::sync::OnceCell<Arc<Semaphore>> = tokio::sync::OnceCell::const_new();
@@ -37,9 +38,10 @@ impl TestContext {
         }
     }
     
-    pub async fn generate_test_credentials(&self, name: &str) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn generate_test_credentials(&self, name: &str) -> Result<(String, String)> {
         // Connect to test database
-        let pool = sqlx::postgres::PgPool::connect(&self.db_url).await?;
+        let pool = sqlx::postgres::PgPool::connect(&self.db_url).await
+            .context("Failed to connect to test database")?;
 
         // Generate credentials using AuthState's generate_api_credentials()
         use sync_server::auth::AuthState;
@@ -53,14 +55,15 @@ impl TestContext {
         .bind(&credentials.secret)
         .bind(name)
         .execute(&pool)
-        .await?;
+        .await
+        .context("Failed to save test credentials")?;
 
         pool.close().await;
 
         Ok((credentials.api_key, credentials.secret))
     }
 
-    pub async fn create_test_user(&self, email: &str) -> Result<Uuid, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn create_test_user(&self, email: &str) -> Result<Uuid> {
         // Create a new user via the server API
         let client = reqwest::Client::new();
         let server_base = self.server_url.replace("ws://", "http://").replace("wss://", "https://");
@@ -74,15 +77,17 @@ impl TestContext {
             .await?;
 
         if response.status().is_success() {
-            let result: serde_json::Value = response.json().await?;
-            let user_id = Uuid::parse_str(result["user_id"].as_str().unwrap())?;
+            let result: serde_json::Value = response.json().await
+                .context("Failed to parse create user response")?;
+            let user_id = Uuid::parse_str(result["user_id"].as_str().unwrap())
+                .context("Failed to parse user_id from response")?;
             Ok(user_id)
         } else {
-            Err(format!("Failed to create user: {}", response.status()).into())
+            anyhow::bail!("Failed to create user: {}", response.status())
         }
     }
-    
-    pub async fn create_test_client(&self, email: &str, user_id: Uuid, api_key: &str, api_secret: &str) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
+
+    pub async fn create_test_client(&self, email: &str, user_id: Uuid, api_key: &str, api_secret: &str) -> Result<SyncClient> {
         // Retry logic to handle authentication race conditions
         let max_retries = 3;
         let mut last_error = None;
@@ -102,10 +107,10 @@ impl TestContext {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| "Unknown error creating test client".into()))
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error creating test client")))
     }
 
-    async fn create_test_client_attempt(&self, email: &str, user_id: Uuid, api_key: &str, api_secret: &str, attempt: usize) -> Result<SyncClient, Box<dyn std::error::Error + Send + Sync>> {
+    async fn create_test_client_attempt(&self, email: &str, user_id: Uuid, api_key: &str, api_secret: &str, attempt: usize) -> Result<SyncClient> {
         // Use a block to ensure the permit is released after connection
         let (db_path, ws_url) = {
             // Acquire semaphore permit to limit concurrent connections
@@ -228,15 +233,15 @@ impl TestContext {
         }
     }
     
-    pub async fn wait_for_server(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn wait_for_server(&self) -> Result<()> {
         let start = std::time::Instant::now();
         let max_wait = Duration::from_secs(30);
         
         loop {
             if start.elapsed() > max_wait {
-                return Err("Server did not become ready in time".into());
+                anyhow::bail!("Server did not become ready in time");
             }
-            
+
             // Try to connect
             match reqwest::get(&self.server_url.replace("ws://", "http://").replace("wss://", "https://"))
                 .await {
@@ -249,7 +254,7 @@ impl TestContext {
     }
 
     #[allow(dead_code)]
-    pub async fn reset_server_state(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn reset_server_state(&self) -> Result<()> {
         // Reset server in-memory state via API (much faster than restart)
         let client = reqwest::Client::new();
         let server_base = self.server_url.replace("ws://", "http://").replace("wss://", "https://");
@@ -258,11 +263,11 @@ impl TestContext {
             .post(&format!("{}/test/reset", server_base))
             .send()
             .await?;
-            
+
         if !response.status().is_success() {
-            return Err(format!("Failed to reset server state: {}", response.status()).into());
+            anyhow::bail!("Failed to reset server state: {}", response.status());
         }
-        
+
         Ok(())
     }
 
@@ -312,7 +317,7 @@ impl TestContext {
         pool.close().await;
     }
     
-    pub async fn full_teardown_and_setup(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn full_teardown_and_setup(&self) -> Result<()> {
         tracing::info!("Starting full teardown and setup for test isolation");
         
         // Step 1: Kill any existing sync-server processes
@@ -362,7 +367,7 @@ impl TestContext {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     
-    async fn recreate_database(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn recreate_database(&self) -> Result<()> {
         tracing::debug!("Recreating database for fresh state");
         
         // Extract database name from URL
@@ -396,9 +401,9 @@ impl TestContext {
         } else if current_dir.parent().map(|p| p.join("sync-server").exists()).unwrap_or(false) {
             current_dir.parent().unwrap().to_path_buf()
         } else {
-            return Err("Could not find project root directory".into());
+            anyhow::bail!("Could not find project root directory");
         };
-        
+
         let migration_result = tokio::process::Command::new("sqlx")
             .args(&["migrate", "run", "--source", "sync-server/migrations"])
             .current_dir(&project_root)
@@ -409,15 +414,15 @@ impl TestContext {
         if !migration_result.status.success() {
             let stderr = String::from_utf8_lossy(&migration_result.stderr);
             let stdout = String::from_utf8_lossy(&migration_result.stdout);
-            return Err(format!("Migration failed: stdout: {}, stderr: {}", stdout, stderr).into());
+            anyhow::bail!("Migration failed: stdout: {}, stderr: {}", stdout, stderr);
         }
         
         Ok(())
     }
     
-    pub async fn start_fresh_server(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn start_fresh_server(&self) -> Result<()> {
         tracing::debug!("Starting fresh sync-server instance");
-        
+
         // Find the project root directory
         let current_dir = std::env::current_dir()?;
         let project_root = if current_dir.join("sync-server").exists() {
@@ -425,7 +430,7 @@ impl TestContext {
         } else if current_dir.parent().map(|p| p.join("sync-server").exists()).unwrap_or(false) {
             current_dir.parent().unwrap().to_path_buf()
         } else {
-            return Err("Could not find project root directory".into());
+            anyhow::bail!("Could not find project root directory");
         };
         
         // Start the server in background

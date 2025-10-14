@@ -1,5 +1,4 @@
 use crate::integration::helpers::*;
-use uuid::Uuid;
 use serde_json::json;
 
 crate::integration_test!(test_demo_token_authentication, |ctx: TestContext| async move {

@@ -41,10 +41,20 @@ pub async fn create_user(
         .await
         .map_err(|e| {
             tracing::error!(%e, "Failed to create user");
-            ApiError::bad_request(
-                "Failed to create user",
-                Some(format!("email: {}", req.email)),
-            )
+
+            // Check if it's a unique constraint violation (email already exists)
+            if let sync_core::SyncError::DatabaseError(sqlx::Error::Database(ref db_err)) = e {
+                // PostgreSQL unique violation code is 23505
+                if db_err.code().as_deref() == Some("23505") {
+                    return ApiError::conflict(
+                        "User with this email already exists",
+                        Some(format!("email: {}", req.email))
+                    );
+                }
+            }
+
+            // All other database errors are server errors (connection issues, etc.)
+            ApiError::service_unavailable("Database temporarily unavailable")
         })?;
 
     Ok(Json(CreateUserResponse { user_id }))

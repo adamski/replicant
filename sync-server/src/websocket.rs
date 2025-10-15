@@ -66,13 +66,22 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<AppState>) {
                             };
 
                             // Verify HMAC signature
-                            let auth_success = state.auth.verify_hmac(
+                            let auth_success = match state.auth.verify_hmac(
                                 &api_key,
                                 &signature,
                                 timestamp,
                                 &email,
                                 ""
-                            ).await.unwrap_or(false);
+                            ).await {
+                                Ok(valid) => valid,
+                                Err(e) => {
+                                    tracing::error!("HMAC verification database error: {}", e);
+                                    let _ = tx.send(ServerMessage::AuthError {
+                                        reason: "Authentication service temporarily unavailable".to_string(),
+                                    }).await;
+                                    break;
+                                }
+                            };
 
                             if !auth_success {
                                 let _ = tx.send(ServerMessage::AuthError {

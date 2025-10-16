@@ -1808,15 +1808,14 @@ async fn setup_user(
     user_id: Uuid,
     client_id: Uuid,
     server_url: &str,
-    api_key: &str,
+    _api_key: &str,
 ) -> Result<(), Box<dyn Error>> {
     sqlx::query(
-        "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)",
     )
     .bind(user_id.to_string())
     .bind(client_id.to_string())
     .bind(server_url)
-    .bind(api_key)
     .execute(&db.pool)
     .await?;
     Ok(())

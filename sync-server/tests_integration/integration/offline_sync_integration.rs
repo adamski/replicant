@@ -46,12 +46,11 @@ async fn create_client_with_event_tracking(
     // Set up user config
     let client_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)"
+        "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)"
     )
     .bind(user_id.to_string())
     .bind(client_id.to_string())
     .bind(&format!("{}/ws", ctx.server_url))
-    .bind(token)
     .execute(&db.pool)
     .await?;
 

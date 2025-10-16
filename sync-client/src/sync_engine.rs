@@ -67,7 +67,7 @@ impl SyncEngine {
         db.run_migrations().await?;
 
         // Ensure user_config exists with deterministic user ID based on email
-        db.ensure_user_config_with_identifier(server_url, email, email).await?;
+        db.ensure_user_config_with_identifier(server_url, email).await?;
 
         let (user_id, client_id) = db.get_user_and_client_id().await?;
         let node_id = format!("client_{}", user_id);

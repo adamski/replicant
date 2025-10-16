@@ -51,8 +51,7 @@ mod integration_tests {
             CREATE TABLE user_config (
                 user_id TEXT PRIMARY KEY,
                 server_url TEXT NOT NULL,
-                last_sync_at TIMESTAMP,
-                auth_token TEXT
+                last_sync_at TIMESTAMP
             );
             
             CREATE TABLE documents (
@@ -89,14 +88,12 @@ mod integration_tests {
         .expect("Failed to create schema");
         
         // This test uses direct database operations, not the helper functions
-        // so it still uses a simple token for now
         let user_id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)"
+            "INSERT INTO user_config (user_id, server_url) VALUES (?1, ?2)"
         )
         .bind(user_id.to_string())
         .bind(&server_url)
-        .bind("test-token")
         .execute(&client_database.pool)
         .await
         .expect("Failed to insert user config");

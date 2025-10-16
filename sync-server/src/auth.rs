@@ -45,12 +45,6 @@ impl AuthState {
         self.sessions.remove(session_id);
     }
 
-    pub fn generate_api_key() -> String {
-        let mut rng = rand::thread_rng();
-        let random_bytes: [u8; 32] = rng.gen();
-        format!("rpa_{}", hex::encode(random_bytes))
-    }
-
     pub fn generate_api_credentials() -> ApiCredentials {
         let mut rng = rand::thread_rng();
         let api_key_bytes: [u8; 32] = rng.gen();

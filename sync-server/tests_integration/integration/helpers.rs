@@ -130,13 +130,13 @@ impl TestContext {
             let client_id = Uuid::new_v4();
             
             // Set up user config in the client database with client_id
+            // Note: API credentials are NOT stored in database - they're passed to SyncEngine
             sqlx::query(
-                "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)"
+                "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)"
             )
             .bind(user_id.to_string())
             .bind(client_id.to_string())
             .bind(&self.server_url)
-            .bind(api_key)
             .execute(&db.pool)
             .await?;
             

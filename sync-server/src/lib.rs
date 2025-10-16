@@ -86,15 +86,20 @@ mod tests {
     }
     
     #[test]
-    fn test_auth_token_generation() {
-        let token1 = auth::AuthState::generate_api_key();
-        let token2 = auth::AuthState::generate_api_key();
+    fn test_auth_credentials_generation() {
+        let creds1 = auth::AuthState::generate_api_credentials();
+        let creds2 = auth::AuthState::generate_api_credentials();
 
-        // Tokens should be unique
-        assert_ne!(token1, token2);
+        // Credentials should be unique
+        assert_ne!(creds1.api_key, creds2.api_key);
+        assert_ne!(creds1.secret, creds2.secret);
 
-        // Tokens should start with rpa_ prefix
-        assert!(token1.starts_with("rpa_"));
-        assert!(token2.starts_with("rpa_"));
+        // API keys should start with rpa_ prefix
+        assert!(creds1.api_key.starts_with("rpa_"));
+        assert!(creds2.api_key.starts_with("rpa_"));
+
+        // Secrets should start with rps_ prefix
+        assert!(creds1.secret.starts_with("rps_"));
+        assert!(creds2.secret.starts_with("rps_"));
     }
 }

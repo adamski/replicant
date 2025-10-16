@@ -29,15 +29,14 @@ mod tests {
     async fn test_client_database_operations() {
         // Create in-memory SQLite database
         let db = ClientDatabase::new(":memory:").await.unwrap();
-        
+
         // Create schema manually for in-memory database
         sqlx::query(
             r#"
             CREATE TABLE user_config (
                 user_id TEXT PRIMARY KEY,
                 server_url TEXT NOT NULL,
-                last_sync_at TIMESTAMP,
-                auth_token TEXT
+                last_sync_at TIMESTAMP
             );
             
             CREATE TABLE documents (
@@ -64,15 +63,14 @@ mod tests {
         // Insert test user
         let user_id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)"
+            "INSERT INTO user_config (user_id, server_url) VALUES (?1, ?2)"
         )
         .bind(user_id.to_string())
         .bind("ws://localhost:8080/ws")
-        .bind("test-token")
         .execute(&db.pool)
         .await
         .unwrap();
-        
+
         // Test get_user_id
         let retrieved_user_id = db.get_user_id().await.unwrap();
         assert_eq!(retrieved_user_id, user_id);
@@ -145,15 +143,14 @@ mod tests {
     async fn test_delete_document() {
         // Create in-memory SQLite database
         let db = ClientDatabase::new(":memory:").await.unwrap();
-        
+
         // Create schema manually for in-memory database
         sqlx::query(
             r#"
             CREATE TABLE user_config (
                 user_id TEXT PRIMARY KEY,
                 server_url TEXT NOT NULL,
-                last_sync_at TIMESTAMP,
-                auth_token TEXT
+                last_sync_at TIMESTAMP
             );
             
             CREATE TABLE documents (
@@ -180,15 +177,14 @@ mod tests {
         // Insert test user
         let user_id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO user_config (user_id, server_url, auth_token) VALUES (?1, ?2, ?3)"
+            "INSERT INTO user_config (user_id, server_url) VALUES (?1, ?2)"
         )
         .bind(user_id.to_string())
         .bind("ws://localhost:8080/ws")
-        .bind("test-token")
         .execute(&db.pool)
         .await
         .unwrap();
-        
+
         // Create a test document
         let content = json!({
             "title": "Test Document",

@@ -32,6 +32,7 @@ rand = "0.8"
 hex = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
+subtle = "2.5"
 futures-util = "0.3"
 json-patch = "1.2"
 clap = { version = "4.4", features = ["derive"] }

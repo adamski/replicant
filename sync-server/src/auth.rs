@@ -1,11 +1,10 @@
-use uuid::Uuid;
-use dashmap::DashMap;
 use std::sync::Arc;
 use rand::Rng;
 use crate::database::ServerDatabase;
 use sync_core::SyncResult;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -16,33 +15,14 @@ pub struct ApiCredentials {
 
 #[derive(Clone)]
 pub struct AuthState {
-    sessions: Arc<DashMap<Uuid, AuthSession>>,
     db: Arc<ServerDatabase>,
-}
-
-#[derive(Clone)]
-struct AuthSession {
-    token: String,
 }
 
 impl AuthState {
     pub fn new(db: Arc<ServerDatabase>) -> Self {
         Self {
-            sessions: Arc::new(DashMap::new()),
             db,
         }
-    }
-
-    pub fn create_session(&self, _user_id: Uuid, token: String) -> Uuid {
-        let session_id = Uuid::new_v4();
-        self.sessions.insert(session_id, AuthSession {
-            token,
-        });
-        session_id
-    }
-
-    pub fn remove_session(&self, session_id: &Uuid) {
-        self.sessions.remove(session_id);
     }
 
     pub fn generate_api_credentials() -> ApiCredentials {
@@ -128,8 +108,8 @@ impl AuthState {
         // Compute expected signature
         let expected = Self::create_hmac_signature(&secret, timestamp, email, api_key, body);
 
-        // Constant-time comparison
-        if signature != expected {
+        // Constant-time comparison to prevent timing attacks
+        if !bool::from(signature.as_bytes().ct_eq(expected.as_bytes())) {
             tracing::warn!("HMAC signature mismatch");
             return Ok(false);
         }

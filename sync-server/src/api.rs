@@ -1,8 +1,7 @@
 use crate::AppState;
 use sync_core::{SyncResult, errors::ApiError};
 use axum::{
-    extract::{Path, State},
-    response::IntoResponse,
+    extract::State,
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -12,24 +11,11 @@ use uuid::Uuid;
 #[derive(Deserialize)]
 pub struct CreateUserRequest {
     email: String,
-    #[serde(default)]
-    username: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct CreateUserResponse {
     user_id: Uuid,
-}
-
-#[derive(Deserialize)]
-pub struct CreateApiKeyRequest {
-    user_id: Uuid,
-    name: String,
-}
-
-#[derive(Serialize)]
-pub struct CreateApiKeyResponse {
-    api_key: String,
 }
 
 pub async fn create_user(

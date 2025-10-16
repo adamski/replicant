@@ -1,19 +1,16 @@
--- Clean up authentication: email-only users, single api_credentials table with plaintext storage
+-- Consolidated HMAC authentication migration
+-- This replaces the previous 4 separate migrations for cleaner upgrade path
 
--- Remove username column (was added in previous migration)
-ALTER TABLE users DROP COLUMN IF EXISTS username;
-DROP INDEX IF EXISTS idx_users_username;
-
--- Remove password_hash if it still exists
+-- Remove password_hash column from users (no longer using password authentication)
 ALTER TABLE users DROP COLUMN IF EXISTS password_hash;
 
--- Drop api_keys table if exists (not needed)
+-- Drop old tables if they exist
 DROP TABLE IF EXISTS api_keys;
-
--- Drop old api_credentials and recreate clean
 DROP TABLE IF EXISTS api_credentials;
 
--- Create clean api_credentials table (plaintext storage)
+-- Create clean api_credentials table (plaintext storage for MVP)
+-- Note: Credentials are application-wide, not tied to individual users
+-- Multiple end-users can authenticate through the same application credentials
 CREATE TABLE api_credentials (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     api_key TEXT NOT NULL UNIQUE,
@@ -24,5 +21,6 @@ CREATE TABLE api_credentials (
     is_active BOOLEAN NOT NULL DEFAULT true
 );
 
+-- Indexes for efficient lookups
 CREATE INDEX idx_api_credentials_api_key ON api_credentials(api_key);
 CREATE INDEX idx_api_credentials_active ON api_credentials(is_active);

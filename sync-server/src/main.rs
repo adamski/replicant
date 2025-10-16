@@ -87,7 +87,7 @@ async fn generate_credentials(name: &str) -> sync_core::SyncResult<()> {
     println!("{}", "The secret will NEVER be shown again.".red());
     println!();
     println!("{}", "These credentials authenticate your APPLICATION.".cyan());
-    println!("{}", "End users will still provide their user_id when connecting.".cyan());
+    println!("{}", "End users will identify themselves by email when connecting.".cyan());
     println!();
     println!("{}", "Add to your client application:".bold());
     println!("{}", "----------------------------------------".cyan());

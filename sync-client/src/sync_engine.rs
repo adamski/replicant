@@ -1088,7 +1088,6 @@ impl SyncEngine {
         let email = self.email.clone();
         let api_key = self.api_key.clone();
         let api_secret = self.api_secret.clone();
-        let user_id = self.user_id;
         let client_id = self.client_id;
         let event_dispatcher = self.event_dispatcher.clone();
         let db = self.db.clone();

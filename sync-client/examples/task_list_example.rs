@@ -62,6 +62,10 @@ struct Cli {
     /// API key for authentication
     #[arg(short = 'k', long, default_value = "rpa_demo123456789012345678901234567890")]
     api_key: String,
+
+    /// API secret for authentication
+    #[arg(long, default_value = "rps_demo123456789012345678901234567890")]
+    api_secret: String,
 }
 
 #[derive(Clone)]
@@ -504,7 +508,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Create sync engine - automatic reconnection is now built-in
     let user_email = cli.user.clone().unwrap_or_else(|| "anonymous".to_string());
 
-    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.api_key, &user_email).await {
+    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &user_email, &cli.api_key, &cli.api_secret).await {
         Ok(engine) => {
             {
                 let mut app_state = state.lock().unwrap();

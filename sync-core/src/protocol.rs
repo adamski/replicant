@@ -8,9 +8,14 @@ use strum::{Display, EnumString};
 pub enum ClientMessage {
     // Authentication
     Authenticate {
-        user_id: Uuid,
+        email: String,
         client_id: Uuid,
-        auth_token: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timestamp: Option<i64>,
     },
     
     // Document operations

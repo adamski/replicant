@@ -50,42 +50,39 @@ impl ServerDatabase {
             .await?;
         Ok(())
     }
-    
-    pub async fn create_user(&self, email: &str, auth_token_hash: &str) -> SyncResult<Uuid> {
+
+    pub async fn create_user(
+        &self,
+        email: &str,
+    ) -> SyncResult<Uuid> {
         let row = sqlx::query(
             r#"
-            INSERT INTO users (email, auth_token_hash)
-            VALUES ($1, $2)
+            INSERT INTO users (email)
+            VALUES ($1)
             RETURNING id
         "#,
         )
-            .bind(email)
-            .bind(auth_token_hash)
-            .fetch_one(&self.pool)
-            .await?;
+        .bind(email)
+        .fetch_one(&self.pool)
+        .await?;
 
         Ok(row.get("id"))
-
     }
-    
-    pub async fn verify_auth_token(&self, user_id: &Uuid, token_hash: &str) -> SyncResult<bool> {
-        let row = sqlx::query(
-            r#"
-            SELECT COUNT(*) as count
-            FROM users
-            WHERE id = $1 AND auth_token_hash = $2
-        "#,
+
+    pub async fn get_user_by_email(
+        &self,
+        email: &str,
+    ) -> SyncResult<Option<Uuid>> {
+        let result = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM users WHERE email = $1"
         )
-            .bind(user_id)
-            .bind(token_hash)
-            .fetch_one(&self.pool)
-            .await?;
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
 
-        let count: i64 = row.get("count");
-        Ok(count > 0)
-
+        Ok(result)
     }
-    
+
     pub async fn create_document(&self, doc: &Document) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;

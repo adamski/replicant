@@ -117,6 +117,9 @@ pub enum ApiError {
     InternalServerError(String),
     BadRequest(String, Option<String>),
     Unauthorized(String),
+    ServiceUnavailable(String),
+    NotFound(String),
+    Conflict(String, Option<String>),
 }
 
 impl ApiError {
@@ -134,6 +137,21 @@ impl ApiError {
     pub fn unauthorized(message: impl Into<String>) -> Self {
         Self::Unauthorized(message.into())
     }
+
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::ServiceUnavailable(message.into())
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::NotFound(message.into())
+    }
+
+    pub fn conflict(message: impl Into<String>, meta: Option<String>) -> Self {
+        Self::Conflict(
+            message.into(),
+            meta.unwrap_or_else(|| "".to_string()).into(),
+        )
+    }
 }
 
 impl Display for ApiError {
@@ -145,7 +163,12 @@ impl Display for ApiError {
             ApiError::BadRequest(message, meta) => {
                 write!(f, "Status=400, BadRequest: {}. {}", message, meta.clone().unwrap_or_default())
             }
-            ApiError::Unauthorized(message) => write!(f, "Status=403, Unauthorized: {}", message),
+            ApiError::Unauthorized(message) => write!(f, "Status=401, Unauthorized: {}", message),
+            ApiError::ServiceUnavailable(message) => write!(f, "Status=503, ServiceUnavailable: {}", message),
+            ApiError::NotFound(message) => write!(f, "Status=404, NotFound: {}", message),
+            ApiError::Conflict(message, meta) => {
+                write!(f, "Status=409, Conflict: {}. {}", message, meta.clone().unwrap_or_default())
+            }
         }
     }
 }
@@ -165,6 +188,9 @@ impl IntoResponse for SyncError {
                     }
                     ApiError::BadRequest(message, _) => (StatusCode::BAD_REQUEST, message),
                     ApiError::Unauthorized(message) => (StatusCode::UNAUTHORIZED, message),
+                    ApiError::ServiceUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
+                    ApiError::NotFound(message) => (StatusCode::NOT_FOUND, message),
+                    ApiError::Conflict(message, _) => (StatusCode::CONFLICT, message),
                 }
             }
             _ => (

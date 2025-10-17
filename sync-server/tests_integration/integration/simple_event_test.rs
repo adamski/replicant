@@ -15,20 +15,25 @@ async fn test_simple_event_delivery() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create a test user
-    let (user_id, token) = ctx.create_test_user("simple-event-test@example.com")
-        .await
-        .expect("Failed to create test user");
-    
+    let email = "simple-event-test@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-simple-event").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Create first client
     tracing::info!("Creating client 1...");
-    let client1 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 1");
-    
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 1");
+
     // Give it time to fully connect
     sleep(Duration::from_millis(1000)).await;
-    
+
     // Create second client
     tracing::info!("Creating client 2...");
-    let client2 = ctx.create_test_client(user_id, &token).await.expect("Failed to create client 2");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client 2");
     
     // Give it time to fully connect
     sleep(Duration::from_millis(1000)).await;

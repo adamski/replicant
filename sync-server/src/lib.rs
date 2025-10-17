@@ -51,7 +51,7 @@ mod tests {
         
         // Create test user
         let email = format!("test_{}@example.com", Uuid::new_v4());
-        let user_id = db.create_user(&email, "hashed_token").await.unwrap();
+        let user_id = db.create_user(&email).await.unwrap();
         
         // Create test document
         let content = json!({
@@ -86,15 +86,20 @@ mod tests {
     }
     
     #[test]
-    fn test_auth_token_generation() {
-        let token1 = auth::AuthState::generate_auth_token();
-        let token2 = auth::AuthState::generate_auth_token();
-        
-        // Tokens should be unique
-        assert_ne!(token1, token2);
-        
-        // Tokens should be valid UUIDs
-        assert!(Uuid::parse_str(&token1).is_ok());
-        assert!(Uuid::parse_str(&token2).is_ok());
+    fn test_auth_credentials_generation() {
+        let creds1 = auth::AuthState::generate_api_credentials();
+        let creds2 = auth::AuthState::generate_api_credentials();
+
+        // Credentials should be unique
+        assert_ne!(creds1.api_key, creds2.api_key);
+        assert_ne!(creds1.secret, creds2.secret);
+
+        // API keys should start with rpa_ prefix
+        assert!(creds1.api_key.starts_with("rpa_"));
+        assert!(creds2.api_key.starts_with("rpa_"));
+
+        // Secrets should start with rps_ prefix
+        assert!(creds1.secret.starts_with("rps_"));
+        assert!(creds2.secret.starts_with("rps_"));
     }
 }

@@ -34,7 +34,6 @@ impl ClientDatabase {
     pub async fn ensure_user_config(
         &self,
         server_url: &str,
-        auth_token: &str,
     ) -> SyncResult<()> {
         // Check if user_config already exists
         let exists = sqlx::query("SELECT COUNT(*) as count FROM user_config")
@@ -48,11 +47,10 @@ impl ClientDatabase {
             let user_id = Uuid::new_v4();
             let client_id = Uuid::new_v4();
 
-            sqlx::query("INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)")
+            sqlx::query("INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)")
                 .bind(user_id.to_string())
                 .bind(client_id.to_string())
                 .bind(server_url)
-                .bind(auth_token)
                 .execute(&self.pool)
                 .await?;
         }
@@ -60,28 +58,27 @@ impl ClientDatabase {
         Ok(())
     }
     
-    pub async fn ensure_user_config_with_identifier(&self, server_url: &str, auth_token: &str, user_identifier: &str) -> SyncResult<()> {
+    pub async fn ensure_user_config_with_identifier(&self, server_url: &str, user_identifier: &str) -> SyncResult<()> {
         // Check if user_config already exists
         let exists = sqlx::query("SELECT COUNT(*) as count FROM user_config")
             .fetch_one(&self.pool)
             .await?;
-        
+
         let count: i64 = exists.try_get("count")?;
-        
+
         if count == 0 {
             // No user config exists, create with deterministic user ID
             let user_id = Self::generate_deterministic_user_id(user_identifier);
             let client_id = Uuid::new_v4(); // Client ID should always be unique per instance
-            
-            sqlx::query("INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)")
+
+            sqlx::query("INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)")
                 .bind(user_id.to_string())
                 .bind(client_id.to_string())
                 .bind(server_url)
-                .bind(auth_token)
                 .execute(&self.pool)
                 .await?;
         }
-        
+
         Ok(())
     }
     

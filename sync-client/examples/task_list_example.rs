@@ -59,9 +59,13 @@ struct Cli {
     #[arg(short, long, default_value = "ws://localhost:8080/ws")]
     server: String,
 
-    /// Authentication token
-    #[arg(short, long, default_value = "demo-token")]
-    token: String,
+    /// API key for authentication
+    #[arg(short = 'k', long, default_value = "rpa_demo123456789012345678901234567890")]
+    api_key: String,
+
+    /// API secret for authentication
+    #[arg(long, default_value = "rps_demo123456789012345678901234567890")]
+    api_secret: String,
 }
 
 #[derive(Clone)]
@@ -449,7 +453,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             
             // Client ID should always be unique per client instance
             let client_id = Uuid::new_v4();
-            setup_user(&db, id, client_id, &cli.server, &cli.token).await?;
+            setup_user(&db, id, client_id, &cli.server, &cli.api_key).await?;
             id
         }
     };
@@ -503,8 +507,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Create sync engine - automatic reconnection is now built-in
     let user_email = cli.user.clone().unwrap_or_else(|| "anonymous".to_string());
-    
-    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.token, &user_email).await {
+
+    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &user_email, &cli.api_key, &cli.api_secret).await {
         Ok(engine) => {
             {
                 let mut app_state = state.lock().unwrap();
@@ -1808,15 +1812,14 @@ async fn setup_user(
     user_id: Uuid,
     client_id: Uuid,
     server_url: &str,
-    token: &str,
+    _api_key: &str,
 ) -> Result<(), Box<dyn Error>> {
     sqlx::query(
-        "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)",
     )
     .bind(user_id.to_string())
     .bind(client_id.to_string())
     .bind(server_url)
-    .bind(token)
     .execute(&db.pool)
     .await?;
     Ok(())

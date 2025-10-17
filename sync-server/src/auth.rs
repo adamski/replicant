@@ -1,218 +1,145 @@
-use uuid::Uuid;
-use argon2::{
-    password_hash::{
-        rand_core::OsRng,
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString
-    },
-    Argon2
-};
-use dashmap::DashMap;
 use std::sync::Arc;
+use rand::Rng;
 use crate::database::ServerDatabase;
 use sync_core::SyncResult;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
 
-#[derive(Clone)]
-pub struct AuthState {
-    sessions: Arc<DashMap<Uuid, AuthSession>>,
-    db: Arc<ServerDatabase>,
+type HmacSha256 = Hmac<Sha256>;
+
+pub struct ApiCredentials {
+    pub api_key: String,
+    pub secret: String,
 }
 
 #[derive(Clone)]
-struct AuthSession {
-    #[allow(dead_code)]
-    user_id: Uuid,
-    token: String,
-    #[allow(dead_code)]
-    created_at: chrono::DateTime<chrono::Utc>,
+pub struct AuthState {
+    db: Arc<ServerDatabase>,
 }
 
 impl AuthState {
     pub fn new(db: Arc<ServerDatabase>) -> Self {
         Self {
-            sessions: Arc::new(DashMap::new()),
             db,
         }
     }
-    
-    pub fn hash_token(token: &str) -> SyncResult<String> {
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let password_hash = argon2.hash_password(token.as_bytes(), &salt)?;
-        Ok(password_hash.to_string())
-    }
-    
-    pub fn verify_token_hash(token: &str, hash: &str) -> SyncResult<bool> {
-        let parsed_hash = PasswordHash::new(hash)?;
-        let argon2 = Argon2::default();
-        Ok(argon2.verify_password(token.as_bytes(), &parsed_hash).is_ok())
-    }
-    
-    pub async fn verify_token(&self, user_id: &Uuid, token: &str) -> SyncResult<bool> {
-        tracing::debug!("Verifying token for user {}: token={}", user_id, token);
-        
-        // First check if we have an active session
-        // But for demo-token, we always need to ensure the user exists in DB
-        if token != "demo-token" {
-            if let Some(session) = self.sessions.get(user_id) {
-                if session.token == token {
-                    tracing::debug!("Found active session for user {}", user_id);
-                    return Ok(true);
-                }
-            }
+
+    pub fn generate_api_credentials() -> ApiCredentials {
+        let mut rng = rand::thread_rng();
+        let api_key_bytes: [u8; 32] = rng.gen();
+        let secret_bytes: [u8; 32] = rng.gen();
+
+        ApiCredentials {
+            api_key: format!("rpa_{}", hex::encode(api_key_bytes)),
+            secret: format!("rps_{}", hex::encode(secret_bytes)),
         }
-        
-        // Special handling for demo token - auto-create user if needed
-        if token == "demo-token" {
-            tracing::debug!("Demo token detected for user {}", user_id);
-            
-            // Check if user exists
-            let exists = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM users WHERE id = $1"
-            )
-            .bind(user_id)
-            .fetch_one(&self.db.pool)
-            .await?;
-            
-            tracing::debug!("User {} exists: {}", user_id, exists > 0);
-            
-            if exists == 0 {
-                // Create demo user with this ID
-                let demo_hash = Self::hash_token("demo-token")?;
-                
-                tracing::info!("Creating demo user with ID: {} and email: demo_{}@example.com", user_id, user_id);
-                
-                match sqlx::query(
-                    "INSERT INTO users (id, email, auth_token_hash, created_at) VALUES ($1, $2, $3, NOW())"
-                )
-                .bind(user_id)
-                .bind(format!("demo_{}@example.com", user_id))
-                .bind(&demo_hash)
-                .execute(&self.db.pool)
-                .await {
-                    Ok(_) => {
-                        tracing::info!("Successfully created demo user with ID: {}", user_id);
-                    }
-                    Err(e) => {
-                        // Check if this is a duplicate key error (race condition)
-                        let error_string = e.to_string();
-                        if error_string.contains("duplicate key") || error_string.contains("unique constraint") {
-                            tracing::debug!("Demo user {} was created by another client concurrently - this is expected", user_id);
-                            // This is fine - another client created the user simultaneously
-                            // Continue with session creation
-                        } else {
-                            tracing::error!("Failed to create demo user with unexpected error: {}", e);
-                            return Err(e)?;
-                        }
-                    }
-                }
-            } else {
-                tracing::debug!("Demo user {} already exists in database", user_id);
-            }
-            
-            // Create session
-            self.sessions.insert(*user_id, AuthSession {
-                user_id: *user_id,
-                token: token.to_string(),
-                created_at: chrono::Utc::now(),
-            });
-            
-            return Ok(true);
-        }
-        
-        // Otherwise, verify against database
-        let result = sqlx::query_as::<_, (String,)>(
-            "SELECT auth_token_hash FROM users WHERE id = $1"
+    }
+
+    pub async fn save_credentials(
+        &self,
+        credentials: &ApiCredentials,
+        name: &str,
+    ) -> SyncResult<()> {
+        sqlx::query(
+            "INSERT INTO api_credentials (api_key, secret, name)
+             VALUES ($1, $2, $3)"
         )
-        .bind(user_id)
+        .bind(&credentials.api_key)
+        .bind(&credentials.secret)
+        .bind(name)
+        .execute(&self.db.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub fn create_hmac_signature(
+        secret: &str,
+        timestamp: i64,
+        email: &str,
+        api_key: &str,
+        body: &str,
+    ) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .expect("HMAC can take key of any size");
+
+        let message = format!("{}.{}.{}.{}", timestamp, email, api_key, body);
+        mac.update(message.as_bytes());
+
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    pub async fn verify_hmac(
+        &self,
+        api_key: &str,
+        signature: &str,
+        timestamp: i64,
+        email: &str,
+        body: &str,
+    ) -> SyncResult<bool> {
+        // Validate timestamp (5 minute window)
+        let now = chrono::Utc::now().timestamp();
+        if (now - timestamp).abs() > 300 {
+            tracing::warn!("HMAC timestamp outside 5-minute window");
+            return Ok(false);
+        }
+
+        // Check API key format
+        if !api_key.starts_with("rpa_") {
+            tracing::warn!("Invalid API key format - must start with rpa_");
+            return Ok(false);
+        }
+
+        // Look up credential by api_key (direct SELECT)
+        let result = sqlx::query_as::<_, (String,)>(
+            "SELECT secret FROM api_credentials
+             WHERE api_key = $1 AND is_active = true"
+        )
+        .bind(api_key)
         .fetch_optional(&self.db.pool)
         .await?;
-        
-        if let Some((auth_token_hash,)) = result {
-            // Verify the token against the stored hash
-            match Self::verify_token_hash(token, &auth_token_hash) {
-                Ok(true) => {
-                    // Create a new session for future requests
-                    self.sessions.insert(*user_id, AuthSession {
-                        user_id: *user_id,
-                        token: token.to_string(),
-                        created_at: chrono::Utc::now(),
-                    });
-                    
-                    // Update last seen
-                    sqlx::query(
-                        "UPDATE users SET last_seen_at = NOW() WHERE id = $1"
-                    )
-                    .bind(user_id)
-                    .execute(&self.db.pool)
-                    .await?;
-                    
-                    return Ok(true);
-                }
-                Ok(false) => return Ok(false),
-                Err(_) => return Ok(false), // Invalid hash format
-            }
-        } else {
-            // TODO: Implement proper auto-registration for all authenticated users
-            // Currently, only demo-token users are auto-created. In a production system,
-            // we should auto-register any user with valid authentication credentials
-            // (e.g., JWT from auth provider, API key, etc.) to support true user auto-registration.
-            // This would eliminate foreign key constraint violations when new users connect.
-            
-            tracing::debug!("User {} not found in database, attempting auto-registration", user_id);
-            
-            // User doesn't exist - auto-register if we have a valid token
-            // In a real system, you'd validate the token format or check against an auth provider
-            // For now, we'll accept any non-empty token and create the user
-            if !token.is_empty() {
-                let token_hash = Self::hash_token(token)?;
-                
-                // Create user with provided ID
-                match sqlx::query(
-                    "INSERT INTO users (id, email, auth_token_hash, created_at) VALUES ($1, $2, $3, NOW())"
-                )
-                .bind(user_id)
-                .bind(format!("user_{}@example.com", user_id))
-                .bind(&token_hash)
-                .execute(&self.db.pool)
-                .await {
-                    Ok(_) => {
-                        tracing::info!("Auto-registered new user with ID: {}", user_id);
-                        
-                        // Create session
-                        self.sessions.insert(*user_id, AuthSession {
-                            user_id: *user_id,
-                            token: token.to_string(),
-                            created_at: chrono::Utc::now(),
-                        });
-                        
-                        return Ok(true);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to auto-register user: {}", e);
-                        return Ok(false);
-                    }
-                }
-            }
+
+        let Some((secret,)) = result else {
+            tracing::warn!("API key not found");
+            return Ok(false);
+        };
+
+        // Compute expected signature
+        let expected = Self::create_hmac_signature(&secret, timestamp, email, api_key, body);
+
+        // Constant-time comparison to prevent timing attacks
+        if !bool::from(signature.as_bytes().ct_eq(expected.as_bytes())) {
+            tracing::warn!("HMAC signature mismatch");
+            return Ok(false);
         }
-        
-        Ok(false)
+
+        // Update last_used_at
+        sqlx::query("UPDATE api_credentials SET last_used_at = NOW() WHERE api_key = $1")
+            .bind(api_key)
+            .execute(&self.db.pool)
+            .await?;
+
+        Ok(true)
     }
-    
-    pub fn create_session(&self, user_id: Uuid, token: String) -> Uuid {
-        let session_id = Uuid::new_v4();
-        self.sessions.insert(session_id, AuthSession {
-            user_id,
-            token,
-            created_at: chrono::Utc::now(),
-        });
-        session_id
-    }
-    
-    pub fn remove_session(&self, session_id: &Uuid) {
-        self.sessions.remove(session_id);
-    }
-    
-    pub fn generate_auth_token() -> String {
-        Uuid::new_v4().to_string()
+
+    // Helper function for testing - verifies HMAC with known secret
+    #[cfg(test)]
+    pub fn verify_hmac_with_secret(
+        secret: &str,
+        api_key: &str,
+        signature: &str,
+        timestamp: i64,
+        email: &str,
+        body: &str,
+    ) -> bool {
+        let expected_signature = Self::create_hmac_signature(
+            secret,
+            timestamp,
+            email,
+            api_key,
+            body,
+        );
+        expected_signature == signature
     }
 }

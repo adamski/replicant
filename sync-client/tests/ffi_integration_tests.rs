@@ -81,14 +81,16 @@ extern "C" fn capture_callback(event: *const EventData, context: *mut c_void) {
 unsafe fn create_test_engine() -> *mut SyncEngine {
     let db_url = CString::new("sqlite::memory:").unwrap();
     let server_url = CString::new("ws://localhost:8080/ws").unwrap();
-    let auth_token = CString::new("test-token").unwrap();
-    let user_identifier = CString::new("test-user@example.com").unwrap();
+    let email = CString::new("test-user@example.com").unwrap();
+    let api_key = CString::new("rpa_test_api_key_example_12345").unwrap();
+    let api_secret = CString::new("rps_test_api_secret_example_67890").unwrap();
 
     sync_engine_create(
         db_url.as_ptr(),
         server_url.as_ptr(),
-        auth_token.as_ptr(),
-        user_identifier.as_ptr(),
+        email.as_ptr(),
+        api_key.as_ptr(),
+        api_secret.as_ptr(),
     )
 }
 

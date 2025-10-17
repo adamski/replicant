@@ -12,15 +12,95 @@ use sync_server::{
     auth::AuthState,
     monitoring::{self, MonitoringLayer},
     websocket::handle_websocket,
-    api,
     AppState,
 };
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "sync-server")]
+#[command(about = "Sync server with built-in credential management")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Generate new API credentials
+    GenerateCredentials {
+        /// Optional name for the credential set (e.g., "Production", "Staging")
+        #[arg(short, long, default_value = "Default")]
+        name: String,
+    },
+    /// Start the sync server
+    Serve,
+}
 
 #[tokio::main]
 async fn main() -> sync_core::SyncResult<()> {
+    // Parse command line arguments
+    let cli = Cli::parse();
+
+    // Handle different commands
+    match cli.command {
+        Some(Commands::GenerateCredentials { name }) => {
+            generate_credentials(&name).await
+        }
+        Some(Commands::Serve) | None => {
+            // Default to serve if no command specified (backward compatibility)
+            run_server().await
+        }
+    }
+}
+
+async fn generate_credentials(name: &str) -> sync_core::SyncResult<()> {
+    use colored::*;
+
+    // Initialize database connection
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgresql://localhost:5432/sync_db".to_string());
+
+    let db = Arc::new(ServerDatabase::new(&database_url).await?);
+
+    // Run migrations to ensure api_credentials table exists
+    db.run_migrations().await?;
+
+    let auth = AuthState::new(db);
+
+    // Generate credentials
+    let credentials = AuthState::generate_api_credentials();
+
+    // Save to database
+    auth.save_credentials(&credentials, name).await?;
+
+    // Display credentials
+    println!("{}", "========================================".cyan());
+    println!("{}", "API Credentials Generated Successfully".bold().green());
+    println!("{}", "========================================".cyan());
+    println!("Name:       {}", name.bold());
+    println!();
+    println!("API Key:    {}", credentials.api_key.yellow());
+    println!("Secret:     {}", credentials.secret.yellow());
+    println!();
+    println!("{}", "⚠️  IMPORTANT: Save these credentials securely!".bold().red());
+    println!("{}", "The secret will NEVER be shown again.".red());
+    println!();
+    println!("{}", "These credentials authenticate your APPLICATION.".cyan());
+    println!("{}", "End users will identify themselves by email when connecting.".cyan());
+    println!();
+    println!("{}", "Add to your client application:".bold());
+    println!("{}", "----------------------------------------".cyan());
+    println!("const API_KEY = \"{}\";", credentials.api_key);
+    println!("const API_SECRET = \"{}\";", credentials.secret);
+    println!("{}", "========================================".cyan());
+
+    Ok(())
+}
+
+async fn run_server() -> sync_core::SyncResult<()> {
     // Check if monitoring mode is enabled
     let monitoring_enabled = std::env::var("MONITORING").unwrap_or_default() == "true";
-    
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter("sync_server=debug,tower_http=debug")
@@ -72,11 +152,6 @@ async fn main() -> sync_core::SyncResult<()> {
     let app = Router::new()
         // WebSocket endpoint
         .route("/ws", get(websocket_handler))
-        // REST API
-        .route("/api/auth/register", post(api::register))
-        .route("/api/auth/login", post(api::login))
-        .route("/api/documents", get(api::list_documents))
-        .route("/api/documents/:id", get(api::get_document))
         // Health check
         .route("/health", get(|| async { "OK" }))
         .route("/test/reset", post(reset_server_state))

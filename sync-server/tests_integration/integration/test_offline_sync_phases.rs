@@ -40,21 +40,22 @@ async fn create_persistent_client(
     
     // Set up user config in the client database
     sqlx::query(
-        "INSERT OR REPLACE INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)"
+        "INSERT OR REPLACE INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)"
     )
     .bind(user_id.to_string())
     .bind(client_id.to_string())
     .bind(server_url)
-    .bind(token)
     .execute(&db.pool)
     .await?;
     
     // Create sync engine with persistent database
+    // Note: In these special tests that use persistent clients, we use the token as both api_key and placeholder secret
     let engine = SyncEngine::new(
         db_path,
         &format!("{}/ws", server_url),
+        "test-user@example.com",
         token,
-        "test-user@example.com"
+        token
     ).await?;
     
     // Give it time to connect (connection starts automatically)
@@ -85,9 +86,15 @@ async fn phase1_initial_sync() {
     let ctx = TestContext::new();
     
     // Create a test user
-    let (user_id, token) = ctx.create_test_user("offline-sync-test@example.com")
-        .await
-        .expect("Failed to create test user");
+    let email = "offline-sync-test@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, _) = ctx.generate_test_credentials("test-offline-phases").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+    let token = api_key.clone();  // Keep token variable for state persistence
     
     // Create two clients with persistent database files
     let test_dir = format!("/tmp/offline_sync_test_{}", user_id);
@@ -266,12 +273,17 @@ async fn phase3_sync_recovery() {
     
     // Create clients - they should reconnect and sync
     tracing::info!("Creating clients - they should reconnect to server...");
-    
-    let client1 = ctx.create_test_client(state.user_id, &state.token)
+
+    // We don't have email/credentials saved in state, so we'll create new ones
+    let email = "offline-sync-test@example.com";
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-offline-phases-recovery").await
+        .expect("Failed to generate credentials");
+
+    let client1 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 1");
-    
-    let client2 = ctx.create_test_client(state.user_id, &state.token)
+
+    let client2 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 2");
     
@@ -339,15 +351,19 @@ async fn phase4_verification() {
     let ctx = TestContext::new();
     
     // Create multiple clients to verify final state
-    let client1 = ctx.create_test_client(state.user_id, &state.token)
+    let email = "offline-sync-test@example.com";
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-offline-phases-verify").await
+        .expect("Failed to generate credentials");
+
+    let client1 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 1");
-    
-    let client2 = ctx.create_test_client(state.user_id, &state.token)
+
+    let client2 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 2");
-    
-    let client3 = ctx.create_test_client(state.user_id, &state.token)
+
+    let client3 = ctx.create_test_client(email, state.user_id, &api_key, &api_secret)
         .await
         .expect("Failed to create client 3");
     

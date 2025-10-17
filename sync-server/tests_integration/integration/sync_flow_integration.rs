@@ -1,14 +1,19 @@
 use crate::integration::helpers::*;
-use uuid::Uuid;
 use serde_json::json;
 
 crate::integration_test!(test_basic_sync_flow, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
+    let email = "alice@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-alice").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Create two clients with robust retry logic
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Client 1 creates a document
     let _doc = client1.create_document(json!({"title": "Sync Test Doc", "test": true})).await.expect("Failed to create document");
@@ -24,11 +29,17 @@ crate::integration_test!(test_basic_sync_flow, |ctx: TestContext| async move {
 });
 
 crate::integration_test!(test_bidirectional_sync, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let email = "bob@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-bob").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Both clients create documents
     let _doc1 = client1.create_document(json!({"title": "Doc from Client 1", "test": true})).await.expect("Failed to create document");
@@ -58,11 +69,17 @@ crate::integration_test!(test_bidirectional_sync, |ctx: TestContext| async move 
 });
 
 crate::integration_test!(test_update_propagation, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let email = "charlie@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-charlie").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Client 1 creates a document
     let doc = client1.create_document(json!({"title": "Update Test", "text": "Original content"})).await.expect("Failed to create document");
@@ -86,11 +103,17 @@ crate::integration_test!(test_update_propagation, |ctx: TestContext| async move 
 });
 
 crate::integration_test!(test_delete_propagation, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let email = "dave@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-dave").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Client 1 creates documents
     let _doc1 = client1.create_document(json!({"title": "Keep Me", "test": true})).await.expect("Failed to create document");
@@ -116,11 +139,17 @@ crate::integration_test!(test_delete_propagation, |ctx: TestContext| async move 
 });
 
 crate::integration_test!(test_large_document_sync, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client");
+    let email = "eve@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-eve").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client");
     
     // Create a large document
     let large_array: Vec<serde_json::Value> = (0..1000)
@@ -159,13 +188,19 @@ crate::integration_test!(test_large_document_sync, |ctx: TestContext| async move
 });
 
 crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
+    let email = "frank@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-frank").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Phase 1: All clients online and synced
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client1");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client2");
-    let client3 = ctx.create_test_client(user_id, token).await.expect("Failed to create client3");
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client1");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client2");
+    let client3 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client3");
     
     // Create initial shared document
     let shared_doc = client1.create_document(
@@ -201,7 +236,7 @@ crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestCo
     
     // Client 1 comes back and updates the document
     println!("🔌 Client1 reconnecting after outage...");
-    let client1_back = ctx.create_test_client(user_id, token).await.expect("Failed to reconnect client1");
+    let client1_back = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to reconnect client1");
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await; // Let it sync existing state
     
     let docs_before_update = client1_back.get_all_documents().await.unwrap();
@@ -215,7 +250,7 @@ crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestCo
     println!("✏️ Client1 made update after outage");
     
     // Client 2 comes back and makes conflicting update
-    let client2_back = ctx.create_test_client(user_id, token).await.expect("Failed to reconnect client2");
+    let client2_back = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to reconnect client2");
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // Let it sync existing state
     
     client2_back.update_document(
@@ -224,7 +259,7 @@ crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestCo
     ).await.expect("Failed to update from client2");
     
     // Client 3 comes back and also makes conflicting update
-    let client3_back = ctx.create_test_client(user_id, token).await.expect("Failed to reconnect client3");
+    let client3_back = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to reconnect client3");
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // Let it sync existing state
     
     client3_back.update_document(
@@ -272,12 +307,18 @@ crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestCo
 });
 
 crate::integration_test!(test_array_duplication_bug, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
+    let email = "grace@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-grace").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Create two clients with robust retry logic
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client1");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client2");
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client1");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client2");
     
     // Client 1 creates a document with an array
     let doc = client1.create_document(

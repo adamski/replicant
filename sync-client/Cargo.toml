@@ -7,7 +7,7 @@ edition = "2021"
 sync-core = { path = "../sync-core" }
 tokio = { workspace = true }
 tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
-sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "json", "uuid", "chrono"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "json", "uuid", "chrono", "tls-rustls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -17,6 +17,9 @@ tracing = { workspace = true }
 futures-util = "0.3"
 backoff = { version = "0.4", features = ["tokio"] }
 json-patch = "1.2"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]

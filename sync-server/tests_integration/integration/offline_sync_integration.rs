@@ -34,29 +34,31 @@ impl EventLog {
 async fn create_client_with_event_tracking(
     ctx: &TestContext,
     user_id: Uuid,
-    token: &str,
+    email: &str,
+    api_key: &str,
+    api_secret: &str,
 ) -> Result<(SyncEngine, Arc<Mutex<EventLog>>), Box<dyn std::error::Error + Send + Sync>> {
     // Create unique database for this client
     let db_path = format!("file:memdb_{}?mode=memory&cache=shared", Uuid::new_v4());
-    
+
     // Initialize the client database
     let db = sync_client::ClientDatabase::new(&db_path).await?;
     db.run_migrations().await?;
-    
+
     // Set up user config
     let client_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO user_config (user_id, client_id, server_url, auth_token) VALUES (?1, ?2, ?3, ?4)"
+        "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)"
     )
     .bind(user_id.to_string())
     .bind(client_id.to_string())
     .bind(&format!("{}/ws", ctx.server_url))
-    .bind(token)
     .execute(&db.pool)
     .await?;
-    
-    // Create sync engine (connection starts automatically)
-    let engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), token, "test-user@example.com").await?;
+
+
+    // Create sync engine with proper HMAC credentials
+    let engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), email, api_key, api_secret).await?;
 
     // Give it time to connect and perform initial sync
     sleep(Duration::from_millis(500)).await;
@@ -147,18 +149,23 @@ async fn test_offline_changes_sync_on_reconnect() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create a test user
-    let (user_id, token) = ctx.create_test_user("offline-sync-test@example.com")
-        .await
-        .expect("Failed to create test user");
+    let email = "offline-sync-test@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-offline-sync").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
     
-    // Create two clients with event tracking
+    // Create two clients with event tracking (this function manages its own setup)
     tracing::info!("Creating client 1...");
-    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, &token)
+    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await
         .expect("Failed to create client 1");
-    
+
     tracing::info!("Creating client 2...");
-    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, &token)
+    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await
         .expect("Failed to create client 2");
     
@@ -319,17 +326,22 @@ async fn test_task_list_scenario_with_events() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create a test user (simulating shared identity like alice@example.com)
-    let (user_id, token) = ctx.create_test_user("alice@tasks.com")
-        .await
-        .expect("Failed to create test user");
+    let email = "alice@tasks.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-alice-tasks").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
     
     // Create three clients simulating three devices
     tracing::info!("Creating 3 clients for Alice...");
-    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, &token)
+    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 1");
-    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, &token)
+    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 2");
-    let (client3, events3) = create_client_with_event_tracking(&ctx, user_id, &token)
+    let (client3, events3) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 3");
     
     // Process initial events
@@ -466,13 +478,19 @@ async fn test_rapid_updates_with_event_callbacks() {
     ctx.full_teardown_and_setup().await.expect("Failed to setup test environment");
     
     // Create test user
-    let (user_id, token) = ctx.create_test_user("rapid-test@example.com")
-        .await.expect("Failed to create test user");
+    let email = "rapid-test@example.com";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-rapid").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
     
     // Create two clients
-    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, &token)
+    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 1");
-    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, &token)
+    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 2");
     
     // Process initial events

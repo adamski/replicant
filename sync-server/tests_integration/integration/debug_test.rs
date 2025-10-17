@@ -1,13 +1,18 @@
 use crate::integration::helpers::*;
-use uuid::Uuid;
 use serde_json::json;
 
 crate::integration_test!(test_simple_broadcast, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
+    let email = "alice@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, api_secret) = ctx.generate_test_credentials("test-alice").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
     println!("Creating first client...");
-    let client1 = ctx.create_test_client(user_id, token).await.expect("Failed to create client1");
+    let client1 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client1");
     
     println!("Creating document from client1...");
     let doc1 = client1.create_document(json!({"title": "Doc from client 1", "test": true}))
@@ -18,7 +23,7 @@ crate::integration_test!(test_simple_broadcast, |ctx: TestContext| async move {
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
     println!("Creating second client...");
-    let client2 = ctx.create_test_client(user_id, token).await.expect("Failed to create client2");
+    let client2 = ctx.create_test_client(email, user_id, &api_key, &api_secret).await.expect("Failed to create client2");
     
     // Wait for sync
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;

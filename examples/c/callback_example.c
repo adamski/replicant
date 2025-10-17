@@ -42,13 +42,14 @@ void simple_callback(const EventData* event, void* context) {
 
 int main() {
     printf("=== Simple C Callback Test ===\n");
-    
-    /* Create sync engine */
+
+    /* Create sync engine with HMAC authentication */
     struct SyncEngine* engine = sync_engine_create(
         "sqlite::memory:",
         "ws://localhost:8080/ws",
-        "test-token",
-        "simple-test@example.com"
+        "simple-test@example.com",
+        "rpa_test_api_key_example_12345",
+        "rps_test_api_secret_example_67890"
     );
     
     if (!engine) {

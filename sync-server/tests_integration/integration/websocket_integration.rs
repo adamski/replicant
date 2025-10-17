@@ -8,11 +8,17 @@ use chrono::Utc;
 use serde_json::json;
 
 crate::integration_test!(test_websocket_connection_lifecycle, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
+    let email = "alice@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, _) = ctx.generate_test_credentials("test-alice").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let _ = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Connect to WebSocket
-    let mut ws = ctx.create_authenticated_websocket(user_id, token).await;
+    let mut ws = ctx.create_authenticated_websocket(email, &api_key).await;
     
     // Send a WebSocket ping frame
     ws.send(Message::Ping(vec![1, 2, 3])).await.unwrap();
@@ -42,9 +48,15 @@ crate::integration_test!(test_websocket_connection_lifecycle, |ctx: TestContext|
 });
 
 crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
+    let email = "bob@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, _) = ctx.generate_test_credentials("test-bob").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let _ = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Connect without authentication (raw websocket)
     let ws_url = format!("{}/ws", ctx.server_url);
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
@@ -52,9 +64,11 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
     // Send authenticate message
     let client_id = Uuid::new_v4();
     let auth_msg = ClientMessage::Authenticate {
-        user_id,
+        email: email.to_string(),
         client_id,
-        auth_token: token.to_string(),
+        api_key: Some(api_key.clone()),
+        signature: None,
+        timestamp: None,
     };
     let json_msg = serde_json::to_string(&auth_msg).unwrap();
     ws.send(Message::Text(json_msg)).await.unwrap();
@@ -82,9 +96,11 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
     
     // Test invalid authentication
     let bad_auth_msg = ClientMessage::Authenticate {
-        user_id,
+        email: email.to_string(),
         client_id,
-        auth_token: "invalid-token".to_string(),
+        api_key: Some("invalid-token".to_string()),
+        signature: None,
+        timestamp: None,
     };
     ws.send(Message::Text(serde_json::to_string(&bad_auth_msg).unwrap())).await.unwrap();
     
@@ -104,10 +120,16 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
 });
 
 crate::integration_test!(test_message_exchange, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
-    let mut ws = ctx.create_authenticated_websocket(user_id, token).await;
+    let email = "charlie@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, _) = ctx.generate_test_credentials("test-charlie").await
+        .expect("Failed to generate credentials");
+
+    // Create user - need user_id for Document creation below
+    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+
+    let mut ws = ctx.create_authenticated_websocket(email, &api_key).await;
     
     // Test protocol ping/pong with timeout
     let ping_msg = ClientMessage::Ping;
@@ -177,11 +199,17 @@ crate::integration_test!(test_message_exchange, |ctx: TestContext| async move {
 
 
 crate::integration_test!(test_reconnection_handling, |ctx: TestContext| async move {
-    let user_id = Uuid::new_v4();
-    let token = "demo-token";
-    
+    let email = "dave@test.local";
+
+    // Generate proper HMAC credentials
+    let (api_key, _) = ctx.generate_test_credentials("test-dave").await
+        .expect("Failed to generate credentials");
+
+    // Create user
+    let _ = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // First connection
-    let mut ws1 = ctx.create_authenticated_websocket(user_id, token).await;
+    let mut ws1 = ctx.create_authenticated_websocket(email, &api_key).await;
     
     // Send a ping to verify connection
     let ping_msg = ClientMessage::Ping;
@@ -204,9 +232,9 @@ crate::integration_test!(test_reconnection_handling, |ctx: TestContext| async mo
     
     // Wait a bit
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
+
     // Create second connection (reconnection)
-    let mut ws2 = ctx.create_authenticated_websocket(user_id, token).await;
+    let mut ws2 = ctx.create_authenticated_websocket(email, &api_key).await;
     
     // Verify second connection works
     ws2.send(Message::Text(serde_json::to_string(&ping_msg).unwrap())).await.unwrap();
@@ -225,9 +253,9 @@ crate::integration_test!(test_reconnection_handling, |ctx: TestContext| async mo
     
     // Test multiple rapid reconnections
     ws2.close(None).await.unwrap();
-    
+
     for i in 0..3 {
-        let mut ws = ctx.create_authenticated_websocket(user_id, token).await;
+        let mut ws = ctx.create_authenticated_websocket(email, &api_key).await;
         ws.send(Message::Text(serde_json::to_string(&ping_msg).unwrap())).await.unwrap();
         
         let response = tokio::time::timeout(

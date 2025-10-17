@@ -50,41 +50,39 @@ impl ServerDatabase {
             .await?;
         Ok(())
     }
-    
-    pub async fn create_user(&self, email: &str, auth_token_hash: &str) -> SyncResult<Uuid> {
+
+    pub async fn create_user(
+        &self,
+        email: &str,
+    ) -> SyncResult<Uuid> {
         let row = sqlx::query!(
             r#"
-            INSERT INTO users (email, auth_token_hash)
-            VALUES ($1, $2)
+            INSERT INTO users (email)
+            VALUES ($1)
             RETURNING id
         "#,
-            email,
-            auth_token_hash
+            email
         )
         .fetch_one(&self.pool)
         .await?;
 
         Ok(row.id)
-
     }
-    
-    pub async fn verify_auth_token(&self, user_id: &Uuid, token_hash: &str) -> SyncResult<bool> {
-        let count = sqlx::query_scalar!(
-            r#"
-            SELECT COUNT(*) as "count!"
-            FROM users
-            WHERE id = $1 AND auth_token_hash = $2
-        "#,
-            user_id,
-            token_hash
+
+    pub async fn get_user_by_email(
+        &self,
+        email: &str,
+    ) -> SyncResult<Option<Uuid>> {
+        let result = sqlx::query_scalar!(
+            "SELECT id FROM users WHERE email = $1",
+            email
         )
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(count > 0)
-
+        Ok(result)
     }
-    
+
     pub async fn create_document(&self, doc: &Document) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;

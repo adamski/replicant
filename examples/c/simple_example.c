@@ -3,14 +3,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-int main() 
+int main()
 {
-    // Create sync engine
+    // Create sync engine with HMAC authentication
     struct SyncEngine* engine = sync_engine_create(
         "sqlite:client.db?mode=rwc",
-        "ws://localhost:8080/ws", 
-        "demo-token",
-        "test-user@example.com"
+        "ws://localhost:8080/ws",
+        "test-user@example.com",
+        "rpa_test_api_key_example_12345",
+        "rps_test_api_secret_example_67890"
     );
     
     if (!engine) 

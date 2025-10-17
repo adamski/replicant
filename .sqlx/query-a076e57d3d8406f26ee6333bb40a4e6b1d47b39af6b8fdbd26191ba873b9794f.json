@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT sequence, document_id, user_id, event_type, revision_id, forward_patch, reverse_patch, created_at\n            FROM change_events\n            WHERE user_id = $1 AND sequence > $2\n            ORDER BY sequence ASC\n            LIMIT $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "event_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "revision_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "forward_patch",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "reverse_patch",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "a076e57d3d8406f26ee6333bb40a4e6b1d47b39af6b8fdbd26191ba873b9794f"
+}

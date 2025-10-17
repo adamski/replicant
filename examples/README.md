@@ -63,10 +63,11 @@ cmake --build .
 ## What the Examples Demonstrate
 
 ### simple_example.c
-- Creating a sync engine instance
+- Creating a sync engine instance with HMAC authentication
 - Basic document operations (create, update, delete)
 - Library version retrieval
 - Proper cleanup and error handling
+- API key and secret authentication
 
 ### callback_example.c
 - Event callback registration and handling
@@ -80,6 +81,7 @@ cmake --build .
 - Exception handling for sync operations
 - Modern C++ features (C++14)
 - Safe memory management
+- HMAC authentication with API credentials
 
 ### callback_example.cpp
 - Thread-safe event handling without mutexes
@@ -109,6 +111,8 @@ These examples can run in offline mode without a running sync server. They will:
 - Create local documents successfully
 - Store data in local SQLite database
 - Log connection errors (expected when no server is available)
+
+Note: Even in offline mode, the examples require API credentials to be provided. You can use placeholder values like "rpa_test" and "rps_test" for testing without a server.
 
 ## Event System Usage
 

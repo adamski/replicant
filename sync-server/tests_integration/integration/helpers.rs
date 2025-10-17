@@ -64,27 +64,21 @@ impl TestContext {
     }
 
     pub async fn create_test_user(&self, email: &str) -> Result<Uuid> {
-        // Create a new user via the server API
-        let client = reqwest::Client::new();
-        let server_base = self.server_url.replace("ws://", "http://").replace("wss://", "https://");
+        // Create user directly in database (since REST endpoint was removed)
+        // WebSocket auto-creation is the production flow, but tests need user_id upfront
+        let pool = sqlx::postgres::PgPool::connect(&self.db_url).await
+            .context("Failed to connect to test database")?;
 
-        let response = client
-            .post(&format!("{}/api/auth/create-user", server_base))
-            .json(&serde_json::json!({
-                "email": email
-            }))
-            .send()
-            .await?;
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, email) VALUES ($1, $2)")
+            .bind(user_id)
+            .bind(email)
+            .execute(&pool)
+            .await
+            .context("Failed to insert test user")?;
 
-        if response.status().is_success() {
-            let result: serde_json::Value = response.json().await
-                .context("Failed to parse create user response")?;
-            let user_id = Uuid::parse_str(result["user_id"].as_str().unwrap())
-                .context("Failed to parse user_id from response")?;
-            Ok(user_id)
-        } else {
-            anyhow::bail!("Failed to create user: {}", response.status())
-        }
+        pool.close().await;
+        Ok(user_id)
     }
 
     pub async fn create_test_client(&self, email: &str, user_id: Uuid, api_key: &str, api_secret: &str) -> Result<SyncClient> {

@@ -34,15 +34,17 @@ impl EventLog {
 async fn create_client_with_event_tracking(
     ctx: &TestContext,
     user_id: Uuid,
-    token: &str,
+    email: &str,
+    api_key: &str,
+    api_secret: &str,
 ) -> Result<(SyncEngine, Arc<Mutex<EventLog>>), Box<dyn std::error::Error + Send + Sync>> {
     // Create unique database for this client
     let db_path = format!("file:memdb_{}?mode=memory&cache=shared", Uuid::new_v4());
-    
+
     // Initialize the client database
     let db = sync_client::ClientDatabase::new(&db_path).await?;
     db.run_migrations().await?;
-    
+
     // Set up user config
     let client_id = Uuid::new_v4();
     sqlx::query(
@@ -55,9 +57,8 @@ async fn create_client_with_event_tracking(
     .await?;
 
 
-    // Create sync engine (connection starts automatically)
-    // Note: In these special tests that use persistent clients, we use the token as both api_key and placeholder secret
-    let engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), "test-user@example.com", token, token).await?;
+    // Create sync engine with proper HMAC credentials
+    let engine = SyncEngine::new(&db_path, &format!("{}/ws", ctx.server_url), email, api_key, api_secret).await?;
 
     // Give it time to connect and perform initial sync
     sleep(Duration::from_millis(500)).await;
@@ -158,14 +159,13 @@ async fn test_offline_changes_sync_on_reconnect() {
     let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
     
     // Create two clients with event tracking (this function manages its own setup)
-    // Use api_key as the "token" for backward compatibility with this test's custom setup
     tracing::info!("Creating client 1...");
-    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, &api_key)
+    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await
         .expect("Failed to create client 1");
 
     tracing::info!("Creating client 2...");
-    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, &api_key)
+    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await
         .expect("Failed to create client 2");
     
@@ -337,11 +337,11 @@ async fn test_task_list_scenario_with_events() {
     
     // Create three clients simulating three devices
     tracing::info!("Creating 3 clients for Alice...");
-    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, &api_key)
+    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 1");
-    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, &api_key)
+    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 2");
-    let (client3, events3) = create_client_with_event_tracking(&ctx, user_id, &api_key)
+    let (client3, events3) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 3");
     
     // Process initial events
@@ -488,9 +488,9 @@ async fn test_rapid_updates_with_event_callbacks() {
     let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
     
     // Create two clients
-    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, &api_key)
+    let (client1, events1) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 1");
-    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, &api_key)
+    let (client2, events2) = create_client_with_event_tracking(&ctx, user_id, email, &api_key, &api_secret)
         .await.expect("Failed to create client 2");
     
     // Process initial events

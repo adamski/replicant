@@ -89,7 +89,7 @@ async fn conflict_phase1_setup_and_sync() {
     let email = "conflict-test@example.com";
 
     // Generate proper HMAC credentials
-    let (api_key, api_secret) = ctx.generate_test_credentials("test-conflict").await
+    let (api_key, _) = ctx.generate_test_credentials("test-conflict").await
         .expect("Failed to generate credentials");
 
     // Create user

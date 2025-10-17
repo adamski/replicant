@@ -11,11 +11,11 @@ crate::integration_test!(test_websocket_connection_lifecycle, |ctx: TestContext|
     let email = "alice@test.local";
 
     // Generate proper HMAC credentials
-    let (api_key, api_secret) = ctx.generate_test_credentials("test-alice").await
+    let (api_key, _) = ctx.generate_test_credentials("test-alice").await
         .expect("Failed to generate credentials");
 
     // Create user
-    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+    let _ = ctx.create_test_user(email).await.expect("Failed to create user");
 
     // Connect to WebSocket
     let mut ws = ctx.create_authenticated_websocket(email, &api_key).await;
@@ -51,12 +51,12 @@ crate::integration_test!(test_authentication_flow, |ctx: TestContext| async move
     let email = "bob@test.local";
 
     // Generate proper HMAC credentials
-    let (api_key, api_secret) = ctx.generate_test_credentials("test-bob").await
+    let (api_key, _) = ctx.generate_test_credentials("test-bob").await
         .expect("Failed to generate credentials");
 
     // Create user
-    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
-    
+    let _ = ctx.create_test_user(email).await.expect("Failed to create user");
+
     // Connect without authentication (raw websocket)
     let ws_url = format!("{}/ws", ctx.server_url);
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
@@ -123,10 +123,10 @@ crate::integration_test!(test_message_exchange, |ctx: TestContext| async move {
     let email = "charlie@test.local";
 
     // Generate proper HMAC credentials
-    let (api_key, api_secret) = ctx.generate_test_credentials("test-charlie").await
+    let (api_key, _) = ctx.generate_test_credentials("test-charlie").await
         .expect("Failed to generate credentials");
 
-    // Create user
+    // Create user - need user_id for Document creation below
     let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
 
     let mut ws = ctx.create_authenticated_websocket(email, &api_key).await;
@@ -202,11 +202,11 @@ crate::integration_test!(test_reconnection_handling, |ctx: TestContext| async mo
     let email = "dave@test.local";
 
     // Generate proper HMAC credentials
-    let (api_key, api_secret) = ctx.generate_test_credentials("test-dave").await
+    let (api_key, _) = ctx.generate_test_credentials("test-dave").await
         .expect("Failed to generate credentials");
 
     // Create user
-    let user_id = ctx.create_test_user(email).await.expect("Failed to create user");
+    let _ = ctx.create_test_user(email).await.expect("Failed to create user");
 
     // First connection
     let mut ws1 = ctx.create_authenticated_websocket(email, &api_key).await;

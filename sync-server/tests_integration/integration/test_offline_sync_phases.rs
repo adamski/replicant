@@ -89,7 +89,7 @@ async fn phase1_initial_sync() {
     let email = "offline-sync-test@example.com";
 
     // Generate proper HMAC credentials
-    let (api_key, api_secret) = ctx.generate_test_credentials("test-offline-phases").await
+    let (api_key, _) = ctx.generate_test_credentials("test-offline-phases").await
         .expect("Failed to generate credentials");
 
     // Create user

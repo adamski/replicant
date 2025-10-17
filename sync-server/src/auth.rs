@@ -41,13 +41,13 @@ impl AuthState {
         credentials: &ApiCredentials,
         name: &str,
     ) -> SyncResult<()> {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO api_credentials (api_key, secret, name)
-             VALUES ($1, $2, $3)"
+             VALUES ($1, $2, $3)",
+            credentials.api_key,
+            credentials.secret,
+            name
         )
-        .bind(&credentials.api_key)
-        .bind(&credentials.secret)
-        .bind(name)
         .execute(&self.db.pool)
         .await?;
 
@@ -91,16 +91,16 @@ impl AuthState {
             return Ok(false);
         }
 
-        // Look up credential by api_key (direct SELECT)
-        let result = sqlx::query_as::<_, (String,)>(
+        // Look up credential by api_key
+        let secret: Option<String> = sqlx::query_scalar!(
             "SELECT secret FROM api_credentials
-             WHERE api_key = $1 AND is_active = true"
+             WHERE api_key = $1 AND is_active = true",
+            api_key
         )
-        .bind(api_key)
         .fetch_optional(&self.db.pool)
         .await?;
 
-        let Some((secret,)) = result else {
+        let Some(secret) = secret else {
             tracing::warn!("API key not found");
             return Ok(false);
         };
@@ -115,10 +115,12 @@ impl AuthState {
         }
 
         // Update last_used_at
-        sqlx::query("UPDATE api_credentials SET last_used_at = NOW() WHERE api_key = $1")
-            .bind(api_key)
-            .execute(&self.db.pool)
-            .await?;
+        sqlx::query!(
+            "UPDATE api_credentials SET last_used_at = NOW() WHERE api_key = $1",
+            api_key
+        )
+        .execute(&self.db.pool)
+        .await?;
 
         Ok(true)
     }

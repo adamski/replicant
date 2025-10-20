@@ -6,20 +6,20 @@ A client-server synchronization system built in Rust, featuring real-time WebSoc
 
 ## Features
 
-### 🔄 Real-Time Synchronization
+### Real-Time Synchronization
 - **WebSocket-based** bidirectional sync
 - **Vector clock** conflict detection for distributed systems
 - **Basic conflict resolution** with server-wins fallback
 - **Offline-first** design with local storage
 - **Concurrent update handling** with conflict detection
 
-### 📝 Version Control
+### Version Control
 - **JSON patches**: Forward patches for document changes
 - **Document versioning**: Each document has version and revision tracking
 - **Change events**: All modifications logged with sequence numbers
 - **Audit trails**: Changes logged with user attribution
 
-### 🗄️ Database Architecture
+### Database Architecture
 - **Client**: SQLite with offline queue and document caching
 - **Server**: PostgreSQL with JSONB support and event logging
 - **Change events**: Sequence-based sync with forward/reverse patch storage
@@ -66,27 +66,38 @@ cd sync-server
 sqlx migrate run
 ```
 
-4. **Start the server:**
+4. **Generate API credentials:**
 ```bash
-cargo run --bin sync-server
+cargo run --bin sync-server generate-credentials --name "My Application"
+```
+
+Save the generated API key and secret securely. The secret will not be shown again.
+
+5. **Start the server:**
+```bash
+cargo run --bin sync-server serve
 ```
 
 ### Try the Interactive Client
 
 ```bash
-# Uses demo authentication, creates database in databases/alice.sqlite3
-cargo run --package sync-client --example interactive_client
+# Using your generated API credentials
+cargo run --package sync-client --example interactive_client -- \
+    --api-key "rpa_your_api_key_here"
 
-# Or specify a different database name
-cargo run --package sync-client --example interactive_client -- --database bob
+# Or specify a different database and user
+cargo run --package sync-client --example interactive_client -- \
+    --database bob \
+    --api-key "rpa_your_api_key_here" \
+    --user-id "user@example.com"
 ```
 
 The interactive client provides a task management interface with:
-- ✅ Create, edit, and complete tasks
-- 🏷️ Priority levels and tags
-- 📋 Rich task listing with status indicators
-- 🔄 Real-time sync across multiple clients
-- 📱 Offline support with automatic sync when reconnected
+- Create, edit, and complete tasks
+- Priority levels and tags
+- Rich task listing with status indicators
+- Real-time sync across multiple clients
+- Offline support with automatic sync when reconnected
 
 ## API Usage
 
@@ -96,11 +107,12 @@ The interactive client provides a task management interface with:
 use sync_client::SyncEngine;
 use serde_json::json;
 
-// Connect to server
+// Connect to server with HMAC authentication
 let engine = SyncEngine::new(
     "sqlite:client.db?mode=rwc",
-    "ws://localhost:8080/ws", 
-    "demo-token"
+    "ws://localhost:8080/ws",
+    "rpa_your_api_key_here",
+    "user@example.com"
 ).await?;
 
 // Create a document
@@ -133,13 +145,13 @@ events.register_callback(
     |event_type, document_id, title, content, error, numeric_data, boolean_data, context| {
         match event_type {
             EventType::DocumentCreated => {
-                println!("📄 New document: {}", title.unwrap_or("untitled"));
+                println!("New document: {}", title.unwrap_or("untitled"));
             },
             EventType::DocumentUpdated => {
-                println!("✏️ Updated: {}", title.unwrap_or("untitled"));
+                println!("Updated: {}", title.unwrap_or("untitled"));
             },
             EventType::SyncCompleted => {
-                println!("🔄 Synced {} documents", numeric_data);
+                println!("Synced {} documents", numeric_data);
             },
             _ => {}
         }
@@ -161,15 +173,20 @@ loop {
 
 ### WebSocket API
 
-Connect to `ws://localhost:8080/ws` and authenticate:
+Connect to `ws://localhost:8080/ws` and authenticate with HMAC signature:
 
 ```json
 {
   "type": "authenticate",
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "auth_token": "demo-token"
+  "email": "user@example.com",
+  "client_id": "550e8400-e29b-41d4-a716-446655440000",
+  "api_key": "rpa_your_api_key_here",
+  "signature": "calculated_hmac_signature",
+  "timestamp": 1736525432
 }
 ```
+
+The HMAC signature is calculated as: `HMAC-SHA256(secret, "timestamp.email.api_key.body")`
 
 Create documents:
 ```json
@@ -228,17 +245,21 @@ The sync client includes a comprehensive event callback system for real-time not
 void my_callback(const SyncEventData* event, void* context) {
     switch (event->event_type) {
         case SYNC_EVENT_DOCUMENT_CREATED:
-            printf("📄 Document created: %s\n", event->title);
+            printf("Document created: %s\n", event->title);
             break;
         case SYNC_EVENT_SYNC_COMPLETED:
-            printf("🔄 Sync completed: %llu documents\n", event->numeric_data);
+            printf("Sync completed: %llu documents\n", event->numeric_data);
             break;
     }
 }
 
 int main() {
     struct CSyncEngine* engine = sync_engine_create(
-        "sqlite:client.db", "ws://localhost:8080/ws", "demo-token");
+        "sqlite:client.db",
+        "ws://localhost:8080/ws",
+        "user@example.com",
+        "rpa_your_api_key_here",
+        "rps_your_secret_here");
     
     // Register callback for all events
     sync_engine_register_event_callback(engine, my_callback, NULL, -1);
@@ -262,7 +283,9 @@ int main() {
 
 int main() {
     // Simple RAII wrapper
-    SyncEngine engine("sqlite:client.db", "ws://localhost:8080/ws", "demo-token");
+    SyncEngine engine("sqlite:client.db", "ws://localhost:8080/ws",
+                     "user@example.com", "rpa_your_api_key_here",
+                     "rps_your_secret_here");
     
     // Lambda callback with capture
     int event_count = 0;
@@ -306,11 +329,13 @@ See [FRAMEWORK_INTEGRATION.md](FRAMEWORK_INTEGRATION.md) for complete examples.
 #include <stdlib.h>
 
 int main() {
-    // Create sync engine (works both online and offline)
+    // Create sync engine with HMAC authentication
     struct CSyncEngine* engine = sync_engine_create(
         "sqlite:client.db?mode=rwc",
-        "ws://localhost:8080/ws", 
-        "demo-token"
+        "ws://localhost:8080/ws",
+        "user@example.com",
+        "rpa_your_api_key_here",
+        "rps_your_secret_here"
     );
     
     if (!engine) {
@@ -362,11 +387,13 @@ int main() {
 
 int main() {
     try {
-        // Works both online and offline
+        // Create engine with HMAC authentication
         SyncClient::sync_engine engine(
             "sqlite:client.db?mode=rwc",
-            "ws://localhost:8080/ws", 
-            "demo-token"
+            "ws://localhost:8080/ws",
+            "user@example.com",
+            "rpa_your_api_key_here",
+            "rps_your_secret_here"
         );
         
         std::cout << "Sync client version: " << SyncClient::sync_engine::get_version() << std::endl;
@@ -447,9 +474,9 @@ The system stores both forward and reverse patches for every document change:
 
 ### Benefits
 
-✅ **Complete Audit Trail**: All changes logged with recovery capabilities  
-✅ **Efficient Storage**: JSON patches store only the differences between versions
-✅ **Version History**: Forward and reverse patch support for future undo functionality  
+- **Complete Audit Trail**: All changes logged with recovery capabilities
+- **Efficient Storage**: JSON patches store only the differences between versions
+- **Version History**: Forward and reverse patch support for future undo functionality  
 
 ## Conflict Resolution
 
@@ -489,35 +516,51 @@ cargo test integration -- --test-threads=1
 
 ## Authentication
 
-The system supports demo mode for easy testing:
+The system uses a two-level authentication model with HMAC-based request signing:
 
-- **Demo token**: Use `demo-token` with any user ID
-- **Auto-registration**: Server automatically creates users for demo tokens
-- **Extensible design**: Authentication system ready for production enhancements
+### Authentication Levels
 
-### Production Considerations
+1. **Application Level**: API credentials authenticate the application
+   - API Key format: `rpa_*` (Replicant API)
+   - Secret format: `rps_*` (Replicant Secret)
+   - Credentials are generated using the CLI tool
+   - One set of credentials per application/environment
 
-For production deployment, you'll need to implement:
+2. **User Level**: Email identifies which user's data to access
+   - Users are identified by email address
+   - No passwords required (security handled at application level)
+   - User records created automatically on first authentication
 
-**Core Authentication Flow:**
-1. **User Registration**: Secure user creation with password hashing (system already uses Argon2)
-2. **Login/Session Management**: JWT or session tokens with expiry and refresh mechanisms
-3. **Token Validation**: Secure token verification with proper error handling
+### Generating Credentials
 
-**Security Requirements:**
-- **Session Storage**: Use Redis or distributed cache for session management
-- **Rate Limiting**: Prevent brute force attacks on authentication endpoints
-- **Password Security**: Already implemented with Argon2 hashing
-- **TLS/WSS**: Use secure WebSocket connections in production
-- **Audit Logging**: Track authentication events and failed attempts
+Generate API credentials using the server CLI:
 
-**Scalability Features:**
-- **Stateless Sessions**: Consider JWT for horizontal scaling
-- **Token Refresh**: Implement refresh tokens for better UX
-- **Multi-Factor Authentication**: Add TOTP or SMS verification
-- **OAuth2 Integration**: Support third-party authentication providers
+```bash
+cargo run --bin sync-server generate-credentials --name "Production"
+```
 
-The current implementation provides a solid foundation with secure hashing and extensible architecture.
+This outputs:
+```
+API Key:    rpa_a8d73487645ef2b9c3d4e5f6a7b8c9d0
+Secret:     rps_1f2e3d4c5b6a798897a6b5c4d3e2f1a0
+```
+
+**Important**: Save the secret securely - it will not be shown again.
+
+### HMAC Signature
+
+All authenticated requests require an HMAC-SHA256 signature:
+
+1. **Message format**: `timestamp.email.api_key.body`
+2. **Timestamp validation**: Requests expire after 5 minutes
+3. **Signature verification**: Prevents tampering and replay attacks
+
+### Security Considerations
+
+- **Transport Security**: Use WSS/HTTPS in production
+- **Credential Storage**: Store API secrets securely (environment variables, secrets manager)
+- **Rate Limiting**: Implement rate limiting to prevent brute force attempts
+- **Audit Logging**: Track authentication attempts and failures
 
 ## Performance & Security
 
@@ -527,9 +570,10 @@ The current implementation provides a solid foundation with secure hashing and e
 - **Patch-based storage** for efficient change tracking
 
 ### Security Features
-- Token-based authentication with secure hashing (Argon2)
+- HMAC-based authentication with timestamp validation
+- API credentials stored in database (plaintext for MVP)
 - Input validation for JSON patches
-- Demo token support for development
+- Replay attack prevention via timestamp checks
 
 ## License
 

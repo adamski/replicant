@@ -81,14 +81,16 @@ impl SyncEngine {
         // Create a channel for reconnection sync triggers
         let (reconnect_sync_tx, reconnect_sync_rx) = mpsc::channel(10);
 
+        let is_connected = Arc::new(AtomicBool::new(false));
         // Try to connect to WebSocket, but don't fail if offline
-        let (ws_client, is_connected, initial_ping_time) = match WebSocketClient::connect(
+        let (ws_client, initial_ping_time) = match WebSocketClient::connect(
             server_url,
             email,
             client_id,
             api_key,
             api_secret,
-            Some(event_dispatcher.clone())
+            Some(event_dispatcher.clone()),
+            is_connected.clone()
         ).await {
             Ok((client, receiver)) => {
                 // Start forwarding WebSocket messages to our channel
@@ -97,14 +99,13 @@ impl SyncEngine {
                         tracing::error!("WebSocket receiver error: {}", e);
                     }
                 });
-                (Some(client), true, Some(Instant::now()))
+                (Some(client), Some(Instant::now()))
             }
             Err(e) => {
-                tracing::warn!("Failed to connect to server (will retry): {}", e);
-                (None, false, None)
+                eprintln!("Failed to connect to server (will retry): {}", e);
+                (None, None)
             }
         };
-        
         let mut engine = Self {
             db: db.clone(),
             ws_client: Arc::new(Mutex::new(ws_client)),
@@ -116,7 +117,7 @@ impl SyncEngine {
             pending_uploads: Arc::new(Mutex::new(HashMap::new())),
             upload_complete_notifier: Arc::new(Notify::new()),
             sync_protection_mode: Arc::new(AtomicBool::new(false)),
-            is_connected: Arc::new(AtomicBool::new(is_connected)),
+            is_connected: is_connected,
             last_ping_time: Arc::new(Mutex::new(initial_ping_time)),
             server_url: server_url.to_string(),
             email: email.to_string(),
@@ -1117,7 +1118,8 @@ impl SyncEngine {
                         client_id,
                         &api_key,
                         &api_secret,
-                        Some(event_dispatcher.clone())
+                        Some(event_dispatcher.clone()),
+                        is_connected.clone()
                     ).await {
                         Ok((new_client, receiver)) => {
                             tracing::info!("✅ CLIENT {}: Reconnection successful after {} attempts!", client_id, connection_attempts);

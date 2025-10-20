@@ -6,6 +6,7 @@ use sync_core::{protocol::{ClientMessage, ServerMessage}, SyncResult, errors::Cl
 use crate::events::EventDispatcher;
 use backoff::{future::retry, ExponentialBackoff};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -14,6 +15,7 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(Clone)]
 pub struct WebSocketClient {
     tx: mpsc::Sender<ClientMessage>,
+    is_connected: Arc<AtomicBool>
 }
 
 pub struct WebSocketReceiver {
@@ -28,9 +30,10 @@ impl WebSocketClient {
         api_key: &str,
         api_secret: &str,
         event_dispatcher: Option<Arc<EventDispatcher>>,
+        is_connected: Arc<AtomicBool>
     ) -> SyncResult<(Self, WebSocketReceiver)> {
         // Delegate to connect_with_hmac (HMAC is now required)
-        Self::connect_with_hmac(server_url, email, client_id, api_key, api_secret, event_dispatcher).await
+        Self::connect_with_hmac(server_url, email, client_id, api_key, api_secret, event_dispatcher, is_connected).await
     }
 
     pub async fn connect_with_hmac(
@@ -40,6 +43,7 @@ impl WebSocketClient {
         api_key: &str,
         api_secret: &str,
         event_dispatcher: Option<Arc<EventDispatcher>>,
+        is_connected: Arc<AtomicBool>   
     ) -> SyncResult<(Self, WebSocketReceiver)> {
         let ws_stream = Self::connect_with_retry(server_url, 3, event_dispatcher).await?;
 
@@ -50,17 +54,20 @@ impl WebSocketClient {
         let (tx_recv, rx_recv) = mpsc::channel::<ServerMessage>(100);
 
         // Spawn writer task
+        is_connected.store(true, std::sync::atomic::Ordering::Relaxed);
+        let is_connected_d = is_connected.clone();
         tokio::spawn(async move {
             let mut write = write;
             while let Some(msg) = rx_send.recv().await {
                 let json = serde_json::to_string(&msg).unwrap();
                 if write.send(Message::Text(json)).await.is_err() {
-                    break;
+                    is_connected_d.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         });
 
         // Spawn reader task
+        let is_connected_d = is_connected.clone();
         tokio::spawn(async move {
             let mut read = read;
             while let Some(msg) = read.next().await {
@@ -72,7 +79,9 @@ impl WebSocketClient {
                             }
                         }
                     }
-                    Ok(Message::Close(_)) => break,
+                    Ok(Message::Close(_)) => {
+                        is_connected_d.store(false, std::sync::atomic::Ordering::Relaxed);
+                    },
                     _ => {}
                 }
             }
@@ -80,6 +89,7 @@ impl WebSocketClient {
 
         let client = Self {
             tx: tx_send.clone(),
+            is_connected: is_connected.clone()
         };
 
         let receiver = WebSocketReceiver {
@@ -158,8 +168,7 @@ impl WebSocketClient {
         self.tx
             .send(message)
             .await
-            .map_err(|_| ClientError::WebSocket("Failed to send message".to_string()))?;
-        Ok(())
+            .map_err(|_| ClientError::WebSocket("Failed to send message".to_string()).into())
     }
 
     fn create_hmac_signature(

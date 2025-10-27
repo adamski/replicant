@@ -29,9 +29,12 @@ mod database_tests {
         // Use DATABASE_URL environment variable if set, otherwise skip tests
         let database_url = std::env::var("DATABASE_URL")
             .map_err(|_| "DATABASE_URL environment variable not set. Set it to run database tests.")?;
-        
+
+        // Use test app namespace ID
+        let app_namespace_id = "com.example.sync-task-list".to_string();
+
         // Create a fresh connection for the test
-        let db = ServerDatabase::new(&database_url).await?;
+        let db = ServerDatabase::new(&database_url, app_namespace_id).await?;
         
         // Run migrations first
         db.run_migrations().await?;

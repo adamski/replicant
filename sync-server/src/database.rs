@@ -19,29 +19,30 @@ pub struct ChangeEventParams<'a> {
 
 pub struct ServerDatabase {
     pub pool: PgPool,
+    pub app_namespace_id: String,
 }
 
 impl ServerDatabase {
 
     #[instrument(skip(database_url))]
-    pub async fn new(database_url: &str) -> SyncResult<Self> {
+    pub async fn new(database_url: &str, app_namespace_id: String) -> SyncResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .connect(database_url)
             .await?;
-        
-        Ok(Self { pool })
+
+        Ok(Self { pool, app_namespace_id })
     }
     
-    pub async fn new_with_options(database_url: &str, max_connections: u32) -> SyncResult<Self> {
+    pub async fn new_with_options(database_url: &str, app_namespace_id: String, max_connections: u32) -> SyncResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
             .max_lifetime(std::time::Duration::from_secs(30))  // Short lifetime for tests
             .idle_timeout(std::time::Duration::from_secs(10))
             .connect(database_url)
             .await?;
-        
-        Ok(Self { pool })
+
+        Ok(Self { pool, app_namespace_id })
     }
     
     pub async fn run_migrations(&self) -> SyncResult<()> {
@@ -55,12 +56,18 @@ impl ServerDatabase {
         &self,
         email: &str,
     ) -> SyncResult<Uuid> {
+        // Generate deterministic user ID using UUID v5
+        // This MUST match the client's logic in ClientDatabase::generate_deterministic_user_id
+        let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, self.app_namespace_id.as_bytes());
+        let user_id = Uuid::new_v5(&app_namespace, email.as_bytes());
+
         let row = sqlx::query!(
             r#"
-            INSERT INTO users (email)
-            VALUES ($1)
+            INSERT INTO users (id, email)
+            VALUES ($1, $2)
             RETURNING id
         "#,
+            user_id,
             email
         )
         .fetch_one(&self.pool)

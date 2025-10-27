@@ -60,7 +60,11 @@ async fn generate_credentials(name: &str) -> sync_core::SyncResult<()> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgresql://localhost:5432/sync_db".to_string());
 
-    let db = Arc::new(ServerDatabase::new(&database_url).await?);
+    // Read APP_NAMESPACE_ID from environment
+    let app_namespace_id = std::env::var("APP_NAMESPACE_ID")
+        .unwrap_or_else(|_| "com.example.sync-task-list".to_string());
+
+    let db = Arc::new(ServerDatabase::new(&database_url, app_namespace_id).await?);
 
     // Run migrations to ensure api_credentials table exists
     db.run_migrations().await?;
@@ -117,7 +121,13 @@ async fn run_server() -> sync_core::SyncResult<()> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "http://localhost:5432/sync_db".to_string());
 
-    let db = match ServerDatabase::new(&database_url).await {
+    // Read APP_NAMESPACE_ID from environment, default to match client's default
+    let app_namespace_id = std::env::var("APP_NAMESPACE_ID")
+        .unwrap_or_else(|_| "com.example.sync-task-list".to_string());
+
+    tracing::info!("Using APP_NAMESPACE_ID: {}", app_namespace_id);
+
+    let db = match ServerDatabase::new(&database_url, app_namespace_id).await {
         Ok(db) => Arc::new(db),
         Err(e) => {
             tracing::error!(%e, "Failed to initialize database");

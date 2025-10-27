@@ -47,7 +47,8 @@ mod tests {
         };
         
         // Create database connection
-        let db = database::ServerDatabase::new(&db_url).await.unwrap();
+        let app_namespace_id = "com.example.sync-task-list".to_string();
+        let db = database::ServerDatabase::new(&db_url, app_namespace_id).await.unwrap();
         
         // Create test user
         let email = format!("test_{}@example.com", Uuid::new_v4());

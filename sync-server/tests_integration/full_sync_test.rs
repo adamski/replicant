@@ -38,8 +38,9 @@ mod full_sync_tests {
             .expect("Failed to create test database");
         
         // Now connect to test database
+        let app_namespace_id = "com.example.sync-task-list".to_string();
         let db = Arc::new(
-            ServerDatabase::new(&database_url)
+            ServerDatabase::new(&database_url, app_namespace_id)
                 .await
                 .expect("Failed to connect to test database")
         );

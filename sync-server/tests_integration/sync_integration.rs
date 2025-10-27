@@ -27,8 +27,9 @@ mod integration_tests {
         let (client_db, server_db, server_url) = setup_test_env().await;
         
         // Create server database and run migrations
+        let app_namespace_id = "com.example.sync-task-list".to_string();
         let server_database = Arc::new(
-            ServerDatabase::new(&server_db)
+            ServerDatabase::new(&server_db, app_namespace_id)
                 .await
                 .expect("Failed to connect to server database")
         );

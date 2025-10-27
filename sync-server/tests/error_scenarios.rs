@@ -19,7 +19,8 @@ async fn setup_test_db() -> Result<ServerDatabase, Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL environment variable not set")?;
 
-    let db = ServerDatabase::new(&database_url).await?;
+    let app_namespace_id = "com.example.sync-task-list".to_string();
+    let db = ServerDatabase::new(&database_url, app_namespace_id).await?;
     db.run_migrations().await?;
     cleanup_database(&db).await?;
 

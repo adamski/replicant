@@ -8,13 +8,13 @@
 //!
 //! See: docs/testing_guide.md for conventions
 
+use std::sync::Arc;
 use sync_server::auth::AuthState;
 use sync_server::database::ServerDatabase;
-use std::sync::Arc;
 
 async fn setup_test_db() -> Result<ServerDatabase, Box<dyn std::error::Error>> {
-    let database_url = std::env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL environment variable not set")?;
+    let database_url =
+        std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL environment variable not set")?;
 
     let app_namespace_id = "com.example.sync-task-list".to_string();
     let db = ServerDatabase::new(&database_url, app_namespace_id).await?;
@@ -25,13 +25,22 @@ async fn setup_test_db() -> Result<ServerDatabase, Box<dyn std::error::Error>> {
 }
 
 async fn cleanup_database(db: &ServerDatabase) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query("DELETE FROM change_events").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM document_revisions").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM active_connections").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM documents").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM api_keys").execute(&db.pool).await?;
+    sqlx::query("DELETE FROM change_events")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM document_revisions")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM active_connections")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM documents")
+        .execute(&db.pool)
+        .await?;
     sqlx::query("DELETE FROM users").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM api_credentials").execute(&db.pool).await?;
+    sqlx::query("DELETE FROM api_credentials")
+        .execute(&db.pool)
+        .await?;
     Ok(())
 }
 
@@ -50,42 +59,47 @@ async fn test_hmac_signature_validation_with_invalid_signature() {
 
     // Generate and save valid credentials
     let creds = AuthState::generate_api_credentials();
-    auth.save_credentials(&creds, "test-invalid-sig").await.unwrap();
+    auth.save_credentials(&creds, "test-invalid-sig")
+        .await
+        .unwrap();
 
     let timestamp = chrono::Utc::now().timestamp();
     let email = "test@example.com";
     let body = r#"{"test": "data"}"#;
 
     // Test with completely invalid signature
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        "invalid_signature_format",
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(
+            &creds.api_key,
+            "invalid_signature_format",
+            timestamp,
+            email,
+            body,
+        )
+        .await
+        .unwrap();
 
     assert!(!result, "Invalid signature should be rejected");
 
     // Test with valid hex but wrong signature
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(
+            &creds.api_key,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            timestamp,
+            email,
+            body,
+        )
+        .await
+        .unwrap();
 
     assert!(!result, "Wrong signature should be rejected");
 
     // Test with empty signature
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        "",
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&creds.api_key, "", timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "Empty signature should be rejected");
 
@@ -114,21 +128,13 @@ async fn test_hmac_signature_validation_with_expired_timestamp() {
 
     // Test with timestamp 6 minutes in the past (beyond 5-minute window)
     let old_timestamp = chrono::Utc::now().timestamp() - 360; // 6 minutes ago
-    let signature = AuthState::create_hmac_signature(
-        &creds.secret,
-        old_timestamp,
-        email,
-        &creds.api_key,
-        body,
-    );
+    let signature =
+        AuthState::create_hmac_signature(&creds.secret, old_timestamp, email, &creds.api_key, body);
 
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        old_timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&creds.api_key, &signature, old_timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "Signature older than 5 minutes should be rejected");
 
@@ -142,13 +148,10 @@ async fn test_hmac_signature_validation_with_expired_timestamp() {
         body,
     );
 
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        future_timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&creds.api_key, &signature, future_timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "Future timestamp beyond window should be rejected");
 
@@ -162,15 +165,15 @@ async fn test_hmac_signature_validation_with_expired_timestamp() {
         body,
     );
 
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        boundary_timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&creds.api_key, &signature, boundary_timestamp, email, body)
+        .await
+        .unwrap();
 
-    assert!(result, "Signature within 5-minute window should be accepted");
+    assert!(
+        result,
+        "Signature within 5-minute window should be accepted"
+    );
 
     println!("✅ Expired timestamp test passed");
 }
@@ -189,51 +192,39 @@ async fn test_malformed_api_key_formats() {
     let auth = AuthState::new(Arc::new(db));
 
     let creds = AuthState::generate_api_credentials();
-    auth.save_credentials(&creds, "test-malformed").await.unwrap();
+    auth.save_credentials(&creds, "test-malformed")
+        .await
+        .unwrap();
 
     let timestamp = chrono::Utc::now().timestamp();
     let email = "test@example.com";
     let body = r#"{"test": "data"}"#;
-    let signature = AuthState::create_hmac_signature(
-        &creds.secret,
-        timestamp,
-        email,
-        &creds.api_key,
-        body,
-    );
+    let signature =
+        AuthState::create_hmac_signature(&creds.secret, timestamp, email, &creds.api_key, body);
 
     // Test with wrong prefix
     let wrong_prefix_key = creds.api_key.replace("rpa_", "rpx_");
-    let result = auth.verify_hmac(
-        &wrong_prefix_key,
-        &signature,
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&wrong_prefix_key, &signature, timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "API key without rpa_ prefix should be rejected");
 
     // Test with no prefix
     let no_prefix_key = creds.api_key.replace("rpa_", "");
-    let result = auth.verify_hmac(
-        &no_prefix_key,
-        &signature,
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&no_prefix_key, &signature, timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "API key without prefix should be rejected");
 
     // Test with empty API key
-    let result = auth.verify_hmac(
-        "",
-        &signature,
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac("", &signature, timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "Empty API key should be rejected");
 
@@ -259,22 +250,14 @@ async fn test_api_key_not_found_in_database() {
     let timestamp = chrono::Utc::now().timestamp();
     let email = "test@example.com";
     let body = r#"{"test": "data"}"#;
-    let signature = AuthState::create_hmac_signature(
-        &creds.secret,
-        timestamp,
-        email,
-        &creds.api_key,
-        body,
-    );
+    let signature =
+        AuthState::create_hmac_signature(&creds.secret, timestamp, email, &creds.api_key, body);
 
     // Try to authenticate with non-existent API key
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&creds.api_key, &signature, timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "Non-existent API key should be rejected");
 
@@ -296,7 +279,9 @@ async fn test_api_secret_mismatch() {
     let auth = AuthState::new(Arc::new(db));
 
     let creds = AuthState::generate_api_credentials();
-    auth.save_credentials(&creds, "test-secret-mismatch").await.unwrap();
+    auth.save_credentials(&creds, "test-secret-mismatch")
+        .await
+        .unwrap();
 
     let timestamp = chrono::Utc::now().timestamp();
     let email = "test@example.com";
@@ -304,23 +289,18 @@ async fn test_api_secret_mismatch() {
 
     // Create signature with wrong secret
     let wrong_secret = "rps_0000000000000000000000000000000000000000000000000000000000000000";
-    let signature = AuthState::create_hmac_signature(
-        wrong_secret,
-        timestamp,
-        email,
-        &creds.api_key,
-        body,
+    let signature =
+        AuthState::create_hmac_signature(wrong_secret, timestamp, email, &creds.api_key, body);
+
+    let result = auth
+        .verify_hmac(&creds.api_key, &signature, timestamp, email, body)
+        .await
+        .unwrap();
+
+    assert!(
+        !result,
+        "Signature created with wrong secret should be rejected"
     );
-
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
-
-    assert!(!result, "Signature created with wrong secret should be rejected");
 
     println!("✅ API secret mismatch test passed");
 }
@@ -347,22 +327,14 @@ async fn test_valid_hmac_authentication_succeeds() {
     let body = r#"{"test": "data"}"#;
 
     // Create valid signature
-    let signature = AuthState::create_hmac_signature(
-        &creds.secret,
-        timestamp,
-        email,
-        &creds.api_key,
-        body,
-    );
+    let signature =
+        AuthState::create_hmac_signature(&creds.secret, timestamp, email, &creds.api_key, body);
 
     // Should succeed with correct credentials
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&creds.api_key, &signature, timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(result, "Valid HMAC authentication should succeed");
 
@@ -390,44 +362,42 @@ async fn test_hmac_signature_covers_all_parameters() {
     let email = "test@example.com";
     let body = r#"{"test": "data"}"#;
 
-    let signature = AuthState::create_hmac_signature(
-        &creds.secret,
-        timestamp,
-        email,
-        &creds.api_key,
-        body,
-    );
+    let signature =
+        AuthState::create_hmac_signature(&creds.secret, timestamp, email, &creds.api_key, body);
 
     // Try to use signature with different email
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        timestamp,
-        "different@example.com",
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(
+            &creds.api_key,
+            &signature,
+            timestamp,
+            "different@example.com",
+            body,
+        )
+        .await
+        .unwrap();
 
     assert!(!result, "Changing email should invalidate signature");
 
     // Try to use signature with different body
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        timestamp,
-        email,
-        r#"{"test": "different"}"#,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(
+            &creds.api_key,
+            &signature,
+            timestamp,
+            email,
+            r#"{"test": "different"}"#,
+        )
+        .await
+        .unwrap();
 
     assert!(!result, "Changing body should invalidate signature");
 
     // Try to use signature with different timestamp
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        timestamp + 1,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&creds.api_key, &signature, timestamp + 1, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "Changing timestamp should invalidate signature");
 
@@ -448,7 +418,9 @@ async fn test_inactive_credentials_rejected() {
     let auth = AuthState::new(db.clone());
 
     let creds = AuthState::generate_api_credentials();
-    auth.save_credentials(&creds, "test-inactive").await.unwrap();
+    auth.save_credentials(&creds, "test-inactive")
+        .await
+        .unwrap();
 
     // Mark credentials as inactive
     sqlx::query!(
@@ -463,22 +435,14 @@ async fn test_inactive_credentials_rejected() {
     let email = "test@example.com";
     let body = r#"{"test": "data"}"#;
 
-    let signature = AuthState::create_hmac_signature(
-        &creds.secret,
-        timestamp,
-        email,
-        &creds.api_key,
-        body,
-    );
+    let signature =
+        AuthState::create_hmac_signature(&creds.secret, timestamp, email, &creds.api_key, body);
 
     // Try to authenticate with inactive credentials
-    let result = auth.verify_hmac(
-        &creds.api_key,
-        &signature,
-        timestamp,
-        email,
-        body,
-    ).await.unwrap();
+    let result = auth
+        .verify_hmac(&creds.api_key, &signature, timestamp, email, body)
+        .await
+        .unwrap();
 
     assert!(!result, "Inactive credentials should be rejected");
 

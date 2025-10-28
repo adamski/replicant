@@ -145,7 +145,7 @@ log "Building sync-server..."
 DATABASE_URL="$DATABASE_URL" cargo build --bin sync-server --release
 
 log "Building test binary..."
-cargo build --package sync-server --test integration --release
+cargo build --package sync-server --test integration_tests --release
 
 # Phase 1: Initial online sync
 phase "1: INITIAL ONLINE SYNC"
@@ -159,7 +159,7 @@ export TEST_DATABASE_URL="$DATABASE_URL"
 export OFFLINE_TEST_PHASE="phase1"
 export OFFLINE_TEST_STATE_FILE="$TEST_STATE_FILE"
 
-if ! cargo test --package sync-server --test integration integration::test_offline_sync_phases::phase1_initial_sync -- --exact --nocapture; then
+if ! cargo test --package sync-server --test integration_tests integration_tests::test_offline_sync_phases::phase1_initial_sync -- --exact --nocapture; then
     error "Phase 1 failed"
     tail -50 "$SERVER_LOG_FILE"
     exit 1
@@ -175,7 +175,7 @@ info "Server is now offline - simulating network outage"
 # Run offline operations
 export OFFLINE_TEST_PHASE="phase2"
 
-if ! cargo test --package sync-server --test integration integration::test_offline_sync_phases::phase2_offline_changes -- --exact --nocapture; then
+if ! cargo test --package sync-server --test integration_tests integration_tests::test_offline_sync_phases::phase2_offline_changes -- --exact --nocapture; then
     error "Phase 2 failed"
     exit 1
 fi
@@ -190,7 +190,7 @@ info "Server is back online - testing sync recovery"
 # Run sync recovery test
 export OFFLINE_TEST_PHASE="phase3"
 
-if ! cargo test --package sync-server --test integration integration::test_offline_sync_phases::phase3_sync_recovery -- --exact --nocapture; then
+if ! cargo test --package sync-server --test integration_tests integration_tests::test_offline_sync_phases::phase3_sync_recovery -- --exact --nocapture; then
     error "Phase 3 failed"
     tail -50 "$SERVER_LOG_FILE"
     exit 1
@@ -203,7 +203,7 @@ phase "VERIFICATION"
 info "Running final verification..."
 
 export OFFLINE_TEST_PHASE="verify"
-if ! cargo test --package sync-server --test integration integration::test_offline_sync_phases::phase4_verification -- --exact --nocapture; then
+if ! cargo test --package sync-server --test integration_tests integration_tests::test_offline_sync_phases::phase4_verification -- --exact --nocapture; then
     error "Verification failed"
     tail -50 "$SERVER_LOG_FILE"
     exit 1

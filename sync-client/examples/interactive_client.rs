@@ -22,11 +22,19 @@ struct Cli {
 
     /// API key for authentication
     #[arg(short = 'k', long, default_value = "rpa_demo123456789012345678901234567890")]
-    api_key: String,
+    api_key: String,    
+    
+    /// API secret for authentication
+    #[arg(short = 'k', long, default_value = "rpa_demo123456789012345678901234567890")]
+    api_secret: String,
 
     /// User ID (will be generated if not provided)
     #[arg(short, long)]
-    user_id: Option<String>,
+    user_id: Option<String>,    
+    
+    /// Email
+    #[arg(short, long, default_value = "example@gmail.com")]
+    email: String,
 }
 
 #[tokio::main]
@@ -75,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Create sync engine (auto-starts with built-in reconnection)
-    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.api_key, &user_id.to_string()).await {
+    let sync_engine = match SyncEngine::new(&db_url, &cli.server, &cli.email, &cli.api_key, &cli.api_secret).await {
         Ok(engine) => {
             println!("✅ Sync engine initialized (auto-connecting)!");
             Some(engine)

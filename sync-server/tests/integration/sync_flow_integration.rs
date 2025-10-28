@@ -26,7 +26,8 @@ crate::integration_test!(test_basic_sync_flow, |ctx: TestContext| async move {
     
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-});
+}, true);
+
 
 crate::integration_test!(test_bidirectional_sync, |ctx: TestContext| async move {
     let email = "bob@test.local";
@@ -66,7 +67,8 @@ crate::integration_test!(test_bidirectional_sync, |ctx: TestContext| async move 
     
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-});
+}, true);
+
 
 crate::integration_test!(test_update_propagation, |ctx: TestContext| async move {
     let email = "charlie@test.local";
@@ -100,7 +102,8 @@ crate::integration_test!(test_update_propagation, |ctx: TestContext| async move 
     
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-});
+}, true);
+
 
 crate::integration_test!(test_delete_propagation, |ctx: TestContext| async move {
     let email = "dave@test.local";
@@ -136,7 +139,8 @@ crate::integration_test!(test_delete_propagation, |ctx: TestContext| async move 
     
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-});
+}, true);
+
 
 crate::integration_test!(test_large_document_sync, |ctx: TestContext| async move {
     let email = "eve@test.local";
@@ -185,7 +189,8 @@ crate::integration_test!(test_large_document_sync, |ctx: TestContext| async move
     
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-});
+}, true);
+
 
 crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestContext| async move {
     let email = "frank@test.local";
@@ -304,7 +309,8 @@ crate::integration_test!(test_simultaneous_offline_outage_scenario, |ctx: TestCo
     
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-});
+}, true);
+
 
 crate::integration_test!(test_array_duplication_bug, |ctx: TestContext| async move {
     let email = "grace@test.local";
@@ -380,4 +386,4 @@ crate::integration_test!(test_array_duplication_bug, |ctx: TestContext| async mo
     
     // Keep clients alive briefly to avoid disconnect race
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-});
+}, true);

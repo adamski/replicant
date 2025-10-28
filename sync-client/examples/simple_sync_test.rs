@@ -106,8 +106,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = SyncEngine::new(
         &database_path,
         "ws://localhost:8080/ws",
-        "test-token",
-        &user_email
+        &user_email,
+        "test-key",
+        "test-secret"
     ).await?;
     
     match action.as_str() {

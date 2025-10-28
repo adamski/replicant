@@ -15,7 +15,7 @@ use sync_server::{
     AppState,
 };
 use clap::{Parser, Subcommand};
-
+use tokio::signal;
 #[derive(Parser)]
 #[command(name = "sync-server")]
 #[command(about = "Sync server with built-in credential management")]
@@ -181,11 +181,41 @@ async fn run_server() -> sync_core::SyncResult<()> {
             return Ok(());
         }
     };
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal()).await {
         tracing::error!(%e, addr=%addr);
     }
     
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>(); 
+
+    tokio::select! {
+        _ = ctrl_c => {
+            println!("\nSIGINT received, starting graceful shutdown...");
+        },
+        _ = terminate => {
+            println!("\nSIGTERM received, starting graceful shutdown...");
+        },
+    }
+
 }
 
 // AppState is now defined in lib.rs

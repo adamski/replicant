@@ -10,14 +10,14 @@
 //! - JSON validation
 //! - Constraint violations
 
-use sync_server::database::ServerDatabase;
-use uuid::Uuid;
 use serde_json::json;
 use sync_core::models::{Document, VectorClock};
+use sync_server::database::ServerDatabase;
+use uuid::Uuid;
 
 async fn setup_test_db() -> Result<ServerDatabase, Box<dyn std::error::Error>> {
-    let database_url = std::env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL environment variable not set")?;
+    let database_url =
+        std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL environment variable not set")?;
 
     let app_namespace_id = "com.example.sync-task-list".to_string();
     let db = ServerDatabase::new(&database_url, app_namespace_id).await?;
@@ -28,13 +28,22 @@ async fn setup_test_db() -> Result<ServerDatabase, Box<dyn std::error::Error>> {
 }
 
 async fn cleanup_database(db: &ServerDatabase) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query("DELETE FROM change_events").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM document_revisions").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM active_connections").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM documents").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM api_keys").execute(&db.pool).await?;
+    sqlx::query("DELETE FROM change_events")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM document_revisions")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM active_connections")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM documents")
+        .execute(&db.pool)
+        .await?;
     sqlx::query("DELETE FROM users").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM api_credentials").execute(&db.pool).await?;
+    sqlx::query("DELETE FROM api_credentials")
+        .execute(&db.pool)
+        .await?;
     Ok(())
 }
 
@@ -76,7 +85,10 @@ async fn test_transaction_rollback_on_partial_failure() {
     // Try to create a duplicate document (should fail due to primary key constraint)
     let duplicate_result = db.create_document(&doc).await;
 
-    assert!(duplicate_result.is_err(), "Creating duplicate document should fail");
+    assert!(
+        duplicate_result.is_err(),
+        "Creating duplicate document should fail"
+    );
 
     // Verify that no partial state was left behind
     let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents")
@@ -84,7 +96,10 @@ async fn test_transaction_rollback_on_partial_failure() {
         .await
         .unwrap();
 
-    assert_eq!(count_before, count_after, "Document count should not change after failed operation");
+    assert_eq!(
+        count_before, count_after,
+        "Document count should not change after failed operation"
+    );
 
     println!("✅ Transaction rollback test passed");
 }
@@ -119,7 +134,10 @@ async fn test_malformed_json_in_document_content() {
     .await;
 
     // PostgreSQL with jsonb type should reject invalid JSON
-    assert!(result.is_err(), "Invalid JSON should be rejected by database");
+    assert!(
+        result.is_err(),
+        "Invalid JSON should be rejected by database"
+    );
 
     println!("✅ Malformed JSON test passed");
 }
@@ -187,7 +205,10 @@ async fn test_foreign_key_constraint_enforcement() {
     let result = db.create_document(&doc).await;
 
     // Should fail due to foreign key constraint
-    assert!(result.is_err(), "Document with non-existent user should be rejected");
+    assert!(
+        result.is_err(),
+        "Document with non-existent user should be rejected"
+    );
 
     println!("✅ Foreign key constraint test passed");
 }
@@ -219,7 +240,10 @@ async fn test_not_null_constraint_enforcement() {
     .await;
 
     // Should fail due to NOT NULL constraint on content
-    assert!(result.is_err(), "NULL in NOT NULL column should be rejected");
+    assert!(
+        result.is_err(),
+        "NULL in NOT NULL column should be rejected"
+    );
 
     println!("✅ NOT NULL constraint test passed");
 }
@@ -274,7 +298,9 @@ async fn test_delete_non_existent_document() {
     let user_id = db.create_user("delete-test@example.com").await.unwrap();
     let non_existent_doc_id = Uuid::new_v4();
 
-    let result = db.delete_document(&non_existent_doc_id, &user_id, "1-delete").await;
+    let result = db
+        .delete_document(&non_existent_doc_id, &user_id, "1-delete")
+        .await;
 
     // Delete should not panic even if document doesn't exist
     println!("Delete result: {:?}", result.is_ok());
@@ -322,7 +348,10 @@ async fn test_large_document_handling() {
     if let Ok(()) = result {
         // Verify we can retrieve it
         let retrieved = db.get_document(&doc.id).await;
-        assert!(retrieved.is_ok(), "Should be able to retrieve large document");
+        assert!(
+            retrieved.is_ok(),
+            "Should be able to retrieve large document"
+        );
         println!("✅ Large document test passed - successfully stored and retrieved");
     } else {
         println!("⚠️  Large document rejected - this is acceptable if documented");
@@ -340,7 +369,10 @@ async fn test_deeply_nested_json() {
         }
     };
 
-    let user_id = db.create_user("nested-json-test@example.com").await.unwrap();
+    let user_id = db
+        .create_user("nested-json-test@example.com")
+        .await
+        .unwrap();
 
     // Create deeply nested JSON (100 levels)
     let mut nested = json!("value");

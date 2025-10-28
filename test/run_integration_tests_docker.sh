@@ -81,11 +81,12 @@ echo -e "${YELLOW}🧪 Running integration tests...${NC}"
 export RUN_INTEGRATION_TESTS=1
 export TEST_DATABASE_URL="$TEST_DATABASE_URL"
 export SYNC_SERVER_URL="ws://localhost:$SERVER_PORT/ws"
+export RUST_TEST_THREADS=1
 
 echo -e "${YELLOW}⏳ Waiting a moment for server to fully initialize...${NC}"
 sleep 3
 
-if cargo test integration --no-fail-fast -- --test-threads=1 --nocapture; then
+if cargo test integration_tests --no-fail-fast -- --test-threads=1 --nocapture; then
     echo -e "${GREEN}✅ All integration tests passed!${NC}"
 else
     echo -e "${RED}❌ Some integration tests failed${NC}"

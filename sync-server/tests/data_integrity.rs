@@ -11,15 +11,15 @@
 //! - Event log sequence integrity
 //! - Revision ID parsing
 
+use serde_json::json;
+use std::sync::Arc;
+use sync_core::models::{Document, VectorClock};
 use sync_server::database::ServerDatabase;
 use uuid::Uuid;
-use serde_json::json;
-use sync_core::models::{Document, VectorClock};
-use std::sync::Arc;
 
 async fn setup_test_db() -> Result<ServerDatabase, Box<dyn std::error::Error>> {
-    let database_url = std::env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL environment variable not set")?;
+    let database_url =
+        std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL environment variable not set")?;
 
     let app_namespace_id = "com.example.sync-task-list".to_string();
     let db = ServerDatabase::new(&database_url, app_namespace_id).await?;
@@ -30,13 +30,22 @@ async fn setup_test_db() -> Result<ServerDatabase, Box<dyn std::error::Error>> {
 }
 
 async fn cleanup_database(db: &ServerDatabase) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query("DELETE FROM change_events").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM document_revisions").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM active_connections").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM documents").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM api_keys").execute(&db.pool).await?;
+    sqlx::query("DELETE FROM change_events")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM document_revisions")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM active_connections")
+        .execute(&db.pool)
+        .await?;
+    sqlx::query("DELETE FROM documents")
+        .execute(&db.pool)
+        .await?;
     sqlx::query("DELETE FROM users").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM api_credentials").execute(&db.pool).await?;
+    sqlx::query("DELETE FROM api_credentials")
+        .execute(&db.pool)
+        .await?;
     Ok(())
 }
 
@@ -104,12 +113,18 @@ async fn test_concurrent_writes_to_same_document() {
     }
 
     // All updates should succeed (last-write-wins or conflict detection)
-    let success_count = results.iter().filter(|r| r.is_ok() && r.as_ref().unwrap().is_ok()).count();
+    let success_count = results
+        .iter()
+        .filter(|r| r.is_ok() && r.as_ref().unwrap().is_ok())
+        .count();
     println!("Successful concurrent updates: {}/5", success_count);
 
     // Verify document still exists and is in a consistent state
     let final_doc = db.get_document(&doc.id).await.unwrap();
-    assert!(final_doc.content["value"].is_number(), "Document should have a valid value");
+    assert!(
+        final_doc.content["value"].is_number(),
+        "Document should have a valid value"
+    );
 
     println!("✅ Concurrent writes test passed - no data corruption");
 }
@@ -176,13 +191,13 @@ async fn test_revision_id_parsing_failures() {
 
     // Test various invalid revision ID formats
     let invalid_revisions = vec![
-        "invalid",           // No hyphen
-        "abc-123",           // Non-numeric generation
-        "-hash",             // Missing generation
-        "1-",                // Missing hash
-        "",                  // Empty
-        "0-hash",            // Zero generation
-        "-1-hash",           // Negative generation
+        "invalid", // No hyphen
+        "abc-123", // Non-numeric generation
+        "-hash",   // Missing generation
+        "1-",      // Missing hash
+        "",        // Empty
+        "0-hash",  // Zero generation
+        "-1-hash", // Negative generation
     ];
 
     for (i, revision_id) in invalid_revisions.iter().enumerate() {
@@ -245,7 +260,10 @@ async fn test_event_log_sequence_integrity() {
     // Verify sequences are incrementing and have no gaps
     let mut prev_seq = 0u64;
     for event in &events {
-        assert!(event.sequence > prev_seq, "Sequence should always increment");
+        assert!(
+            event.sequence > prev_seq,
+            "Sequence should always increment"
+        );
         // Note: We don't require sequences to be consecutive (gaps are OK)
         // but they must be strictly increasing
         prev_seq = event.sequence;
@@ -385,25 +403,21 @@ async fn test_no_orphaned_documents_after_user_deletion() {
     }
 
     // Try to delete the user
-    let delete_result = sqlx::query(
-        "DELETE FROM users WHERE id = $1"
-    )
-    .bind(user_id.to_string())
-    .execute(&db.pool)
-    .await;
+    let delete_result = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id.to_string())
+        .execute(&db.pool)
+        .await;
 
     // If foreign key constraints are set up correctly, this should fail
     // or cascade delete the documents
     println!("User deletion result: {:?}", delete_result.is_ok());
 
     // Check if documents still exist
-    let doc_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM documents WHERE user_id = $1"
-    )
-    .bind(user_id.to_string())
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let doc_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
 
     println!("Documents remaining after user deletion: {}", doc_count);
 

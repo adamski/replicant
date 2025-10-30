@@ -1,7 +1,7 @@
-use crate::models::{Document, VectorClock};
 use crate::errors::SyncError;
-use serde_json::Value;
+use crate::models::{Document, VectorClock};
 use crate::SyncResult;
+use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub enum ConflictStrategy {
@@ -19,12 +19,8 @@ impl ConflictResolver {
     pub fn new(strategy: ConflictStrategy) -> Self {
         Self { strategy }
     }
-    
-    pub fn resolve(
-        &self,
-        local: &Document,
-        remote: &Document,
-    ) -> SyncResult<Document> {
+
+    pub fn resolve(&self, local: &Document, remote: &Document) -> SyncResult<Document> {
         match &self.strategy {
             ConflictStrategy::LastWriteWins => {
                 if local.updated_at > remote.updated_at {
@@ -40,30 +36,22 @@ impl ConflictResolver {
                     Ok(remote.clone())
                 }
             }
-            ConflictStrategy::MergeJson => {
-                self.merge_json_documents(local, remote)
-            }
-            ConflictStrategy::Manual => {
-                Err(SyncError::ConflictDetected(local.id))
-            }
+            ConflictStrategy::MergeJson => self.merge_json_documents(local, remote),
+            ConflictStrategy::Manual => Err(SyncError::ConflictDetected(local.id)),
         }
     }
-    
-    fn merge_json_documents(
-        &self,
-        local: &Document,
-        remote: &Document,
-    ) -> SyncResult<Document> {
+
+    fn merge_json_documents(&self, local: &Document, remote: &Document) -> SyncResult<Document> {
         let merged_content = merge_json_values(&local.content, &remote.content)?;
-        
+
         let mut merged_doc = local.clone();
         merged_doc.revision_id = merged_doc.next_revision(&merged_content);
         merged_doc.content = merged_content;
         merged_doc.version = local.version.max(remote.version) + 1;
-        
+
         // Merge vector clocks
         merged_doc.vector_clock.merge(&remote.vector_clock);
-        
+
         Ok(merged_doc)
     }
 }
@@ -72,7 +60,7 @@ fn merge_json_values(local: &Value, remote: &Value) -> SyncResult<Value> {
     match (local, remote) {
         (Value::Object(local_map), Value::Object(remote_map)) => {
             let mut merged = local_map.clone();
-            
+
             for (key, remote_value) in remote_map {
                 match local_map.get(key) {
                     Some(local_value) => {
@@ -83,7 +71,7 @@ fn merge_json_values(local: &Value, remote: &Value) -> SyncResult<Value> {
                     }
                 }
             }
-            
+
             Ok(Value::Object(merged))
         }
         (Value::Array(local_arr), Value::Array(remote_arr)) => {

@@ -1,6 +1,6 @@
-use sqlx::{PgPool, postgres::PgRow, Row};
-use uuid::Uuid;
+use sqlx::{postgres::PgRow, PgPool, Row};
 use sync_core::{models::Document, SyncResult};
+use uuid::Uuid;
 
 /// Type alias for document parameters tuple
 pub type DocumentParams = (
@@ -60,10 +60,7 @@ pub fn document_to_params(doc: &Document) -> DocumentParams {
 }
 
 /// Calculate document statistics
-pub async fn get_document_stats(
-    pool: &PgPool,
-    user_id: &Uuid,
-) -> SyncResult<DocumentStats> {
+pub async fn get_document_stats(pool: &PgPool, user_id: &Uuid) -> SyncResult<DocumentStats> {
     let row = sqlx::query(
         r#"
             SELECT
@@ -75,9 +72,9 @@ pub async fn get_document_stats(
             WHERE user_id = $1
             "#,
     )
-        .bind(user_id)
-        .fetch_one(pool)
-        .await?;
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
 
     Ok(DocumentStats {
         total: row.try_get::<i64, _>("total")? as u64,

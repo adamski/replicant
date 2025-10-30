@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use hmac::{Hmac, Mac};
+use libc::kill;
 use serde_json::json;
 use sha2::Sha256;
 use std::ops::DerefMut;
@@ -11,7 +12,6 @@ use tokio::process::Child;
 use tokio::sync::{Mutex, Semaphore};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
-use libc::kill;
 
 // Global semaphore to limit concurrent client connections in tests
 static CLIENT_CONNECTION_SEMAPHORE: tokio::sync::OnceCell<Arc<Semaphore>> =
@@ -381,14 +381,14 @@ impl TestContext {
     }
 
     pub async fn kill_all_sync_servers(&mut self) {
-            let mut l = self.server_process.lock().await;
-            if let Some(mut child) = l.take() {
-                if let Some(pid) = child.id() {
-                    let _ = unsafe { kill(pid as i32, libc::SIGINT) };
-                    child.wait().await.unwrap();
-                    tracing::info!("Killed server process: {:?}", pid);
-                }
+        let mut l = self.server_process.lock().await;
+        if let Some(mut child) = l.take() {
+            if let Some(pid) = child.id() {
+                let _ = unsafe { kill(pid as i32, libc::SIGINT) };
+                child.wait().await.unwrap();
+                tracing::info!("Killed server process: {:?}", pid);
             }
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
@@ -483,7 +483,6 @@ impl Drop for TestContext {
                     .await;
             }
         });
-
     }
 }
 

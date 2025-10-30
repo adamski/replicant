@@ -1,21 +1,25 @@
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
-use uuid::Uuid;
-use sync_core::{protocol::{ClientMessage, ServerMessage}, SyncResult, errors::ClientError};
 use crate::events::EventDispatcher;
 use backoff::{future::retry, ExponentialBackoff};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use sync_core::{
+    errors::ClientError,
+    protocol::{ClientMessage, ServerMessage},
+    SyncResult,
+};
+use tokio::sync::mpsc;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone)]
 pub struct WebSocketClient {
     tx: mpsc::Sender<ClientMessage>,
-    is_connected: Arc<AtomicBool>
+    is_connected: Arc<AtomicBool>,
 }
 
 pub struct WebSocketReceiver {
@@ -30,10 +34,19 @@ impl WebSocketClient {
         api_key: &str,
         api_secret: &str,
         event_dispatcher: Option<Arc<EventDispatcher>>,
-        is_connected: Arc<AtomicBool>
+        is_connected: Arc<AtomicBool>,
     ) -> SyncResult<(Self, WebSocketReceiver)> {
         // Delegate to connect_with_hmac (HMAC is now required)
-        Self::connect_with_hmac(server_url, email, client_id, api_key, api_secret, event_dispatcher, is_connected).await
+        Self::connect_with_hmac(
+            server_url,
+            email,
+            client_id,
+            api_key,
+            api_secret,
+            event_dispatcher,
+            is_connected,
+        )
+        .await
     }
 
     pub async fn connect_with_hmac(
@@ -43,7 +56,7 @@ impl WebSocketClient {
         api_key: &str,
         api_secret: &str,
         event_dispatcher: Option<Arc<EventDispatcher>>,
-        is_connected: Arc<AtomicBool>   
+        is_connected: Arc<AtomicBool>,
     ) -> SyncResult<(Self, WebSocketReceiver)> {
         let ws_stream = Self::connect_with_retry(server_url, 3, event_dispatcher).await?;
 
@@ -81,7 +94,7 @@ impl WebSocketClient {
                     }
                     Ok(Message::Close(_)) => {
                         is_connected_d.store(false, std::sync::atomic::Ordering::Relaxed);
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -89,42 +102,42 @@ impl WebSocketClient {
 
         let client = Self {
             tx: tx_send.clone(),
-            is_connected: is_connected.clone()
+            is_connected: is_connected.clone(),
         };
 
-        let receiver = WebSocketReceiver {
-            rx: rx_recv,
-        };
+        let receiver = WebSocketReceiver { rx: rx_recv };
 
         // Create timestamp
         let timestamp = chrono::Utc::now().timestamp();
 
         // Create HMAC signature
         let signature = Self::create_hmac_signature(
-            api_secret,
-            timestamp,
-            email,
-            api_key,
-            "", // Empty body for auth
+            api_secret, timestamp, email, api_key, "", // Empty body for auth
         );
 
         // Send authentication with HMAC signature
-        client.send(ClientMessage::Authenticate {
-            email: email.to_string(),
-            client_id,
-            api_key: Some(api_key.to_string()),
-            signature: Some(signature),
-            timestamp: Some(timestamp),
-        }).await?;
+        client
+            .send(ClientMessage::Authenticate {
+                email: email.to_string(),
+                client_id,
+                api_key: Some(api_key.to_string()),
+                signature: Some(signature),
+                timestamp: Some(timestamp),
+            })
+            .await?;
 
         Ok((client, receiver))
     }
-    
+
     async fn connect_with_retry(
-        server_url: &str, 
+        server_url: &str,
         _max_retries: u32,
         event_dispatcher: Option<Arc<EventDispatcher>>,
-    ) -> SyncResult<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
+    ) -> SyncResult<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    > {
         let backoff = ExponentialBackoff {
             initial_interval: std::time::Duration::from_millis(100),
             max_interval: std::time::Duration::from_millis(2000),
@@ -132,7 +145,7 @@ impl WebSocketClient {
             randomization_factor: 0.1, // Add 10% jitter
             ..Default::default()
         };
-        
+
         let server_url = server_url.to_string();
         let dispatcher = event_dispatcher.clone();
         let operation = || async {
@@ -140,7 +153,7 @@ impl WebSocketClient {
             if let Some(ref dispatcher) = dispatcher {
                 dispatcher.emit_connection_attempted(&server_url);
             }
-            
+
             match connect_async(&server_url).await {
                 Ok((ws_stream, _)) => {
                     // Emit connection success event
@@ -148,7 +161,7 @@ impl WebSocketClient {
                         dispatcher.emit_connection_succeeded(&server_url);
                     }
                     Ok(ws_stream)
-                },
+                }
                 Err(e) => {
                     // Emit as sync error instead of tracing warning
                     if let Some(ref dispatcher) = dispatcher {
@@ -158,12 +171,12 @@ impl WebSocketClient {
                 }
             }
         };
-        
+
         retry(backoff, operation)
             .await
             .map_err(|e| ClientError::WebSocket(e.to_string()).into())
     }
-    
+
     pub async fn send(&self, message: ClientMessage) -> SyncResult<()> {
         self.tx
             .send(message)
@@ -178,8 +191,8 @@ impl WebSocketClient {
         api_key: &str,
         body: &str,
     ) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-            .expect("HMAC can take key of any size");
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
 
         let message = format!("{}.{}.{}.{}", timestamp, email, api_key, body);
         mac.update(message.as_bytes());
@@ -192,11 +205,14 @@ impl WebSocketReceiver {
     pub async fn receive(&mut self) -> SyncResult<Option<ServerMessage>> {
         Ok(self.rx.recv().await)
     }
-    
+
     pub async fn forward_to(mut self, tx: mpsc::Sender<ServerMessage>) -> SyncResult<()> {
         tracing::info!("CLIENT: WebSocket receiver forwarder started");
         while let Some(msg) = self.receive().await? {
-            tracing::info!("CLIENT: Received WebSocket message: {:?}", std::mem::discriminant(&msg));
+            tracing::info!(
+                "CLIENT: Received WebSocket message: {:?}",
+                std::mem::discriminant(&msg)
+            );
             if tx.send(msg).await.is_err() {
                 tracing::error!("CLIENT: Failed to forward message to handler");
                 break;
@@ -207,5 +223,4 @@ impl WebSocketReceiver {
         tracing::warn!("CLIENT: WebSocket receiver forwarder terminated");
         Ok(())
     }
-    
 }

@@ -1,16 +1,16 @@
 //! Event callback system for the sync client
-//! 
+//!
 //! This module provides a thread-safe event system that allows applications to receive
 //! real-time notifications about document changes, sync operations, and connection status.
-//! 
+//!
 //! # Key Features
-//! 
+//!
 //! - **Thread-Safe Design**: Events can be generated from any thread but callbacks are
 //!   only invoked on the thread that registered them
 //! - **Event Filtering**: Subscribe to specific event types or all events
 //! - **Context Passing**: Pass application context data to callbacks
 //! - **Offline/Online Events**: Receive events for both local and synchronized operations
-//! 
+//!
 //! # Usage
 //!
 //! ```rust,no_run
@@ -39,22 +39,22 @@
 //! # Ok(())
 //! # }
 //! ```
-//! 
+//!
 //! # Thread Safety
-//! 
+//!
 //! The event system uses a single-thread callback model:
 //! 1. Events can be generated from any thread
 //! 2. Events are queued for processing
 //! 3. Callbacks are only invoked when `process_events()` is called
 //! 4. All callbacks execute on the thread that registered them
-//! 
+//!
 //! This design eliminates the need for complex synchronization in user code.
 
 use std::ffi::{c_char, c_void, CString};
-use std::sync::{Mutex, mpsc};
+use std::sync::{mpsc, Mutex};
 use std::thread::{self, ThreadId};
-use uuid::Uuid;
 use sync_core::{errors::ClientError, SyncResult};
+use uuid::Uuid;
 
 /// Event types that can be emitted by the sync client
 #[repr(C)]
@@ -83,7 +83,7 @@ pub enum EventType {
 }
 
 /// Event data structure passed to C/C++ callbacks
-/// 
+///
 /// Contains all relevant information about the event. Not all fields are populated
 /// for all event types - check the event_type to determine which fields are valid.
 #[repr(C)]
@@ -106,14 +106,14 @@ pub struct EventData {
 }
 
 /// C-compatible callback function type for event notifications
-/// 
+///
 /// # Parameters
-/// 
+///
 /// * `event` - Pointer to event data (valid only during callback execution)
 /// * `context` - User-defined context pointer passed during registration
-/// 
+///
 /// # Safety
-/// 
+///
 /// The event pointer is only valid during the callback execution.
 /// Do not store or access it after the callback returns.
 /// String pointers in the event data are temporary and will be freed
@@ -121,12 +121,12 @@ pub struct EventData {
 pub type EventCallback = extern "C" fn(event: *const EventData, context: *mut c_void);
 
 /// Rust-native callback function type for event handling
-/// 
+///
 /// This is a more ergonomic callback interface for Rust applications that
 /// passes individual event parameters rather than a C-style struct pointer.
-/// 
+///
 /// # Parameters
-/// 
+///
 /// * `event_type` - The type of event that occurred
 /// * `document_id` - Optional document ID (for document-related events)
 /// * `title` - Optional document title
@@ -135,16 +135,19 @@ pub type EventCallback = extern "C" fn(event: *const EventData, context: *mut c_
 /// * `numeric_data` - Numeric data (e.g., sync count)
 /// * `boolean_data` - Boolean data (e.g., connection state)
 /// * `context` - User-defined context pointer
-pub type RustEventCallback = Box<dyn Fn(
-    EventType,
-    Option<&str>,    // document_id
-    Option<&str>,    // title
-    Option<&str>,    // content
-    Option<&str>,    // error
-    u64,             // numeric_data
-    bool,            // boolean_data
-    *mut c_void,     // context
-) + Send + Sync>;
+pub type RustEventCallback = Box<
+    dyn Fn(
+            EventType,
+            Option<&str>, // document_id
+            Option<&str>, // title
+            Option<&str>, // content
+            Option<&str>, // error
+            u64,          // numeric_data
+            bool,         // boolean_data
+            *mut c_void,  // context
+        ) + Send
+        + Sync,
+>;
 
 enum CallbackType {
     CFfi(EventCallback),
@@ -172,11 +175,11 @@ pub struct QueuedEvent {
 }
 
 /// Thread-safe event dispatcher for managing callbacks and event processing
-/// 
+///
 /// The EventDispatcher uses a single-thread callback model where events can be
 /// generated from any thread but callbacks are only invoked on the thread that
 /// registered them. This eliminates the need for complex synchronization in user code.
-/// 
+///
 /// # Example
 ///
 /// ```rust,no_run
@@ -231,44 +234,51 @@ impl EventDispatcher {
     ) -> SyncResult<()> {
         // Set the callback thread ID on first registration
         {
-            let mut thread_id = self.callback_thread_id.lock()
+            let mut thread_id = self
+                .callback_thread_id
+                .lock()
                 .map_err(|_| ClientError::LockError("thread ID".into()))?;
             if thread_id.is_none() {
                 *thread_id = Some(thread::current().id());
-                tracing::info!("Event callbacks will be processed on thread: {:?}", thread::current().id());
+                tracing::info!(
+                    "Event callbacks will be processed on thread: {:?}",
+                    thread::current().id()
+                );
             }
         }
 
-        let mut callbacks = self.callbacks.lock()
-            .map_err(|_|  ClientError::LockError("callbacks".into()))?;
-        
+        let mut callbacks = self
+            .callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("callbacks".into()))?;
+
         callbacks.push(CallbackEntry {
             callback: CallbackType::CFfi(callback),
             context,
             event_filter,
         });
-        
+
         Ok(())
     }
 
     /// Register a Rust-native callback for event notifications
-    /// 
+    ///
     /// This is a more ergonomic interface for Rust applications that avoids
     /// the need to work with C-style function pointers and structs.
-    /// 
+    ///
     /// # Parameters
-    /// 
+    ///
     /// * `callback` - The callback function to invoke for events
     /// * `context` - Optional user-defined context pointer
     /// * `event_filter` - Optional filter to only receive specific event types
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust,no_run
     /// use sync_client::events::{EventDispatcher, EventType};
-    /// 
+    ///
     /// let dispatcher = EventDispatcher::new();
-    /// 
+    ///
     /// dispatcher.register_rust_callback(
     ///     Box::new(|event_type, document_id, title, _content, error, numeric_data, boolean_data, _context| {
     ///         match event_type {
@@ -293,40 +303,77 @@ impl EventDispatcher {
     ) -> SyncResult<()> {
         // Set the callback thread ID on first registration
         {
-            let mut thread_id = self.callback_thread_id.lock()
+            let mut thread_id = self
+                .callback_thread_id
+                .lock()
                 .map_err(|_| ClientError::LockError("thread ID".into()))?;
             if thread_id.is_none() {
                 *thread_id = Some(thread::current().id());
-                tracing::info!("Event callbacks will be processed on thread: {:?}", thread::current().id());
+                tracing::info!(
+                    "Event callbacks will be processed on thread: {:?}",
+                    thread::current().id()
+                );
             }
         }
 
-        let mut callbacks = self.callbacks.lock()
+        let mut callbacks = self
+            .callbacks
+            .lock()
             .map_err(|_| ClientError::LockError("callbacks".into()))?;
-        
+
         callbacks.push(CallbackEntry {
             callback: CallbackType::Rust(callback),
             context,
             event_filter,
         });
-        
+
         Ok(())
     }
 
     pub fn emit_document_created(&self, document_id: &Uuid, content: &serde_json::Value) {
         // Extract title from content if present
-        let title = content.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
-        self.queue_event(EventType::DocumentCreated, Some(document_id), Some(title), Some(content), None, 0, false);
+        let title = content
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled");
+        self.queue_event(
+            EventType::DocumentCreated,
+            Some(document_id),
+            Some(title),
+            Some(content),
+            None,
+            0,
+            false,
+        );
     }
 
     pub fn emit_document_updated(&self, document_id: &Uuid, content: &serde_json::Value) {
         // Extract title from content if present
-        let title = content.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
-        self.queue_event(EventType::DocumentUpdated, Some(document_id), Some(title), Some(content), None, 0, false);
+        let title = content
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled");
+        self.queue_event(
+            EventType::DocumentUpdated,
+            Some(document_id),
+            Some(title),
+            Some(content),
+            None,
+            0,
+            false,
+        );
     }
 
     pub fn emit_document_deleted(&self, document_id: &Uuid) {
-        self.queue_event(EventType::DocumentDeleted, Some(document_id), None, None, None, 0, false);
+        self.queue_event(
+            EventType::DocumentDeleted,
+            Some(document_id),
+            None,
+            None,
+            None,
+            0,
+            false,
+        );
     }
 
     pub fn emit_sync_started(&self) {
@@ -334,27 +381,75 @@ impl EventDispatcher {
     }
 
     pub fn emit_sync_completed(&self, synced_count: u64) {
-        self.queue_event(EventType::SyncCompleted, None, None, None, None, synced_count, false);
+        self.queue_event(
+            EventType::SyncCompleted,
+            None,
+            None,
+            None,
+            None,
+            synced_count,
+            false,
+        );
     }
 
     pub fn emit_sync_error(&self, error_message: &str) {
-        self.queue_event(EventType::SyncError, None, None, None, Some(error_message), 0, false);
+        self.queue_event(
+            EventType::SyncError,
+            None,
+            None,
+            None,
+            Some(error_message),
+            0,
+            false,
+        );
     }
 
     pub fn emit_conflict_detected(&self, document_id: &Uuid) {
-       self.queue_event(EventType::ConflictDetected, Some(document_id), None, None, None, 0, false);
+        self.queue_event(
+            EventType::ConflictDetected,
+            Some(document_id),
+            None,
+            None,
+            None,
+            0,
+            false,
+        );
     }
 
     pub fn emit_connection_lost(&self, server_url: &str) {
-        self.queue_event(EventType::ConnectionLost, None, Some(server_url), None, None, 0, false);
+        self.queue_event(
+            EventType::ConnectionLost,
+            None,
+            Some(server_url),
+            None,
+            None,
+            0,
+            false,
+        );
     }
 
     pub fn emit_connection_attempted(&self, server_url: &str) {
-        self.queue_event(EventType::ConnectionAttempted, None, Some(server_url), None, None, 0, false);
+        self.queue_event(
+            EventType::ConnectionAttempted,
+            None,
+            Some(server_url),
+            None,
+            None,
+            0,
+            false,
+        );
     }
 
     pub fn emit_connection_succeeded(&self, server_url: &str) {
-        self.queue_event(EventType::ConnectionSucceeded, None, Some(server_url), None, None, 0, false);
+        self.queue_event(
+            EventType::ConnectionSucceeded,
+            None,
+            Some(server_url),
+            None,
+            None,
+            0,
+            false,
+        );
     }
 
     /// Queue an event for later processing on the callback thread
@@ -388,7 +483,9 @@ impl EventDispatcher {
     pub fn process_events(&self) -> SyncResult<usize> {
         // Verify we're on the correct thread
         {
-            let thread_id = self.callback_thread_id.lock()
+            let thread_id = self
+                .callback_thread_id
+                .lock()
                 .map_err(|_| ClientError::LockError("thread ID".into()))?;
             if let Some(expected_thread_id) = *thread_id {
                 if thread::current().id() != expected_thread_id {
@@ -399,14 +496,18 @@ impl EventDispatcher {
             }
         }
 
-        let callbacks = self.callbacks.lock()
+        let callbacks = self
+            .callbacks
+            .lock()
             .map_err(|_| ClientError::LockError("callbacks".into()))?;
 
         if callbacks.is_empty() {
             return Ok(0);
         }
 
-        let receiver = self.event_queue.lock()
+        let receiver = self
+            .event_queue
+            .lock()
             .map_err(|_| ClientError::LockError("event queue".into()))?;
 
         let mut processed_count = 0;
@@ -466,7 +567,7 @@ impl EventDispatcher {
                 match &entry.callback {
                     CallbackType::CFfi(callback) => {
                         callback(&event_data, entry.context);
-                    },
+                    }
                     CallbackType::Rust(callback) => {
                         callback(
                             queued_event.event_type,
@@ -512,7 +613,7 @@ mod tests {
     fn test_event_dispatcher_creation() {
         let dispatcher = EventDispatcher::new();
         assert!(dispatcher.callbacks.lock().unwrap().is_empty());
-        
+
         // Should have no pending events initially
         let result = dispatcher.process_events();
         assert!(result.is_err()); // No callbacks registered yet
@@ -523,25 +624,26 @@ mod tests {
         let dispatcher = EventDispatcher::new();
         let callback_count = Arc::new(AtomicUsize::new(0));
         let count_clone = callback_count.clone();
-        
+
         extern "C" fn test_callback(_event: *const EventData, context: *mut c_void) {
             let count = unsafe { &*(context as *const AtomicUsize) };
             count.fetch_add(1, Ordering::SeqCst);
         }
-        
+
         let result = dispatcher.register_callback(
             test_callback,
             &*count_clone as *const AtomicUsize as *mut c_void,
             None,
         );
-        
+
         assert!(result.is_ok());
         assert_eq!(dispatcher.callbacks.lock().unwrap().len(), 1);
-        
+
         // Emit an event
         let doc_id = Uuid::new_v4();
-        dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test", "test": true}));
-        
+        dispatcher
+            .emit_document_created(&doc_id, &serde_json::json!({"title": "Test", "test": true}));
+
         // Process events (should invoke callback)
         let processed = dispatcher.process_events().unwrap();
         assert_eq!(processed, 1);
@@ -553,43 +655,47 @@ mod tests {
         let dispatcher = EventDispatcher::new();
         let created_count = Arc::new(AtomicUsize::new(0));
         let updated_count = Arc::new(AtomicUsize::new(0));
-        
+
         let created_clone = created_count.clone();
         let updated_clone = updated_count.clone();
-        
+
         extern "C" fn count_callback(_event: *const EventData, context: *mut c_void) {
             let count = unsafe { &*(context as *const AtomicUsize) };
             count.fetch_add(1, Ordering::SeqCst);
         }
-        
+
         // Register callback only for created events
-        dispatcher.register_callback(
-            count_callback,
-            &*created_clone as *const AtomicUsize as *mut c_void,
-            Some(EventType::DocumentCreated),
-        ).unwrap();
-        
+        dispatcher
+            .register_callback(
+                count_callback,
+                &*created_clone as *const AtomicUsize as *mut c_void,
+                Some(EventType::DocumentCreated),
+            )
+            .unwrap();
+
         // Register callback only for updated events
-        dispatcher.register_callback(
-            count_callback,
-            &*updated_clone as *const AtomicUsize as *mut c_void,
-            Some(EventType::DocumentUpdated),
-        ).unwrap();
-        
+        dispatcher
+            .register_callback(
+                count_callback,
+                &*updated_clone as *const AtomicUsize as *mut c_void,
+                Some(EventType::DocumentUpdated),
+            )
+            .unwrap();
+
         let doc_id = Uuid::new_v4();
-        
+
         // Emit created event
         dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test"}));
         dispatcher.process_events().unwrap();
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
         assert_eq!(updated_count.load(Ordering::SeqCst), 0);
-        
+
         // Emit updated event
         dispatcher.emit_document_updated(&doc_id, &serde_json::json!({"title": "Test"}));
         dispatcher.process_events().unwrap();
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
         assert_eq!(updated_count.load(Ordering::SeqCst), 1);
-        
+
         // Emit deleted event (neither should trigger)
         dispatcher.emit_document_deleted(&doc_id);
         dispatcher.process_events().unwrap();
@@ -602,29 +708,29 @@ mod tests {
         let dispatcher = Arc::new(EventDispatcher::new());
         let callback_count = Arc::new(AtomicUsize::new(0));
         let count_clone = callback_count.clone();
-        
+
         extern "C" fn test_callback(_event: *const EventData, context: *mut c_void) {
             let count = unsafe { &*(context as *const AtomicUsize) };
             count.fetch_add(1, Ordering::SeqCst);
         }
-        
+
         // Register callback on main thread
-        dispatcher.register_callback(
-            test_callback,
-            &*count_clone as *const AtomicUsize as *mut c_void,
-            None,
-        ).unwrap();
-        
+        dispatcher
+            .register_callback(
+                test_callback,
+                &*count_clone as *const AtomicUsize as *mut c_void,
+                None,
+            )
+            .unwrap();
+
         let dispatcher_clone = dispatcher.clone();
-        
+
         // Try to process events from another thread (should fail)
-        let handle = std::thread::spawn(move || {
-            dispatcher_clone.process_events()
-        });
-        
+        let handle = std::thread::spawn(move || dispatcher_clone.process_events());
+
         let result = handle.join().unwrap();
         assert!(result.is_err()); // Should fail because we're on wrong thread
-        
+
         // Process events on main thread (should work)
         dispatcher.emit_sync_started();
         let processed = dispatcher.process_events().unwrap();
@@ -637,18 +743,20 @@ mod tests {
         let dispatcher = EventDispatcher::new();
         let callback_count = Arc::new(AtomicUsize::new(0));
         let count_clone = callback_count.clone();
-        
+
         extern "C" fn count_callback(_event: *const EventData, context: *mut c_void) {
             let count = unsafe { &*(context as *const AtomicUsize) };
             count.fetch_add(1, Ordering::SeqCst);
         }
-        
-        dispatcher.register_callback(
-            count_callback,
-            &*count_clone as *const AtomicUsize as *mut c_void,
-            None,
-        ).unwrap();
-        
+
+        dispatcher
+            .register_callback(
+                count_callback,
+                &*count_clone as *const AtomicUsize as *mut c_void,
+                None,
+            )
+            .unwrap();
+
         // Emit multiple events
         let doc_id = Uuid::new_v4();
         dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test1"}));
@@ -656,12 +764,12 @@ mod tests {
         dispatcher.emit_document_deleted(&doc_id);
         dispatcher.emit_sync_started();
         dispatcher.emit_sync_completed(5);
-        
+
         // Process all events at once
         let processed = dispatcher.process_events().unwrap();
         assert_eq!(processed, 5);
         assert_eq!(callback_count.load(Ordering::SeqCst), 5);
-        
+
         // Process again (should be no more events)
         let processed = dispatcher.process_events().unwrap();
         assert_eq!(processed, 0);

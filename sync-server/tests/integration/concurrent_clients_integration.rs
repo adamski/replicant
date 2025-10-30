@@ -246,7 +246,7 @@ crate::integration_test!(
 
 crate::integration_test!(
     test_connection_stability,
-    |ctx: TestContext|  async move {
+    |ctx: TestContext| async move {
         let email = "charlie@test.local";
 
         // Generate proper HMAC credentials

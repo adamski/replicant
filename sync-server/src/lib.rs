@@ -1,17 +1,16 @@
-pub mod database;
-pub mod websocket;
-pub mod auth;
-pub mod sync_handler;
 pub mod api;
-pub mod queries;
+pub mod auth;
+pub mod database;
 pub mod monitoring;
+pub mod queries;
+pub mod sync_handler;
+pub mod websocket;
 
-
-use std::sync::Arc;
-use std::collections::HashSet;
 use dashmap::DashMap;
-use uuid::Uuid;
+use std::collections::HashSet;
+use std::sync::Arc;
 use sync_core::protocol::ServerMessage;
+use uuid::Uuid;
 
 // Registry of connected clients: (user_id, client_id) -> channel
 pub type ClientRegistry = Arc<DashMap<(Uuid, Uuid), tokio::sync::mpsc::Sender<ServerMessage>>>;
@@ -31,10 +30,10 @@ pub struct AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
-    use sync_core::models::{Document, VectorClock};
     use serde_json::json;
-    
+    use sync_core::models::{Document, VectorClock};
+    use uuid::Uuid;
+
     #[tokio::test]
     async fn test_server_database_operations() {
         // Skip if no DATABASE_URL is set
@@ -45,15 +44,17 @@ mod tests {
                 return;
             }
         };
-        
+
         // Create database connection
         let app_namespace_id = "com.example.sync-task-list".to_string();
-        let db = database::ServerDatabase::new(&db_url, app_namespace_id).await.unwrap();
-        
+        let db = database::ServerDatabase::new(&db_url, app_namespace_id)
+            .await
+            .unwrap();
+
         // Create test user
         let email = format!("test_{}@example.com", Uuid::new_v4());
         let user_id = db.create_user(&email).await.unwrap();
-        
+
         // Create test document
         let content = json!({
             "title": "Server Test Document",
@@ -71,21 +72,21 @@ mod tests {
             updated_at: chrono::Utc::now(),
             deleted_at: None,
         };
-        
+
         // Save document
         db.create_document(&doc).await.unwrap();
-        
+
         // Retrieve document
         let loaded_doc = db.get_document(&doc.id).await.unwrap();
         assert_eq!(loaded_doc.id, doc.id);
         // Title is now part of content JSON, so just compare the content
-        
+
         // Get user documents
         let user_docs = db.get_user_documents(&user_id).await.unwrap();
         assert_eq!(user_docs.len(), 1);
         assert_eq!(user_docs[0].id, doc.id);
     }
-    
+
     #[test]
     fn test_auth_credentials_generation() {
         let creds1 = auth::AuthState::generate_api_credentials();

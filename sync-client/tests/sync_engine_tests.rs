@@ -2,18 +2,18 @@ mod common;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use sqlx::Row;
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::Arc;
-use sqlx::Row;
 use std::time::Duration;
 use sync_client::{ClientDatabase, SyncEngine};
 use sync_core::protocol::{ClientMessage, ServerMessage};
+use sync_core::ConflictResolution;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use uuid::Uuid;
-use sync_core::ConflictResolution;
 
 /// A mock WebSocket server to simulate the backend for testing.
 /// It allows tests to control the messages sent to the SyncEngine
@@ -29,7 +29,6 @@ struct MockServer {
     listener_fd: RawFd,
     // Stop signal for listener threads
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
-
 }
 
 impl MockServer {
@@ -48,7 +47,7 @@ impl MockServer {
             to_client_tx,
             from_client_rx,
             listener_fd: fd,
-            shutdown_tx: None
+            shutdown_tx: None,
         }
     }
     pub async fn stop(&mut self) {
@@ -132,7 +131,7 @@ struct TestSetup {
     engine: SyncEngine,
     server: MockServer,
     db: Arc<ClientDatabase>,
-    db_id: Uuid
+    db_id: Uuid,
 }
 
 /// Creates a new SyncEngine connected to an in-memory database and a mock server.
@@ -162,7 +161,12 @@ async fn setup() -> TestSetup {
     )
     .await
     .unwrap();
-    TestSetup { engine, server, db, db_id}
+    TestSetup {
+        engine,
+        server,
+        db,
+        db_id,
+    }
 }
 
 #[tokio::test]
@@ -377,12 +381,15 @@ async fn test_offline_document_creation_and_sync() {
     }
 
     // 6. Confirm sync
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(setup.engine.count_pending_sync().await.unwrap(), 0);
@@ -462,7 +469,11 @@ async fn test_sync_protection_mode_blocks_server_updates() {
 
     // 1. Create doc offline
     setup.server.stop().await;
-    let doc = setup.engine.create_document(json!({ "value": 1 })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "value": 1 }))
+        .await
+        .unwrap();
 
     // 2. Reconnect (triggers protection mode during upload)
     setup.server.start().await;
@@ -475,17 +486,23 @@ async fn test_sync_protection_mode_blocks_server_updates() {
         ..doc.clone()
     };
 
-    setup.server.send_server_message(ServerMessage::SyncDocument {
-        document: server_doc.clone()
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::SyncDocument {
+            document: server_doc.clone(),
+        })
+        .await;
 
     // 4. Wait for upload to complete
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -503,14 +520,21 @@ async fn test_receive_server_document_sync() {
     let _ = setup.server.expect_client_message().await; // sync
 
     // 1. Create and sync a document
-    let doc = setup.engine.create_document(json!({ "version": 1 })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "version": 1 }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await; // CreateDocument
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // 2. Server sends updated version
@@ -519,9 +543,12 @@ async fn test_receive_server_document_sync() {
     updated_doc.revision_id = format!("2-revision");
     updated_doc.version = 2;
 
-    setup.server.send_server_message(ServerMessage::SyncDocument {
-        document: updated_doc.clone()
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::SyncDocument {
+            document: updated_doc.clone(),
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -538,16 +565,23 @@ async fn test_create_document_failure_response() {
     let _ = setup.server.expect_client_message().await; // auth
     let _ = setup.server.expect_client_message().await; // sync
 
-    let doc = setup.engine.create_document(json!({ "test": "data" })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "test": "data" }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await; // CreateDocument
 
     // Server rejects the creation
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: false,
-        error: Some("Validation failed".to_string()),
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: false,
+            error: Some("Validation failed".to_string()),
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -566,9 +600,21 @@ async fn test_multiple_offline_documents_sync() {
     setup.server.stop().await;
 
     // Create 3 documents offline
-    let doc1 = setup.engine.create_document(json!({ "order": 1 })).await.unwrap();
-    let doc2 = setup.engine.create_document(json!({ "order": 2 })).await.unwrap();
-    let doc3 = setup.engine.create_document(json!({ "order": 3 })).await.unwrap();
+    let doc1 = setup
+        .engine
+        .create_document(json!({ "order": 1 }))
+        .await
+        .unwrap();
+    let doc2 = setup
+        .engine
+        .create_document(json!({ "order": 2 }))
+        .await
+        .unwrap();
+    let doc3 = setup
+        .engine
+        .create_document(json!({ "order": 3 }))
+        .await
+        .unwrap();
 
     assert_eq!(setup.engine.count_pending_sync().await.unwrap(), 3);
 
@@ -589,12 +635,15 @@ async fn test_multiple_offline_documents_sync() {
 
     // Confirm all
     for doc in [&doc1, &doc2, &doc3] {
-        setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-            document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
-            success: true,
-            error: None,
-        }).await;
+        setup
+            .server
+            .send_server_message(ServerMessage::DocumentCreatedResponse {
+                document_id: doc.id,
+                revision_id: doc.revision_id.clone(),
+                success: true,
+                error: None,
+            })
+            .await;
     }
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -635,8 +684,9 @@ async fn test_database_initialization_error() {
         "ws://localhost:9999",
         "test@test.com",
         "key",
-        "secret"
-    ).await;
+        "secret",
+    )
+    .await;
 
     assert!(result.is_err());
 }
@@ -654,9 +704,7 @@ async fn test_concurrent_document_operations() {
 
     for i in 0..5 {
         let eng = engine.clone();
-        let handle = tokio::spawn(async move {
-            eng.create_document(json!({ "id": i })).await
-        });
+        let handle = tokio::spawn(async move { eng.create_document(json!({ "id": i })).await });
         handles.push(handle);
     }
 
@@ -679,9 +727,21 @@ async fn test_offline_document_creation_with_reconnection_sync() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // 2. Create 3 documents while completely offline
-    let doc1 = setup.engine.create_document(json!({ "title": "Offline Doc 1" })).await.unwrap();
-    let doc2 = setup.engine.create_document(json!({ "title": "Offline Doc 2" })).await.unwrap();
-    let doc3 = setup.engine.create_document(json!({ "title": "Offline Doc 3" })).await.unwrap();
+    let doc1 = setup
+        .engine
+        .create_document(json!({ "title": "Offline Doc 1" }))
+        .await
+        .unwrap();
+    let doc2 = setup
+        .engine
+        .create_document(json!({ "title": "Offline Doc 2" }))
+        .await
+        .unwrap();
+    let doc3 = setup
+        .engine
+        .create_document(json!({ "title": "Offline Doc 3" }))
+        .await
+        .unwrap();
 
     // 3. Verify all are pending sync
     assert_eq!(setup.engine.count_pending_sync().await.unwrap(), 3);
@@ -718,12 +778,15 @@ async fn test_offline_document_creation_with_reconnection_sync() {
     for doc_id in [doc1.id, doc2.id, doc3.id] {
         // Find the revision for this doc
         let local_doc = setup.db.get_document(&doc_id).await.unwrap();
-        setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-            document_id: doc_id,
-            revision_id: local_doc.revision_id.clone(),
-            success: true,
-            error: None,
-        }).await;
+        setup
+            .server
+            .send_server_message(ServerMessage::DocumentCreatedResponse {
+                document_id: doc_id,
+                revision_id: local_doc.revision_id.clone(),
+                success: true,
+                error: None,
+            })
+            .await;
     }
 
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -734,7 +797,6 @@ async fn test_offline_document_creation_with_reconnection_sync() {
     println!("✅ OFFLINE CREATE TEST: Successfully synced 3 offline-created documents");
 }
 
-
 /// Tests offline update with patch stored in sync_queue
 #[tokio::test]
 async fn test_offline_update_with_patch_recovery() {
@@ -743,15 +805,22 @@ async fn test_offline_update_with_patch_recovery() {
     let _ = setup.server.expect_client_message().await; // sync
 
     // 1. Create document ONLINE first
-    let doc = setup.engine.create_document(json!({ "value": 100 })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "value": 100 }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await; // CreateDocument
 
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -763,17 +832,22 @@ async fn test_offline_update_with_patch_recovery() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // 4. Update document OFFLINE (stores patch in sync_queue)
-    setup.engine.update_document(doc.id, json!({ "value": 200 })).await.unwrap();
+    setup
+        .engine
+        .update_document(doc.id, json!({ "value": 200 }))
+        .await
+        .unwrap();
 
     // 5. Verify it's marked as pending again
     assert_eq!(setup.engine.count_pending_sync().await.unwrap(), 1);
 
     // 6. Verify patch was stored in sync_queue
-    let patch_exists = sqlx::query("SELECT COUNT(*) as count FROM sync_queue WHERE document_id = ?")
-        .bind(doc.id.to_string())
-        .fetch_one(&setup.db.pool)
-        .await
-        .unwrap();
+    let patch_exists =
+        sqlx::query("SELECT COUNT(*) as count FROM sync_queue WHERE document_id = ?")
+            .bind(doc.id.to_string())
+            .fetch_one(&setup.db.pool)
+            .await
+            .unwrap();
     let count: i64 = patch_exists.try_get("count").unwrap();
     assert_eq!(count, 1, "Patch should be in sync_queue");
 
@@ -794,12 +868,15 @@ async fn test_offline_update_with_patch_recovery() {
 
     // 9. Confirm update
     let updated_doc = setup.db.get_document(&doc.id).await.unwrap();
-    setup.server.send_server_message(ServerMessage::DocumentUpdatedResponse {
-        document_id: doc.id,
-        revision_id: updated_doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentUpdatedResponse {
+            document_id: doc.id,
+            revision_id: updated_doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -812,7 +889,10 @@ async fn test_offline_update_with_patch_recovery() {
         .await
         .unwrap();
     let final_count: i64 = patch_check.try_get("count").unwrap();
-    assert_eq!(final_count, 0, "Patch should be removed from sync_queue after sync");
+    assert_eq!(
+        final_count, 0,
+        "Patch should be removed from sync_queue after sync"
+    );
 
     println!("✅ OFFLINE UPDATE TEST: Successfully synced offline update with patch");
 }
@@ -825,15 +905,22 @@ async fn test_offline_delete_sync_on_reconnection() {
     let _ = setup.server.expect_client_message().await; // sync
 
     // 1. Create and sync document
-    let doc = setup.engine.create_document(json!({ "to_delete": true })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "to_delete": true }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await; // CreateDocument
 
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -863,12 +950,15 @@ async fn test_offline_delete_sync_on_reconnection() {
     }
 
     // 7. Confirm deletion
-    setup.server.send_server_message(ServerMessage::DocumentDeletedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentDeletedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -878,7 +968,6 @@ async fn test_offline_delete_sync_on_reconnection() {
     println!("✅ OFFLINE DELETE TEST: Successfully synced offline delete");
 }
 
-
 /// Tests mixed offline operations (creates, updates, deletes)
 #[tokio::test]
 async fn test_mixed_offline_operations_sync() {
@@ -887,14 +976,21 @@ async fn test_mixed_offline_operations_sync() {
     let _ = setup.server.expect_client_message().await; // sync
 
     // 1. Create doc1 online and sync it
-    let doc1 = setup.engine.create_document(json!({ "id": 1 })).await.unwrap();
+    let doc1 = setup
+        .engine
+        .create_document(json!({ "id": 1 }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await;
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc1.id,
-        revision_id: doc1.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc1.id,
+            revision_id: doc1.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // 2. Go offline
@@ -902,14 +998,30 @@ async fn test_mixed_offline_operations_sync() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // 3. Mixed operations:
-    let doc2 = setup.engine.create_document(json!({ "id": 2 })).await.unwrap(); // Create new
-    setup.engine.update_document(doc1.id, json!({ "id": 1, "updated": true })).await.unwrap(); // Update existing
+    let doc2 = setup
+        .engine
+        .create_document(json!({ "id": 2 }))
+        .await
+        .unwrap(); // Create new
+    setup
+        .engine
+        .update_document(doc1.id, json!({ "id": 1, "updated": true }))
+        .await
+        .unwrap(); // Update existing
     setup.engine.delete_document(doc1.id).await.unwrap(); // Delete the updated one
-    let doc3 = setup.engine.create_document(json!({ "id": 3 })).await.unwrap(); // Another create
+    let doc3 = setup
+        .engine
+        .create_document(json!({ "id": 3 }))
+        .await
+        .unwrap(); // Another create
 
     // 4. Should have 3 pending (doc2 create, doc1 delete, doc3 create)
     let pending = setup.engine.count_pending_sync().await.unwrap();
-    assert!(pending >= 2, "Should have at least 2 pending operations, got {}", pending);
+    assert!(
+        pending >= 2,
+        "Should have at least 2 pending operations, got {}",
+        pending
+    );
 
     // 5. Reconnect
     setup.server.start().await;
@@ -924,42 +1036,60 @@ async fn test_mixed_offline_operations_sync() {
     for _ in 0..5 {
         if let Ok(msg) = tokio::time::timeout(
             Duration::from_millis(500),
-            setup.server.expect_client_message()
-        ).await {
+            setup.server.expect_client_message(),
+        )
+        .await
+        {
             match msg {
                 ClientMessage::CreateDocument { document } => {
                     creates += 1;
-                    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-                        document_id: document.id,
-                        revision_id: document.revision_id,
-                        success: true,
-                        error: None,
-                    }).await;
+                    setup
+                        .server
+                        .send_server_message(ServerMessage::DocumentCreatedResponse {
+                            document_id: document.id,
+                            revision_id: document.revision_id,
+                            success: true,
+                            error: None,
+                        })
+                        .await;
                 }
                 ClientMessage::UpdateDocument { patch } => {
                     updates += 1;
-                    setup.server.send_server_message(ServerMessage::DocumentUpdatedResponse {
-                        document_id: patch.document_id,
-                        revision_id: patch.revision_id,
-                        success: true,
-                        error: None,
-                    }).await;
+                    setup
+                        .server
+                        .send_server_message(ServerMessage::DocumentUpdatedResponse {
+                            document_id: patch.document_id,
+                            revision_id: patch.revision_id,
+                            success: true,
+                            error: None,
+                        })
+                        .await;
                 }
-                ClientMessage::DeleteDocument { document_id, revision_id, .. } => {
+                ClientMessage::DeleteDocument {
+                    document_id,
+                    revision_id,
+                    ..
+                } => {
                     deletes += 1;
-                    setup.server.send_server_message(ServerMessage::DocumentDeletedResponse {
-                        document_id,
-                        revision_id,
-                        success: true,
-                        error: None,
-                    }).await;
+                    setup
+                        .server
+                        .send_server_message(ServerMessage::DocumentDeletedResponse {
+                            document_id,
+                            revision_id,
+                            success: true,
+                            error: None,
+                        })
+                        .await;
                 }
                 _ => {}
             }
         }
     }
 
-    println!("✅ MIXED OPERATIONS: creates={}, updates={}, deletes={}", creates, updates, deletes);
+    println!(
+        "✅ MIXED OPERATIONS: creates={}, updates={}, deletes={}",
+        creates, updates, deletes
+    );
     assert!(creates >= 2, "Should have at least 2 creates");
     assert!(deletes >= 1, "Should have at least 1 delete");
 
@@ -969,7 +1099,6 @@ async fn test_mixed_offline_operations_sync() {
     let final_pending = setup.engine.count_pending_sync().await.unwrap();
     assert_eq!(final_pending, 0, "All operations should be synced");
 }
-
 
 /// Tests upload timeout and retry mechanism
 
@@ -984,9 +1113,21 @@ async fn test_partial_upload_failure() {
     setup.server.stop().await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let doc1 = setup.engine.create_document(json!({ "id": 1 })).await.unwrap();
-    let doc2 = setup.engine.create_document(json!({ "id": 2 })).await.unwrap();
-    let doc3 = setup.engine.create_document(json!({ "id": 3 })).await.unwrap();
+    let doc1 = setup
+        .engine
+        .create_document(json!({ "id": 1 }))
+        .await
+        .unwrap();
+    let doc2 = setup
+        .engine
+        .create_document(json!({ "id": 2 }))
+        .await
+        .unwrap();
+    let doc3 = setup
+        .engine
+        .create_document(json!({ "id": 3 }))
+        .await
+        .unwrap();
 
     // Reconnect
     setup.server.start().await;
@@ -1000,21 +1141,27 @@ async fn test_partial_upload_failure() {
 
     // Confirm ONLY 2 out of 3 (simulate partial failure)
     if let ClientMessage::CreateDocument { document } = msg1 {
-        setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-            document_id: document.id,
-            revision_id: document.revision_id,
-            success: true,
-            error: None,
-        }).await;
+        setup
+            .server
+            .send_server_message(ServerMessage::DocumentCreatedResponse {
+                document_id: document.id,
+                revision_id: document.revision_id,
+                success: true,
+                error: None,
+            })
+            .await;
     }
 
     if let ClientMessage::CreateDocument { document } = msg2 {
-        setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-            document_id: document.id,
-            revision_id: document.revision_id,
-            success: true,
-            error: None,
-        }).await;
+        setup
+            .server
+            .send_server_message(ServerMessage::DocumentCreatedResponse {
+                document_id: document.id,
+                revision_id: document.revision_id,
+                success: true,
+                error: None,
+            })
+            .await;
     }
 
     // msg3 deliberately NOT confirmed
@@ -1028,7 +1175,6 @@ async fn test_partial_upload_failure() {
     println!("✅ PARTIAL FAILURE TEST: 2/3 uploads confirmed, 1 remains pending");
 }
 
-
 /// Tests failed upload response handling
 #[tokio::test]
 async fn test_upload_failure_response() {
@@ -1036,16 +1182,23 @@ async fn test_upload_failure_response() {
     let _ = setup.server.expect_client_message().await; // auth
     let _ = setup.server.expect_client_message().await; // sync
 
-    let doc = setup.engine.create_document(json!({ "will_fail": true })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "will_fail": true }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await; // CreateDocument
 
     // Server explicitly rejects (hits line 870-874)
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: false,
-        error: Some("Server validation failed".to_string()),
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: false,
+            error: Some("Server validation failed".to_string()),
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -1055,7 +1208,6 @@ async fn test_upload_failure_response() {
     println!("✅ FAILURE RESPONSE TEST: Handled server rejection correctly");
 }
 
-
 /// Tests server sending DocumentUpdated with patch
 #[tokio::test]
 async fn test_server_sends_document_updated_patch() {
@@ -1064,19 +1216,26 @@ async fn test_server_sends_document_updated_patch() {
     let _ = setup.server.expect_client_message().await; // sync
 
     // Create and sync a document
-    let doc = setup.engine.create_document(json!({ "value": 1 })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "value": 1 }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await;
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Server sends DocumentUpdated with patch (hits lines 723-750)
     use sync_core::models::DocumentPatch;
-    use sync_core::patches::{create_patch, calculate_checksum};
+    use sync_core::patches::{calculate_checksum, create_patch};
 
     let old_content = json!({ "value": 1 });
     let new_content = json!({ "value": 2 });
@@ -1093,9 +1252,12 @@ async fn test_server_sends_document_updated_patch() {
         checksum: calculate_checksum(&new_content),
     };
 
-    setup.server.send_server_message(ServerMessage::DocumentUpdated {
-        patch: document_patch,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentUpdated {
+            patch: document_patch,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -1128,9 +1290,12 @@ async fn test_server_sends_new_document_created() {
         deleted_at: None,
     };
 
-    setup.server.send_server_message(ServerMessage::DocumentCreated {
-        document: new_doc.clone(),
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreated {
+            document: new_doc.clone(),
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -1149,21 +1314,31 @@ async fn test_server_sends_document_deleted() {
     let _ = setup.server.expect_client_message().await; // sync
 
     // Create document locally first
-    let doc = setup.engine.create_document(json!({ "will_be_deleted": true })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "will_be_deleted": true }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await;
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Server sends delete (hits lines 781-793)
-    setup.server.send_server_message(ServerMessage::DocumentDeleted {
-        document_id: doc.id,
-        revision_id: format!("2-{}", Uuid::new_v4()),
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentDeleted {
+            document_id: doc.id,
+            revision_id: format!("2-{}", Uuid::new_v4()),
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -1178,7 +1353,6 @@ async fn test_server_sends_document_deleted() {
     println!("✅ SERVER DELETE TEST: Processed DocumentDeleted from server");
 }
 
-
 /// Tests conflict detection event
 #[tokio::test]
 async fn test_conflict_detection_event() {
@@ -1186,15 +1360,22 @@ async fn test_conflict_detection_event() {
     let _ = setup.server.expect_client_message().await; // auth
     let _ = setup.server.expect_client_message().await; // sync
 
-    let doc = setup.engine.create_document(json!({ "conflict": true })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "conflict": true }))
+        .await
+        .unwrap();
 
     // Server sends ConflictDetected (hits lines 794-799)
-    setup.server.send_server_message(ServerMessage::ConflictDetected {
-        document_id: doc.id,
-        local_revision: doc.revision_id.clone(),
-        server_revision: format!("2-{}", Uuid::new_v4()),
-        resolution_strategy: ConflictResolution::ClientWins
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::ConflictDetected {
+            document_id: doc.id,
+            local_revision: doc.revision_id.clone(),
+            server_revision: format!("2-{}", Uuid::new_v4()),
+            resolution_strategy: ConflictResolution::ClientWins,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -1211,14 +1392,21 @@ async fn test_sync_document_generation_comparison() {
     let _ = setup.server.expect_client_message().await; // sync
 
     // Create local document
-    let doc = setup.engine.create_document(json!({ "version": 1 })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "version": 1 }))
+        .await
+        .unwrap();
     let _ = setup.server.expect_client_message().await;
-    setup.server.send_server_message(ServerMessage::DocumentCreatedResponse {
-        document_id: doc.id,
-        revision_id: doc.revision_id.clone(),
-        success: true,
-        error: None,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::DocumentCreatedResponse {
+            document_id: doc.id,
+            revision_id: doc.revision_id.clone(),
+            success: true,
+            error: None,
+        })
+        .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Server sends SyncDocument with higher generation (hits lines 800-843)
@@ -1227,9 +1415,12 @@ async fn test_sync_document_generation_comparison() {
     server_doc.revision_id = format!("2-revision"); // Higher generation
     server_doc.version = 2;
 
-    setup.server.send_server_message(ServerMessage::SyncDocument {
-        document: server_doc.clone(),
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::SyncDocument {
+            document: server_doc.clone(),
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -1249,7 +1440,11 @@ async fn test_sync_document_rejects_older_version() {
     let _ = setup.server.expect_client_message().await; // sync
 
     // Create doc with generation 3
-    let doc = setup.engine.create_document(json!({ "gen": 3 })).await.unwrap();
+    let doc = setup
+        .engine
+        .create_document(json!({ "gen": 3 }))
+        .await
+        .unwrap();
 
     // Manually set high generation revision
     let mut high_gen_doc = doc.clone();
@@ -1261,9 +1456,12 @@ async fn test_sync_document_rejects_older_version() {
     old_server_doc.content = json!({ "gen": "old" });
     old_server_doc.revision_id = format!("2-revision"); // Lower generation
 
-    setup.server.send_server_message(ServerMessage::SyncDocument {
-        document: old_server_doc,
-    }).await;
+    setup
+        .server
+        .send_server_message(ServerMessage::SyncDocument {
+            document: old_server_doc,
+        })
+        .await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -1284,8 +1482,14 @@ async fn test_update_nonexistent_document() {
     let fake_id = Uuid::new_v4();
 
     // Try to update non-existent document
-    let result = setup.engine.update_document(fake_id, json!({ "fake": true })).await;
+    let result = setup
+        .engine
+        .update_document(fake_id, json!({ "fake": true }))
+        .await;
 
-    assert!(result.is_err(), "Should fail when updating non-existent document");
+    assert!(
+        result.is_err(),
+        "Should fail when updating non-existent document"
+    );
     println!("✅ NOT FOUND TEST: Correctly handled missing document");
 }

@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use rand::Rng;
 use crate::database::ServerDatabase;
-use sync_core::SyncResult;
 use hmac::{Hmac, Mac};
+use rand::Rng;
 use sha2::Sha256;
+use std::sync::Arc;
 use subtle::ConstantTimeEq;
+use sync_core::SyncResult;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -20,9 +20,7 @@ pub struct AuthState {
 
 impl AuthState {
     pub fn new(db: Arc<ServerDatabase>) -> Self {
-        Self {
-            db,
-        }
+        Self { db }
     }
 
     pub fn generate_api_credentials() -> ApiCredentials {
@@ -61,8 +59,8 @@ impl AuthState {
         api_key: &str,
         body: &str,
     ) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-            .expect("HMAC can take key of any size");
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
 
         let message = format!("{}.{}.{}.{}", timestamp, email, api_key, body);
         mac.update(message.as_bytes());
@@ -135,13 +133,8 @@ impl AuthState {
         email: &str,
         body: &str,
     ) -> bool {
-        let expected_signature = Self::create_hmac_signature(
-            secret,
-            timestamp,
-            email,
-            api_key,
-            body,
-        );
+        let expected_signature =
+            Self::create_hmac_signature(secret, timestamp, email, api_key, body);
         expected_signature == signature
     }
 }

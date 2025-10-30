@@ -1,20 +1,23 @@
-use sqlx::{SqlitePool, Row, sqlite::SqliteRow};
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use sync_core::{models::{Document, SyncStatus}, SyncResult};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+use sync_core::{
+    models::{Document, SyncStatus},
+    SyncResult,
+};
+use uuid::Uuid;
 
 /// Type alias for document parameters tuple
 pub type DocumentParams = (
-    String,          // id
-    String,          // user_id
-    String,          // content
-    String,          // revision_id
-    i64,             // version
-    String,          // vector_clock
-    String,          // created_at
-    String,          // updated_at
-    Option<String>,  // deleted_at
-    String,          // sync_status
+    String,         // id
+    String,         // user_id
+    String,         // content
+    String,         // revision_id
+    i64,            // version
+    String,         // vector_clock
+    String,         // created_at
+    String,         // updated_at
+    Option<String>, // deleted_at
+    String,         // sync_status
 );
 
 /// SQL queries for client database operations
@@ -63,15 +66,16 @@ impl Queries {
 
     // User config queries
     pub const GET_USER_ID: &'static str = "SELECT user_id FROM user_config LIMIT 1";
-    
+
     pub const GET_CLIENT_ID: &'static str = "SELECT client_id FROM user_config LIMIT 1";
-    
-    pub const GET_USER_AND_CLIENT_ID: &'static str = "SELECT user_id, client_id FROM user_config LIMIT 1";
-    
+
+    pub const GET_USER_AND_CLIENT_ID: &'static str =
+        "SELECT user_id, client_id FROM user_config LIMIT 1";
+
     pub const INSERT_USER_CONFIG: &'static str =
         "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)";
-    
-    pub const UPDATE_LAST_SYNC: &'static str = 
+
+    pub const UPDATE_LAST_SYNC: &'static str =
         "UPDATE user_config SET last_sync_at = ?1 WHERE user_id = ?2";
 
     // Document queries
@@ -81,7 +85,7 @@ impl Queries {
         FROM documents
         WHERE id = ?1
     "#;
-    
+
     pub const UPSERT_DOCUMENT: &'static str = r#"
         INSERT INTO documents (
             id, user_id, content, revision_id, version,
@@ -96,31 +100,31 @@ impl Queries {
             deleted_at = excluded.deleted_at,
             sync_status = excluded.sync_status
     "#;
-    
+
     pub const LIST_USER_DOCUMENTS: &'static str = r#"
         SELECT id, sync_status, updated_at 
         FROM documents 
         WHERE user_id = ?1 AND deleted_at IS NULL
         ORDER BY updated_at DESC
     "#;
-    
+
     pub const GET_PENDING_DOCUMENTS: &'static str = r#"
         SELECT id, last_synced_revision, deleted_at FROM documents
         WHERE sync_status = ?
         ORDER BY updated_at ASC
     "#;
-    
+
     pub const MARK_DOCUMENT_SYNCED: &'static str = r#"
         UPDATE documents
         SET sync_status = ?,
             last_synced_revision = ?
         WHERE id = ?
     "#;
-    
-    pub const UPDATE_SYNC_STATUS: &'static str = 
+
+    pub const UPDATE_SYNC_STATUS: &'static str =
         "UPDATE documents SET sync_status = ?2 WHERE id = ?1";
-    
-    pub const COUNT_BY_SYNC_STATUS: &'static str = 
+
+    pub const COUNT_BY_SYNC_STATUS: &'static str =
         "SELECT COUNT(*) as count FROM documents WHERE sync_status = ?1";
 
     // Sync queue queries
@@ -128,18 +132,17 @@ impl Queries {
         INSERT INTO sync_queue (document_id, operation_type, patch)
         VALUES (?1, ?2, ?3)
     "#;
-    
+
     pub const GET_SYNC_QUEUE: &'static str = r#"
         SELECT id, document_id, operation_type, patch, retry_count
         FROM sync_queue
         ORDER BY created_at ASC
         LIMIT 100
     "#;
-    
-    pub const DELETE_FROM_QUEUE: &'static str = 
-        "DELETE FROM sync_queue WHERE id = ?1";
-    
-    pub const INCREMENT_RETRY_COUNT: &'static str = 
+
+    pub const DELETE_FROM_QUEUE: &'static str = "DELETE FROM sync_queue WHERE id = ?1";
+
+    pub const INCREMENT_RETRY_COUNT: &'static str =
         "UPDATE sync_queue SET retry_count = retry_count + 1 WHERE id = ?1";
 }
 
@@ -149,12 +152,10 @@ pub struct DbHelpers;
 impl DbHelpers {
     /// Initialize the database schema
     pub async fn init_schema(pool: &SqlitePool) -> SyncResult<()> {
-        sqlx::query(Queries::SCHEMA)
-            .execute(pool)
-            .await?;
+        sqlx::query(Queries::SCHEMA).execute(pool).await?;
         Ok(())
     }
-    
+
     /// Parse a document from a database row
     pub fn parse_document(row: &SqliteRow) -> SyncResult<Document> {
         let id: String = row.get("id");
@@ -166,7 +167,7 @@ impl DbHelpers {
         let created_at: String = row.get("created_at");
         let updated_at: String = row.get("updated_at");
         let deleted_at: Option<String> = row.get("deleted_at");
-        
+
         Ok(Document {
             id: Uuid::parse_str(&id)?,
             user_id: Uuid::parse_str(&user_id)?,
@@ -176,13 +177,17 @@ impl DbHelpers {
             vector_clock: serde_json::from_str(&vector_clock.unwrap_or_else(|| "{}".to_string()))?,
             created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
             updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
-            deleted_at: deleted_at.and_then(|dt| DateTime::parse_from_rfc3339(&dt).ok())
+            deleted_at: deleted_at
+                .and_then(|dt| DateTime::parse_from_rfc3339(&dt).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
         })
     }
-    
+
     /// Prepare document values for database insertion
-    pub fn document_to_params(doc: &Document, sync_status: Option<SyncStatus>) -> SyncResult<DocumentParams> {
+    pub fn document_to_params(
+        doc: &Document,
+        sync_status: Option<SyncStatus>,
+    ) -> SyncResult<DocumentParams> {
         let status = sync_status.unwrap_or(SyncStatus::Pending).to_string();
 
         Ok((
@@ -198,17 +203,14 @@ impl DbHelpers {
             status,
         ))
     }
-    
+
     /// Get count of documents by sync status
-    pub async fn count_by_status(
-        pool: &SqlitePool,
-        status: SyncStatus,
-    ) -> SyncResult<i64> {
+    pub async fn count_by_status(pool: &SqlitePool, status: SyncStatus) -> SyncResult<i64> {
         let row = sqlx::query(Queries::COUNT_BY_SYNC_STATUS)
             .bind(status.to_string())
             .fetch_one(pool)
             .await?;
-        
+
         Ok(row.try_get("count")?)
     }
 }

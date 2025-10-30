@@ -1,8 +1,8 @@
+use chrono::Utc;
+use serde_json::Value;
 use sync_client::{ClientDatabase, SyncEngine};
 use sync_core::models::{Document, VectorClock};
 use uuid::Uuid;
-use chrono::Utc;
-use serde_json::Value;
 
 /// Creates a new in-memory test sqlite database and runs migrations.
 pub async fn setup_test_db() -> ClientDatabase {
@@ -61,6 +61,8 @@ pub async fn seed_pending_docs(db: &ClientDatabase, user_id: Uuid, n: usize) -> 
 /// Marks all documents in `ids` as synced with given revision id suffix.
 pub async fn mark_all_synced(db: &ClientDatabase, ids: &[Uuid]) {
     for (i, id) in ids.iter().enumerate() {
-        db.mark_synced(id, &format!("2-synced-{}", i)).await.unwrap();
+        db.mark_synced(id, &format!("2-synced-{}", i))
+            .await
+            .unwrap();
     }
 }

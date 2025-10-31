@@ -195,27 +195,40 @@ crate::integration_test!(
                 .await
                 .expect("Failed to create client 2");
 
-        // Process events
-        for _ in 0..5 {
+        // Wait for initial sync to complete with retry logic (up to 5 seconds)
+        tracing::info!("Waiting for initial sync to complete...");
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
+        let mut sync_completed = false;
+
+        while start.elapsed() < timeout {
+            // Process events
             let _ = client1.event_dispatcher().process_events();
             let _ = client2.event_dispatcher().process_events();
+
+            // Check if both clients have completed initial sync
+            {
+                let e1 = events1.lock().unwrap();
+                let e2 = events2.lock().unwrap();
+
+                if e1.sync_completed > 0 && e2.sync_completed > 0 {
+                    tracing::info!(
+                        "Initial sync completed for both clients in {:?}",
+                        start.elapsed()
+                    );
+                    sync_completed = true;
+                    break;
+                }
+            }
+
             sleep(Duration::from_millis(100)).await;
         }
 
-        // Verify initial sync completed for both clients
-        sleep(Duration::from_millis(500)).await;
-        {
-            let e1 = events1.lock().unwrap();
-            let e2 = events2.lock().unwrap();
-            assert!(
-                e1.sync_completed > 0,
-                "Client 1 should have completed initial sync"
-            );
-            assert!(
-                e2.sync_completed > 0,
-                "Client 2 should have completed initial sync"
-            );
-        }
+        assert!(
+            sync_completed,
+            "Clients did not complete initial sync within {} seconds",
+            timeout.as_secs()
+        );
 
         // Create a document on client 1
         tracing::info!("Creating document on client 1...");

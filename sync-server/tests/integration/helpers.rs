@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use hmac::{Hmac, Mac};
 use libc::kill;
 use serde_json::json;
@@ -38,13 +39,30 @@ pub struct TestContext {
 
 impl TestContext {
     pub fn new() -> Self {
+        // Generate unique database name for this test using timestamp and random UUID
+        let unique_db_name = format!(
+            "sync_test_{}_{}",
+            chrono::Utc::now().timestamp_micros(),
+            Uuid::new_v4().to_string().replace("-", "").chars().take(8).collect::<String>()
+        );
+
+        let db_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+            let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
+            format!("postgres://{}@localhost:5432/{}", user, unique_db_name)
+        });
+
+        // Use a random port between 9000-9999 for this test to avoid conflicts
+        let port = 9000 + (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() % 1000) as u16;
+
+        let server_url = std::env::var("SYNC_SERVER_URL")
+            .unwrap_or_else(|_| format!("ws://localhost:{}", port));
+
         Self {
-            server_url: std::env::var("SYNC_SERVER_URL")
-                .unwrap_or_else(|_| "ws://localhost:8080".to_string()),
-            db_url: std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
-                let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
-                format!("postgres://{}@localhost:5432/sync_test_db_local", user)
-            }),
+            server_url,
+            db_url,
             server_process: Arc::new(Mutex::new(None)),
         }
     }
@@ -452,10 +470,18 @@ impl TestContext {
         // Find the project root directory
         let project_root = std::env::current_dir()?.join("../");
 
+        // Extract port from server_url
+        let bind_address = if let Some(port_str) = self.server_url.split(':').last() {
+            format!("0.0.0.0:{}", port_str)
+        } else {
+            "0.0.0.0:8080".to_string()
+        };
+
         // Start the server in background
         let server = tokio::process::Command::new(SERVER_BIN)
             .current_dir(&project_root)
             .env("DATABASE_URL", &self.db_url)
+            .env("BIND_ADDRESS", &bind_address)
             .env("RUST_LOG", "info")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -471,9 +497,12 @@ impl TestContext {
 impl Drop for TestContext {
     fn drop(&mut self) {
         let server_process = self.server_process.clone();
-        // handle any dangling process
+        let db_url = self.db_url.clone();
+
+        // handle any dangling process and cleanup database
         let handle = tokio::runtime::Handle::current();
         handle.spawn(async move {
+            // Kill server process if needed
             let l = server_process.lock().await;
             if l.is_none() {
                 drop(l);
@@ -481,6 +510,22 @@ impl Drop for TestContext {
                     .args(&["-f", "sync-server"])
                     .output()
                     .await;
+            }
+
+            // Drop the unique test database
+            if let Some(db_name) = db_url.split('/').last() {
+                if db_name.starts_with("sync_test_") {
+                    let base_url = db_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&db_url);
+                    let postgres_url = format!("{}/postgres", base_url);
+
+                    if let Ok(pool) = sqlx::postgres::PgPool::connect(&postgres_url).await {
+                        let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
+                            .execute(&pool)
+                            .await;
+                        pool.close().await;
+                        tracing::debug!("Dropped test database: {}", db_name);
+                    }
+                }
             }
         });
     }

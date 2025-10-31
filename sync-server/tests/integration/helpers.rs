@@ -51,11 +51,13 @@ impl TestContext {
             format!("postgres://{}@localhost:5432/{}", user, unique_db_name)
         });
 
-        // Use a random port between 9000-9999 for this test to avoid conflicts
+        // Use a random port between 9000-19000 for this test to avoid conflicts
+        // Widened range from 1000 to 10000 ports to reduce collision probability
+        // when running many tests in parallel
         let port = 9000 + (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_micros() % 1000) as u16;
+            .as_micros() % 10000) as u16;
 
         let server_url = std::env::var("SYNC_SERVER_URL")
             .unwrap_or_else(|_| format!("ws://localhost:{}", port));
@@ -478,14 +480,17 @@ impl TestContext {
         };
 
         // Start the server in background
+        // Note: Using null() for stdout/stderr to ensure proper process cleanup
+        tracing::debug!("Starting server on {} with database {}", bind_address, self.db_url);
         let server = tokio::process::Command::new(SERVER_BIN)
             .current_dir(&project_root)
             .env("DATABASE_URL", &self.db_url)
             .env("BIND_ADDRESS", &bind_address)
-            .env("RUST_LOG", "info")
+            .env("RUST_LOG", "warn")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
+
         let mut w = self.server_process.lock().await;
         *w = Some(server);
 
@@ -502,14 +507,28 @@ impl Drop for TestContext {
         // handle any dangling process and cleanup database
         let handle = tokio::runtime::Handle::current();
         handle.spawn(async move {
-            // Kill server process if needed
-            let l = server_process.lock().await;
-            if l.is_none() {
-                drop(l);
-                let _ = tokio::process::Command::new("pkill")
-                    .args(&["-f", "sync-server"])
-                    .output()
-                    .await;
+            // Kill server process - FIXED: now kills when server IS stored, not when it's None
+            let mut l = server_process.lock().await;
+            if let Some(mut child) = l.take() {
+                if let Some(pid) = child.id() {
+                    tracing::debug!("Cleaning up server process with PID: {}", pid);
+                    // Use SIGTERM for graceful shutdown, then force kill if needed
+                    let _ = unsafe { kill(pid as i32, libc::SIGTERM) };
+
+                    // Give it 1 second to shut down gracefully
+                    let timeout = tokio::time::Duration::from_secs(1);
+                    match tokio::time::timeout(timeout, child.wait()).await {
+                        Ok(_) => {
+                            tracing::debug!("Server process {} terminated gracefully", pid);
+                        }
+                        Err(_) => {
+                            // Force kill if it didn't shut down
+                            tracing::warn!("Server process {} didn't terminate, force killing", pid);
+                            let _ = unsafe { kill(pid as i32, libc::SIGKILL) };
+                            let _ = child.wait().await;
+                        }
+                    }
+                }
             }
 
             // Drop the unique test database

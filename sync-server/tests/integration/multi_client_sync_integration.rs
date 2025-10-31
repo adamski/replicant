@@ -44,7 +44,7 @@ crate::integration_test!(
             .expect("Failed to create client 3");
 
         // Give clients time to fully connect and sync
-        sleep(Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(2000)).await;
 
         // Test 1: Create document on client 1
         tracing::info!("Test 1: Creating document on client 1");

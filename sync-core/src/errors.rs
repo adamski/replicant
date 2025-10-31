@@ -1,11 +1,11 @@
+use crate::protocol;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use std::fmt::{Display, Formatter};
 use chrono::ParseError;
+use std::fmt::{Display, Formatter};
 use thiserror::Error;
-use tracing::log::warn;
-use crate::protocol;
 use tokio::sync::mpsc::error::SendError;
+use tracing::log::warn;
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum SyncError {
@@ -68,7 +68,7 @@ pub enum ServerError {
     ServerSync(String),
 
     #[error("Server Channel send failed: {0}")]
-    SendError(#[from] SendError<protocol::ServerMessage>)
+    SendError(#[from] SendError<protocol::ServerMessage>),
 }
 
 #[derive(Error, Debug)]
@@ -99,17 +99,11 @@ pub enum ClientError {
     ChannelClosed,
 }
 
-
-
-
-
 impl From<argon2::password_hash::Error> for SyncError {
     fn from(error: argon2::password_hash::Error) -> Self {
         SyncError::Server(ServerError::HashingError(error))
     }
 }
-
-
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -161,13 +155,25 @@ impl Display for ApiError {
                 write!(f, "Status=500, InternalServerError: {}", message)
             }
             ApiError::BadRequest(message, meta) => {
-                write!(f, "Status=400, BadRequest: {}. {}", message, meta.clone().unwrap_or_default())
+                write!(
+                    f,
+                    "Status=400, BadRequest: {}. {}",
+                    message,
+                    meta.clone().unwrap_or_default()
+                )
             }
             ApiError::Unauthorized(message) => write!(f, "Status=401, Unauthorized: {}", message),
-            ApiError::ServiceUnavailable(message) => write!(f, "Status=503, ServiceUnavailable: {}", message),
+            ApiError::ServiceUnavailable(message) => {
+                write!(f, "Status=503, ServiceUnavailable: {}", message)
+            }
             ApiError::NotFound(message) => write!(f, "Status=404, NotFound: {}", message),
             ApiError::Conflict(message, meta) => {
-                write!(f, "Status=409, Conflict: {}. {}", message, meta.clone().unwrap_or_default())
+                write!(
+                    f,
+                    "Status=409, Conflict: {}. {}",
+                    message,
+                    meta.clone().unwrap_or_default()
+                )
             }
         }
     }
@@ -188,7 +194,9 @@ impl IntoResponse for SyncError {
                     }
                     ApiError::BadRequest(message, _) => (StatusCode::BAD_REQUEST, message),
                     ApiError::Unauthorized(message) => (StatusCode::UNAUTHORIZED, message),
-                    ApiError::ServiceUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
+                    ApiError::ServiceUnavailable(message) => {
+                        (StatusCode::SERVICE_UNAVAILABLE, message)
+                    }
                     ApiError::NotFound(message) => (StatusCode::NOT_FOUND, message),
                     ApiError::Conflict(message, _) => (StatusCode::CONFLICT, message),
                 }

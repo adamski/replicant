@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Local integration test runner script
-# This script ensures a clean state, starts the sync server locally, runs integration tests, and cleans up
-
 set -e  # Exit on any error
 
 # Configuration
@@ -43,7 +40,7 @@ info() {
 kill_port_processes() {
     local port=$1
     info "Checking for processes on port $port..."
-    
+
     local pids=$(lsof -ti :$port 2>/dev/null || true)
     if [ -n "$pids" ]; then
         warn "Found processes on port $port: $pids"
@@ -58,7 +55,7 @@ kill_port_processes() {
 # Kill all sync-server processes
 kill_sync_servers() {
     info "Checking for running sync-server processes..."
-    
+
     local pids=$(pgrep -f "sync-server" 2>/dev/null || true)
     if [ -n "$pids" ]; then
         warn "Found sync-server processes: $pids"
@@ -73,21 +70,21 @@ kill_sync_servers() {
 # Database cleanup and setup
 setup_database() {
     log "Setting up test database..."
-    
+
     # Check if postgres is running
     if ! psql -U "$DATABASE_USER" -d postgres -c "SELECT 1;" >/dev/null 2>&1; then
         error "PostgreSQL is not running or not accessible"
         error "Make sure PostgreSQL is running and you can connect as user: $DATABASE_USER"
         exit 1
     fi
-    
+
     # Drop existing database (if exists) and create new one
     info "Dropping existing test database (if exists)..."
     psql -U "$DATABASE_USER" -d postgres -c "DROP DATABASE IF EXISTS $DATABASE_NAME;" 2>/dev/null || true
-    
+
     info "Creating fresh test database..."
     psql -U "$DATABASE_USER" -d postgres -c "CREATE DATABASE $DATABASE_NAME;"
-    
+
     # Run migrations
     log "Running database migrations..."
     DATABASE_URL="$DATABASE_URL" sqlx migrate run --source sync-server/migrations
@@ -96,7 +93,7 @@ setup_database() {
 # Cleanup function
 cleanup() {
     log "Cleaning up..."
-    
+
     # Kill server if running
     if [ -f "$SERVER_PID_FILE" ]; then
         local server_pid=$(cat "$SERVER_PID_FILE")
@@ -112,7 +109,7 @@ cleanup() {
         fi
         rm -f "$SERVER_PID_FILE"
     fi
-    
+
     # Kill any remaining sync-server processes
     kill_sync_servers
 }
@@ -131,11 +128,36 @@ kill_sync_servers
 # Step 2: Setup initial database (each test will recreate as needed)
 setup_database
 
-# Step 3: Build the project
-log "Building sync-server..."
-DATABASE_URL="$DATABASE_URL" cargo build --bin sync-server
 
-# Step 4: Run the integration tests (each test manages its own server instance)
+# Step 3: Install cargo-llvm-cov if it's missing
+if cargo llvm-cov --version &> /dev/null; then
+    echo "✅ cargo-llvm-cov is already installed."
+else
+    echo "❌ cargo-llvm-cov not found. Installing now..."
+
+    # Check if cargo is available before attempting to install
+    if ! command -v cargo &> /dev/null; then
+        echo "🚨 Error: 'cargo' (Rust package manager) not found. Please install Rust and Cargo first."
+        exit 1
+    fi
+
+    # Install the tool using cargo install
+    if cargo +stable install cargo-llvm-cov --locked; then
+        echo "🎉 Successfully installed cargo-llvm-cov."
+    else
+        echo "🚨 Error: Installation of cargo-llvm-cov failed."
+        exit 1
+    fi
+fi
+
+# Step 4: Verify installation
+if cargo llvm-cov --version &> /dev/null; then
+    echo "Verification successful."
+else
+    echo "Verification failed, even after attempted installation."
+    exit 1
+fi
+# Step 5: Run the coverage tests (each test runs sequentially)
 log "Running integration tests..."
 
 # Export environment variables for tests
@@ -144,19 +166,13 @@ export SYNC_SERVER_URL="ws://localhost:$SERVER_PORT"
 export TEST_DATABASE_URL="$DATABASE_URL"
 export RUST_TEST_THREADS=1
 
-if [ -n "$1" ]; then
-    # Run specific test if provided
-    log "Running specific test: $1"
-    cargo test --package sync-server --test integration_tests "$1" -- --test-threads=1 --nocapture
-else
-    # Run all integration tests sequentially for complete isolation
-    log "Running all integration tests sequentially (required for full teardown isolation)"
-    cargo test --package sync-server --test integration_tests -- --test-threads=1 --nocapture
-fi
+# Run all tests sequentially for complete isolation
+log "Running all integration tests sequentially (required for full teardown isolation)"
+cargo llvm-cov --workspace --bin sync-server --test "*" --html  --open -- --test-threads 1
 
 test_exit_code=$?
 
-# Step 7: Report results
+# Step 6: Report results
 echo ""
 if [ $test_exit_code -eq 0 ]; then
     log "✅ All integration tests passed!"
@@ -166,5 +182,5 @@ else
     tail -100 "$SERVER_LOG_FILE"
 fi
 
-log "Integration test run complete"
+log "Code coverage test run complete"
 exit $test_exit_code

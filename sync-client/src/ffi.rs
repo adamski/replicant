@@ -3,16 +3,16 @@
 //! This module provides C-compatible functions for using the sync client from C/C++.
 //! The generated header file will be available after building.
 
-use std::ffi::{CStr, CString, c_void};
+use serde_json::Value;
+use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{SyncEngine as CoreSyncEngine, ClientDatabase};
-use crate::events::{EventDispatcher, EventCallback, EventType};
+use crate::events::{EventCallback, EventDispatcher, EventType};
+use crate::{ClientDatabase, SyncEngine as CoreSyncEngine};
 
 /// Opaque handle to a SyncEngine instance
 pub struct SyncEngine {
@@ -65,7 +65,12 @@ pub unsafe extern "C" fn sync_engine_create(
     api_key: *const c_char,
     api_secret: *const c_char,
 ) -> *mut SyncEngine {
-    if database_url.is_null() || server_url.is_null() || email.is_null() || api_key.is_null() || api_secret.is_null() {
+    if database_url.is_null()
+        || server_url.is_null()
+        || email.is_null()
+        || api_key.is_null()
+        || api_secret.is_null()
+    {
         return ptr::null_mut();
     }
 
@@ -99,17 +104,16 @@ pub unsafe extern "C" fn sync_engine_create(
         Err(_) => return ptr::null_mut(),
     };
 
-    let database = match runtime.block_on(async {
-        ClientDatabase::new(database_url).await
-    }) {
+    let database = match runtime.block_on(async { ClientDatabase::new(database_url).await }) {
         Ok(db) => Arc::new(db),
         Err(_) => return ptr::null_mut(),
     };
 
     // Run migrations
-    if runtime.block_on(async {
-        database.run_migrations().await
-    }).is_err() {
+    if runtime
+        .block_on(async { database.run_migrations().await })
+        .is_err()
+    {
         return ptr::null_mut();
     }
 
@@ -117,7 +121,9 @@ pub unsafe extern "C" fn sync_engine_create(
 
     // Try to create sync engine (optional - can work offline)
     let engine = runtime.block_on(async {
-        let sync_engine = CoreSyncEngine::new(database_url, server_url, email, api_key, api_secret).await.ok()?;
+        let sync_engine = CoreSyncEngine::new(database_url, server_url, email, api_key, api_secret)
+            .await
+            .ok()?;
         // We can't easily replace the event dispatcher in an existing SyncEngine,
         // so we'll use separate dispatchers for now. In a production system,
         // you'd want to refactor to share the same dispatcher.
@@ -179,22 +185,26 @@ pub unsafe extern "C" fn sync_engine_create_document(
 
     let doc_id = if let Some(ref sync_engine) = engine.engine {
         // Online mode - use sync engine
-        match engine.runtime.block_on(async {
-            sync_engine.create_document(content.clone()).await
-        }) {
+        match engine
+            .runtime
+            .block_on(async { sync_engine.create_document(content.clone()).await })
+        {
             Ok(doc) => {
                 // Emit event to FFI event dispatcher
-                engine.event_dispatcher.emit_document_created(&doc.id, &content);
+                engine
+                    .event_dispatcher
+                    .emit_document_created(&doc.id, &content);
                 doc.id
-            },
+            }
             Err(_) => return SyncResult::ErrorConnection,
         }
     } else {
         // Offline mode - create locally
         let doc_id = Uuid::new_v4();
-        let user_id = match engine.runtime.block_on(async {
-            engine.database.get_user_id().await
-        }) {
+        let user_id = match engine
+            .runtime
+            .block_on(async { engine.database.get_user_id().await })
+        {
             Ok(id) => id,
             Err(_) => return SyncResult::ErrorDatabase,
         };
@@ -211,14 +221,18 @@ pub unsafe extern "C" fn sync_engine_create_document(
             deleted_at: None,
         };
 
-        if engine.runtime.block_on(async {
-            engine.database.save_document(&doc).await
-        }).is_err() {
+        if engine
+            .runtime
+            .block_on(async { engine.database.save_document(&doc).await })
+            .is_err()
+        {
             return SyncResult::ErrorDatabase;
         }
 
         // Emit event for offline document creation
-        engine.event_dispatcher.emit_document_created(&doc_id, &content);
+        engine
+            .event_dispatcher
+            .emit_document_created(&doc_id, &content);
 
         doc_id
     };
@@ -237,12 +251,12 @@ pub unsafe extern "C" fn sync_engine_create_document(
 }
 
 /// Update an existing document
-/// 
+///
 /// # Arguments
 /// * `engine` - Sync engine instance
 /// * `document_id` - Document ID to update
 /// * `content_json` - New document content as JSON string
-/// 
+///
 /// # Returns
 /// * CSyncResult indicating success or failure
 ///
@@ -282,17 +296,19 @@ pub unsafe extern "C" fn sync_engine_update_document(
 
     if let Some(ref sync_engine) = engine.engine {
         // Online mode
-        match engine.runtime.block_on(async {
-            sync_engine.update_document(doc_uuid, content).await
-        }) {
+        match engine
+            .runtime
+            .block_on(async { sync_engine.update_document(doc_uuid, content).await })
+        {
             Ok(_) => SyncResult::Success,
             Err(_) => SyncResult::ErrorConnection,
         }
     } else {
         // Offline mode - update locally
-        let doc = match engine.runtime.block_on(async {
-            engine.database.get_document(&doc_uuid).await
-        }) {
+        let doc = match engine
+            .runtime
+            .block_on(async { engine.database.get_document(&doc_uuid).await })
+        {
             Ok(d) => d,
             Err(_) => return SyncResult::ErrorDatabase,
         };
@@ -303,25 +319,28 @@ pub unsafe extern "C" fn sync_engine_update_document(
         updated_doc.version += 1;
         updated_doc.updated_at = chrono::Utc::now();
 
-        match engine.runtime.block_on(async {
-            engine.database.save_document(&updated_doc).await
-        }) {
+        match engine
+            .runtime
+            .block_on(async { engine.database.save_document(&updated_doc).await })
+        {
             Ok(_) => {
                 // Emit event for offline document update
-                engine.event_dispatcher.emit_document_updated(&doc_uuid, &updated_doc.content);
+                engine
+                    .event_dispatcher
+                    .emit_document_updated(&doc_uuid, &updated_doc.content);
                 SyncResult::Success
-            },
+            }
             Err(_) => SyncResult::ErrorDatabase,
         }
     }
 }
 
 /// Delete a document
-/// 
+///
 /// # Arguments
 /// * `engine` - Sync engine instance
 /// * `document_id` - Document ID to delete
-/// 
+///
 /// # Returns
 /// * CSyncResult indicating success or failure
 ///
@@ -350,22 +369,24 @@ pub unsafe extern "C" fn sync_engine_delete_document(
 
     if let Some(ref sync_engine) = engine.engine {
         // Online mode
-        match engine.runtime.block_on(async {
-            sync_engine.delete_document(doc_uuid).await
-        }) {
+        match engine
+            .runtime
+            .block_on(async { sync_engine.delete_document(doc_uuid).await })
+        {
             Ok(_) => SyncResult::Success,
             Err(_) => SyncResult::ErrorConnection,
         }
     } else {
         // Offline mode
-        match engine.runtime.block_on(async {
-            engine.database.delete_document(&doc_uuid).await
-        }) {
+        match engine
+            .runtime
+            .block_on(async { engine.database.delete_document(&doc_uuid).await })
+        {
             Ok(_) => {
                 // Emit event for offline document deletion
                 engine.event_dispatcher.emit_document_deleted(&doc_uuid);
                 SyncResult::Success
-            },
+            }
             Err(_) => SyncResult::ErrorDatabase,
         }
     }
@@ -393,13 +414,13 @@ pub extern "C" fn sync_get_version() -> *mut c_char {
 }
 
 /// Register an event callback with optional event type filter
-/// 
+///
 /// # Arguments
 /// * `engine` - Sync engine instance
 /// * `callback` - C callback function to invoke for events
 /// * `context` - User-defined context pointer passed to callback
 /// * `event_filter` - Optional event type filter (-1 for all events)
-/// 
+///
 /// # Returns
 /// * CSyncResult indicating success or failure
 ///
@@ -436,21 +457,24 @@ pub unsafe extern "C" fn sync_engine_register_event_callback(
         None
     };
 
-    match engine.event_dispatcher.register_callback(callback, context, filter) {
+    match engine
+        .event_dispatcher
+        .register_callback(callback, context, filter)
+    {
         Ok(_) => SyncResult::Success,
         Err(_) => SyncResult::ErrorUnknown,
     }
 }
 
 /// Process all queued events on the current thread
-/// 
+///
 /// # Arguments
 /// * `engine` - Sync engine instance
 /// * `out_processed_count` - Output pointer for number of events processed (optional)
-/// 
+///
 /// # Returns
 /// * CSyncResult indicating success or failure
-/// 
+///
 /// # Important
 /// This function MUST be called on the same thread where callbacks were registered.
 /// Events are queued from any thread but only processed on the callback thread.
@@ -474,7 +498,7 @@ pub unsafe extern "C" fn sync_engine_process_events(
                 out_processed_count.write(count as u32);
             }
             SyncResult::Success
-        },
+        }
         Err(_) => SyncResult::ErrorUnknown,
     }
 }

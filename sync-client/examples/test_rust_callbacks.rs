@@ -1,8 +1,8 @@
-use sync_client::{ClientDatabase, SyncEngine};
-use sync_client::events::EventType;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use sync_client::events::EventType;
+use sync_client::{ClientDatabase, SyncEngine};
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -14,17 +14,15 @@ struct TestState {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter("warn")
-        .init();
+    tracing_subscriber::fmt().with_env_filter("warn").init();
 
     println!("🧪 Testing Rust event callbacks...");
-    
+
     // Setup database
     std::fs::create_dir_all("databases")?;
     let db_file = "databases/callback_test.sqlite3";
     let db_url = format!("sqlite:{}?mode=rwc", db_file);
-    
+
     let db = Arc::new(ClientDatabase::new(&db_url).await?);
     db.run_migrations().await?;
 
@@ -47,51 +45,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     // Try to connect to server (will fail, but we want to test offline callbacks)
-    let sync_engine = match SyncEngine::new(&db_url, "ws://nonexistent:8080/ws", "test-token", "test-user@example.com").await {
+    let sync_engine = match SyncEngine::new(
+        &db_url,
+        "ws://nonexistent:8080/ws",
+        "test-user@example.com",
+        "test-key",
+        "test-secret",
+    )
+    .await
+    {
         Ok(engine) => {
             // Register event callbacks
             let events = engine.event_dispatcher();
             let state_clone = state.clone();
-            
+
             println!("📡 Registering Rust event callback...");
             events.register_rust_callback(
-                Box::new(move |event_type, document_id, title, _content, error, numeric_data, _boolean_data, _context| {
-                    let mut test_state = state_clone.lock().unwrap();
-                    
-                    let event_desc = match event_type {
-                        EventType::DocumentCreated => {
-                            format!("📄 Document created: {}", title.unwrap_or("untitled"))
-                        }
-                        EventType::DocumentUpdated => {
-                            format!("✏️ Document updated: {}", title.unwrap_or("untitled"))
-                        }
-                        EventType::DocumentDeleted => {
-                            format!("🗑️ Document deleted: {}", document_id.unwrap_or("unknown"))
-                        }
-                        EventType::SyncStarted => {
-                            "🔄 Sync started".to_string()
-                        }
-                        EventType::SyncCompleted => {
-                            format!("✅ Sync completed: {} docs", numeric_data)
-                        }
-                        EventType::ConnectionSucceeded => {
-                            "🔗 Connected to server".to_string()
-                        }
-                        EventType::ConnectionLost => {
-                            "❌ Disconnected from server".to_string()
-                        }
-                        EventType::ConnectionAttempted => {
-                            "🔄 Attempting to connect...".to_string()
-                        }
-                        EventType::SyncError => {
-                            format!("🚨 Sync error: {}", error.unwrap_or("unknown"))
-                        }
-                        _ => format!("❓ Unknown event: {:?}", event_type)
-                    };
-                    
-                    println!("  📥 Callback received: {}", event_desc);
-                    test_state.events_received.push(event_desc);
-                }),
+                Box::new(
+                    move |event_type,
+                          document_id,
+                          title,
+                          _content,
+                          error,
+                          numeric_data,
+                          _boolean_data,
+                          _context| {
+                        let mut test_state = state_clone.lock().unwrap();
+
+                        let event_desc = match event_type {
+                            EventType::DocumentCreated => {
+                                format!("📄 Document created: {}", title.unwrap_or("untitled"))
+                            }
+                            EventType::DocumentUpdated => {
+                                format!("✏️ Document updated: {}", title.unwrap_or("untitled"))
+                            }
+                            EventType::DocumentDeleted => {
+                                format!("🗑️ Document deleted: {}", document_id.unwrap_or("unknown"))
+                            }
+                            EventType::SyncStarted => "🔄 Sync started".to_string(),
+                            EventType::SyncCompleted => {
+                                format!("✅ Sync completed: {} docs", numeric_data)
+                            }
+                            EventType::ConnectionSucceeded => "🔗 Connected to server".to_string(),
+                            EventType::ConnectionLost => "❌ Disconnected from server".to_string(),
+                            EventType::ConnectionAttempted => {
+                                "🔄 Attempting to connect...".to_string()
+                            }
+                            EventType::SyncError => {
+                                format!("🚨 Sync error: {}", error.unwrap_or("unknown"))
+                            }
+                            _ => format!("❓ Unknown event: {:?}", event_type),
+                        };
+
+                        println!("  📥 Callback received: {}", event_desc);
+                        test_state.events_received.push(event_desc);
+                    },
+                ),
                 std::ptr::null_mut(),
                 None,
             )?;
@@ -140,14 +149,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
             };
-            
+
             db.save_document(&doc).await?;
             println!("     Created: {}", doc.id);
         }
 
         // Give time for events to process
         sleep(Duration::from_millis(10)).await;
-        
+
         // Process any pending events
         if let Some(engine) = &sync_engine {
             let events = engine.event_dispatcher();
@@ -162,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🧪 Testing direct event emission...");
     if let Some(engine) = &sync_engine {
         let events = engine.event_dispatcher();
-        
+
         // Manually emit some events to test the callback mechanism
         let test_doc_id = Uuid::new_v4();
         let test_content = json!({"title": "Test Document", "test": "data"});
@@ -172,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         events.emit_sync_started();
         events.emit_sync_completed(42);
         events.emit_connection_succeeded("ws://test-server");
-        
+
         // Process the emitted events
         let processed = events.process_events()?;
         println!("  🔄 Processed {} emitted events", processed);
@@ -207,13 +216,11 @@ async fn setup_user(
     server_url: &str,
     _token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query(
-        "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)",
-    )
-    .bind(user_id.to_string())
-    .bind(client_id.to_string())
-    .bind(server_url)
-    .execute(&db.pool)
-    .await?;
+    sqlx::query("INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)")
+        .bind(user_id.to_string())
+        .bind(client_id.to_string())
+        .bind(server_url)
+        .execute(&db.pool)
+        .await?;
     Ok(())
 }

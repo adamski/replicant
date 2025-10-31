@@ -1,9 +1,9 @@
 pub mod database;
-pub mod sync_engine;
-pub mod websocket;
+pub mod events;
 pub mod offline_queue;
 pub mod queries;
-pub mod events;
+pub mod sync_engine;
+pub mod websocket;
 
 // C FFI module
 pub mod ffi;
@@ -16,15 +16,14 @@ pub use database::ClientDatabase;
 pub use sync_engine::SyncEngine;
 pub use websocket::WebSocketClient;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
     use serde_json::json;
-    use sync_core::models::{Document, VectorClock};
     use sqlx::Row;
-    
+    use sync_core::models::{Document, VectorClock};
+    use uuid::Uuid;
+
     #[tokio::test]
     async fn test_client_database_operations() {
         // Create in-memory SQLite database
@@ -54,27 +53,25 @@ mod tests {
                 last_synced_revision TEXT,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
-            "#
+            "#,
         )
-        .execute(&db.pool)
-        .await
-        .unwrap();
-        
-        // Insert test user
-        let user_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO user_config (user_id, server_url) VALUES (?1, ?2)"
-        )
-        .bind(user_id.to_string())
-        .bind("ws://localhost:8080/ws")
         .execute(&db.pool)
         .await
         .unwrap();
 
+        // Insert test user
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO user_config (user_id, server_url) VALUES (?1, ?2)")
+            .bind(user_id.to_string())
+            .bind("ws://localhost:8080/ws")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
         // Test get_user_id
         let retrieved_user_id = db.get_user_id().await.unwrap();
         assert_eq!(retrieved_user_id, user_id);
-        
+
         // Create a test document
         let content = json!({
             "title": "Test Document",
@@ -92,24 +89,24 @@ mod tests {
             updated_at: chrono::Utc::now(),
             deleted_at: None,
         };
-        
+
         // Save document
         db.save_document(&doc).await.unwrap();
-        
+
         // Retrieve document
         let loaded_doc = db.get_document(&doc.id).await.unwrap();
         assert_eq!(loaded_doc.id, doc.id);
         // Title is now part of content JSON, so just compare the content
         assert_eq!(loaded_doc.content, doc.content);
     }
-    
+
     #[test]
     fn test_offline_queue_message_extraction() {
-        use sync_core::protocol::ClientMessage;
         use crate::offline_queue::{extract_document_id, operation_type};
-        
+        use sync_core::protocol::ClientMessage;
+
         let doc_id = Uuid::new_v4();
-        
+
         // Test create message
         let test_content = json!({"title": "Test"});
         let create_msg = ClientMessage::CreateDocument {
@@ -123,22 +120,22 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
-            }
+            },
         };
-        
+
         assert_eq!(extract_document_id(&create_msg), Some(doc_id));
         assert_eq!(operation_type(&create_msg), "create");
-        
+
         // Test delete message
         let delete_msg = ClientMessage::DeleteDocument {
             document_id: doc_id,
             revision_id: "1-test".to_string(),
         };
-        
+
         assert_eq!(extract_document_id(&delete_msg), Some(doc_id));
         assert_eq!(operation_type(&delete_msg), "delete");
     }
-    
+
     #[tokio::test]
     async fn test_delete_document() {
         // Create in-memory SQLite database
@@ -168,22 +165,20 @@ mod tests {
                 last_synced_revision TEXT,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
-            "#
+            "#,
         )
         .execute(&db.pool)
         .await
         .unwrap();
-        
+
         // Insert test user
         let user_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO user_config (user_id, server_url) VALUES (?1, ?2)"
-        )
-        .bind(user_id.to_string())
-        .bind("ws://localhost:8080/ws")
-        .execute(&db.pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO user_config (user_id, server_url) VALUES (?1, ?2)")
+            .bind(user_id.to_string())
+            .bind("ws://localhost:8080/ws")
+            .execute(&db.pool)
+            .await
+            .unwrap();
 
         // Create a test document
         let content = json!({
@@ -201,24 +196,24 @@ mod tests {
             updated_at: chrono::Utc::now(),
             deleted_at: None,
         };
-        
+
         // Save document
         db.save_document(&doc).await.unwrap();
-        
+
         // Delete document
         db.delete_document(&doc.id).await.unwrap();
-        
+
         // Try to retrieve deleted document - it should still exist but with deleted_at set
         let loaded_doc = db.get_document(&doc.id).await.unwrap();
         assert_eq!(loaded_doc.id, doc.id);
-        
+
         // Check that deleted_at is set
         let row = sqlx::query("SELECT deleted_at FROM documents WHERE id = ?")
             .bind(doc.id.to_string())
             .fetch_one(&db.pool)
             .await
             .unwrap();
-        
+
         let deleted_at: Option<String> = row.try_get("deleted_at").unwrap();
         assert!(deleted_at.is_some());
     }

@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use crate::models::{Document, DocumentPatch};
+use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -17,7 +17,7 @@ pub enum ClientMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<i64>,
     },
-    
+
     // Document operations
     CreateDocument {
         document: Document,
@@ -27,24 +27,24 @@ pub enum ClientMessage {
     },
     DeleteDocument {
         document_id: Uuid,
-        revision_id: String,  // CouchDB-style
+        revision_id: String, // CouchDB-style
     },
-    
+
     // Sync operations
     RequestSync {
         document_ids: Vec<Uuid>,
     },
     RequestFullSync,
-    
+
     // New sequence-based sync operations
     GetChangesSince {
         last_sequence: u64,
-        limit: Option<u32>,  // Optional pagination
+        limit: Option<u32>, // Optional pagination
     },
     AckChanges {
-        up_to_sequence: u64,  // Client confirms it processed up to this sequence
+        up_to_sequence: u64, // Client confirms it processed up to this sequence
     },
-    
+
     // Heartbeat
     Ping,
 }
@@ -60,7 +60,7 @@ pub enum ServerMessage {
     AuthError {
         reason: String,
     },
-    
+
     // Document updates
     DocumentCreated {
         document: Document,
@@ -70,9 +70,9 @@ pub enum ServerMessage {
     },
     DocumentDeleted {
         document_id: Uuid,
-        revision_id: String,  // CouchDB-style
+        revision_id: String, // CouchDB-style
     },
-    
+
     // Document operation confirmations
     DocumentCreatedResponse {
         document_id: Uuid,
@@ -92,7 +92,7 @@ pub enum ServerMessage {
         success: bool,
         error: Option<String>,
     },
-    
+
     // Sync responses
     SyncDocument {
         document: Document,
@@ -100,31 +100,31 @@ pub enum ServerMessage {
     SyncComplete {
         synced_count: usize,
     },
-    
+
     // Conflict notification
     ConflictDetected {
         document_id: Uuid,
         local_revision: String,  // CouchDB-style
-        server_revision: String,  // CouchDB-style
+        server_revision: String, // CouchDB-style
         resolution_strategy: ConflictResolution,
     },
-    
+
     // New sequence-based sync responses
     Changes {
         events: Vec<ChangeEvent>,
         latest_sequence: u64,
-        has_more: bool,  // True if there are more changes beyond the limit
+        has_more: bool, // True if there are more changes beyond the limit
     },
     ChangesAcknowledged {
         sequence: u64,
     },
-    
+
     // Errors
     Error {
         code: ErrorCode,
         message: String,
     },
-    
+
     // Heartbeat
     Pong,
 }
@@ -140,7 +140,7 @@ pub enum ConflictResolution {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     InvalidAuth,
@@ -159,9 +159,9 @@ pub struct ChangeEvent {
     pub document_id: Uuid,
     pub user_id: Uuid,
     pub event_type: ChangeEventType,
-    pub revision_id: String,  // CouchDB-style
+    pub revision_id: String, // CouchDB-style
     pub forward_patch: Option<serde_json::Value>,
-    pub reverse_patch: Option<serde_json::Value>,  // patch to undo this change
+    pub reverse_patch: Option<serde_json::Value>, // patch to undo this change
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 

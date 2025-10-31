@@ -45,7 +45,4 @@ sync-client = { path = "../sync-client" }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 tungstenite = "0.24"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-
-[[test]]
-name = "integration"
-path = "tests_integration/tests.rs"
+libc = "1.0.0-alpha.1"

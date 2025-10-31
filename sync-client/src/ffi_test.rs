@@ -1,20 +1,20 @@
 //! C FFI test functions for the sync client
-//! 
+//!
 //! This module provides test-only C-compatible functions for development and testing.
 //! These functions are only available in debug builds.
 
-use uuid::Uuid;
 use crate::ffi::{SyncEngine, SyncResult};
+use uuid::Uuid;
 
 /// Trigger a test event (for development/testing purposes)
-/// 
+///
 /// # Arguments
 /// * `engine` - Sync engine instance
 /// * `event_type` - Event type to emit (0-7)
-/// 
+///
 /// # Returns
 /// * SyncResult indicating success or failure
-/// 
+///
 /// # Event Types
 /// * 0 - DocumentCreated
 /// * 1 - DocumentUpdated  
@@ -40,32 +40,42 @@ pub unsafe extern "C" fn sync_engine_emit_test_event(
     }
 
     let engine = &*engine;
-    
+
     match event_type {
         0 => {
             let test_id = Uuid::new_v4();
             let test_content = serde_json::json!({"title": "Test Document (Created)", "test": "data", "created_at": chrono::Utc::now()});
-            engine.event_dispatcher.emit_document_created(&test_id, &test_content);
-        },
+            engine
+                .event_dispatcher
+                .emit_document_created(&test_id, &test_content);
+        }
         1 => {
             let test_id = Uuid::new_v4();
             let test_content = serde_json::json!({"title": "Test Document (Updated)", "test": "updated", "updated_at": chrono::Utc::now()});
-            engine.event_dispatcher.emit_document_updated(&test_id, &test_content);
-        },
+            engine
+                .event_dispatcher
+                .emit_document_updated(&test_id, &test_content);
+        }
         2 => {
             let test_id = Uuid::new_v4();
             engine.event_dispatcher.emit_document_deleted(&test_id);
-        },
+        }
         3 => engine.event_dispatcher.emit_sync_started(),
         4 => engine.event_dispatcher.emit_sync_completed(5),
-        5 => engine.event_dispatcher.emit_sync_error("Test error message from sync_engine_emit_test_event"),
+        5 => engine
+            .event_dispatcher
+            .emit_sync_error("Test error message from sync_engine_emit_test_event"),
         6 => {
             let test_id = Uuid::new_v4();
             engine.event_dispatcher.emit_conflict_detected(&test_id);
-        },
+        }
         7 => engine.event_dispatcher.emit_connection_lost("test-server"),
-        8 => engine.event_dispatcher.emit_connection_attempted("test-server"),
-        9 => engine.event_dispatcher.emit_connection_succeeded("test-server"),
+        8 => engine
+            .event_dispatcher
+            .emit_connection_attempted("test-server"),
+        9 => engine
+            .event_dispatcher
+            .emit_connection_succeeded("test-server"),
         _ => return SyncResult::ErrorInvalidInput,
     }
 
@@ -73,11 +83,11 @@ pub unsafe extern "C" fn sync_engine_emit_test_event(
 }
 
 /// Trigger multiple test events in sequence (for stress testing callbacks)
-/// 
+///
 /// # Arguments
 /// * `engine` - Sync engine instance
 /// * `count` - Number of events to emit (1-100)
-/// 
+///
 /// # Returns
 /// * SyncResult indicating success or failure
 ///
@@ -94,7 +104,7 @@ pub unsafe extern "C" fn sync_engine_emit_test_event_burst(
     }
 
     let engine = &*engine;
-    
+
     for i in 0..count {
         let test_id = Uuid::new_v4();
         let test_content = serde_json::json!({
@@ -103,7 +113,9 @@ pub unsafe extern "C" fn sync_engine_emit_test_event_burst(
             "sequence": i,
             "timestamp": chrono::Utc::now()
         });
-        engine.event_dispatcher.emit_document_created(&test_id, &test_content);
+        engine
+            .event_dispatcher
+            .emit_document_created(&test_id, &test_content);
     }
 
     SyncResult::Success

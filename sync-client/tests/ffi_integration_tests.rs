@@ -1,17 +1,18 @@
 //! Integration tests for FFI event callbacks
-//! 
+//!
 //! These tests verify that the FFI interface works correctly and that
 //! callbacks are properly invoked when events occur.
 
 use std::ffi::{c_void, CStr, CString};
+use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::ptr;
 
-use sync_client::ffi::{SyncEngine, SyncResult, sync_engine_create, sync_engine_destroy,
-                      sync_engine_register_event_callback, sync_engine_create_document,
-                      sync_engine_process_events};
 use sync_client::events::{EventData, EventType};
+use sync_client::ffi::{
+    sync_engine_create, sync_engine_create_document, sync_engine_destroy,
+    sync_engine_process_events, sync_engine_register_event_callback, SyncEngine, SyncResult,
+};
 
 #[cfg(debug_assertions)]
 use sync_client::ffi_test::{sync_engine_emit_test_event, sync_engine_emit_test_event_burst};
@@ -33,7 +34,7 @@ impl CallbackCapture {
     fn new() -> Self {
         Self::default()
     }
-    
+
     fn reset(&self) {
         self.call_count.store(0, Ordering::SeqCst);
         *self.last_event_type.lock().unwrap() = None;
@@ -49,31 +50,35 @@ impl CallbackCapture {
 extern "C" fn capture_callback(event: *const EventData, context: *mut c_void) {
     let capture = unsafe { &*(context as *const CallbackCapture) };
     let event = unsafe { &*event };
-    
+
     capture.call_count.fetch_add(1, Ordering::SeqCst);
     *capture.last_event_type.lock().unwrap() = Some(event.event_type);
-    
+
     // Capture strings
     if !event.document_id.is_null() {
-        let doc_id = unsafe { CStr::from_ptr(event.document_id).to_string_lossy().to_string() };
+        let doc_id = unsafe {
+            CStr::from_ptr(event.document_id)
+                .to_string_lossy()
+                .to_string()
+        };
         *capture.last_document_id.lock().unwrap() = Some(doc_id);
     }
-    
+
     if !event.title.is_null() {
         let title = unsafe { CStr::from_ptr(event.title).to_string_lossy().to_string() };
         *capture.last_title.lock().unwrap() = Some(title);
     }
-    
+
     if !event.content.is_null() {
         let content = unsafe { CStr::from_ptr(event.content).to_string_lossy().to_string() };
         *capture.last_content.lock().unwrap() = Some(content);
     }
-    
+
     if !event.error.is_null() {
         let error = unsafe { CStr::from_ptr(event.error).to_string_lossy().to_string() };
         *capture.last_error.lock().unwrap() = Some(error);
     }
-    
+
     *capture.last_numeric_data.lock().unwrap() = event.numeric_data;
     *capture.last_boolean_data.lock().unwrap() = event.boolean_data;
 }
@@ -134,14 +139,13 @@ fn test_ffi_callback_with_document_creation() {
         assert_eq!(result, SyncResult::Success);
 
         // Create a document (this should trigger the callback in offline mode)
-        let content = CString::new(r#"{"title":"Test Document","content":"test data","type":"note"}"#).unwrap();
+        let content =
+            CString::new(r#"{"title":"Test Document","content":"test data","type":"note"}"#)
+                .unwrap();
         let mut doc_id = [0u8; 37]; // UUID string + null terminator
 
-        let create_result = sync_engine_create_document(
-            engine,
-            content.as_ptr(),
-            doc_id.as_mut_ptr() as *mut i8,
-        );
+        let create_result =
+            sync_engine_create_document(engine, content.as_ptr(), doc_id.as_mut_ptr() as *mut i8);
 
         assert_eq!(create_result, SyncResult::Success);
 
@@ -150,7 +154,10 @@ fn test_ffi_callback_with_document_creation() {
 
         // Verify callback was called
         assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::DocumentCreated));
+        assert_eq!(
+            *capture.last_event_type.lock().unwrap(),
+            Some(EventType::DocumentCreated)
+        );
 
         let captured_title = capture.last_title.lock().unwrap();
         assert_eq!(captured_title.as_ref().unwrap(), "Test Document");
@@ -259,9 +266,18 @@ fn test_ffi_multiple_callbacks() {
             assert_eq!(capture2.call_count.load(Ordering::SeqCst), 1);
             assert_eq!(capture3.call_count.load(Ordering::SeqCst), 1);
 
-            assert_eq!(*capture1.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
-            assert_eq!(*capture2.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
-            assert_eq!(*capture3.last_event_type.lock().unwrap(), Some(EventType::SyncStarted));
+            assert_eq!(
+                *capture1.last_event_type.lock().unwrap(),
+                Some(EventType::SyncStarted)
+            );
+            assert_eq!(
+                *capture2.last_event_type.lock().unwrap(),
+                Some(EventType::SyncStarted)
+            );
+            assert_eq!(
+                *capture3.last_event_type.lock().unwrap(),
+                Some(EventType::SyncStarted)
+            );
         }
 
         sync_engine_destroy(engine);
@@ -292,8 +308,12 @@ fn test_ffi_all_event_types() {
             sync_engine_emit_test_event(engine, event_type);
             sync_engine_process_events(engine, ptr::null_mut());
 
-            assert_eq!(capture.call_count.load(Ordering::SeqCst), 1,
-                       "Event type {} was not emitted", event_type);
+            assert_eq!(
+                capture.call_count.load(Ordering::SeqCst),
+                1,
+                "Event type {} was not emitted",
+                event_type
+            );
 
             let expected_type = match event_type {
                 0 => EventType::DocumentCreated,
@@ -307,7 +327,10 @@ fn test_ffi_all_event_types() {
                 _ => panic!("Unexpected event type"),
             };
 
-            assert_eq!(*capture.last_event_type.lock().unwrap(), Some(expected_type));
+            assert_eq!(
+                *capture.last_event_type.lock().unwrap(),
+                Some(expected_type)
+            );
         }
 
         sync_engine_destroy(engine);
@@ -337,7 +360,10 @@ fn test_ffi_event_data_integrity() {
         sync_engine_process_events(engine, ptr::null_mut());
 
         assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::SyncCompleted));
+        assert_eq!(
+            *capture.last_event_type.lock().unwrap(),
+            Some(EventType::SyncCompleted)
+        );
         assert_eq!(*capture.last_numeric_data.lock().unwrap(), 5); // Test uses fixed value of 5
 
         // Test sync error event (has error message)
@@ -346,7 +372,10 @@ fn test_ffi_event_data_integrity() {
         sync_engine_process_events(engine, ptr::null_mut());
 
         assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::SyncError));
+        assert_eq!(
+            *capture.last_event_type.lock().unwrap(),
+            Some(EventType::SyncError)
+        );
         let error_msg = capture.last_error.lock().unwrap();
         assert!(error_msg.is_some());
         assert!(error_msg.as_ref().unwrap().contains("Test error message"));
@@ -357,7 +386,10 @@ fn test_ffi_event_data_integrity() {
         sync_engine_process_events(engine, ptr::null_mut());
 
         assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::ConnectionLost));
+        assert_eq!(
+            *capture.last_event_type.lock().unwrap(),
+            Some(EventType::ConnectionLost)
+        );
         assert_eq!(*capture.last_boolean_data.lock().unwrap(), true); // Test uses fixed value of true
 
         sync_engine_destroy(engine);
@@ -386,7 +418,10 @@ fn test_ffi_event_burst() {
 
         // Should have received all 5 events
         assert_eq!(capture.call_count.load(Ordering::SeqCst), 5);
-        assert_eq!(*capture.last_event_type.lock().unwrap(), Some(EventType::DocumentCreated));
+        assert_eq!(
+            *capture.last_event_type.lock().unwrap(),
+            Some(EventType::DocumentCreated)
+        );
 
         // The last event should have sequence 4 in the title
         let last_title = capture.last_title.lock().unwrap();
@@ -476,16 +511,18 @@ fn test_ffi_callback_thread_safety() {
             // Emit events from multiple threads (simulated stress test)
             let engine_ptr = engine as usize; // Store as usize for thread safety
 
-            let handles: Vec<_> = (0..3).map(|_i| {
-                let _capture = capture.clone();
-                thread::spawn(move || {
-                    let engine = engine_ptr as *mut SyncEngine;
-                    for _ in 0..2 {
-                        sync_engine_emit_test_event(engine, 3); // SyncStarted
-                        thread::sleep(Duration::from_millis(1));
-                    }
+            let handles: Vec<_> = (0..3)
+                .map(|_i| {
+                    let _capture = capture.clone();
+                    thread::spawn(move || {
+                        let engine = engine_ptr as *mut SyncEngine;
+                        for _ in 0..2 {
+                            sync_engine_emit_test_event(engine, 3); // SyncStarted
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                    })
                 })
-            }).collect();
+                .collect();
 
             // Wait for all threads
             for handle in handles {

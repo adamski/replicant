@@ -6,13 +6,30 @@ use tracing::info;
 
 #[derive(Debug, Clone)]
 pub enum LogMessage {
-    ClientConnected { client_id: String },
-    ClientDisconnected { client_id: String },
-    MessageReceived { client_id: String, message: ClientMessage },
-    MessageSent { client_id: String, message: ServerMessage },
-    PatchApplied { document_id: String, patch: String },
-    ConflictDetected { document_id: String },
-    Error { message: String },
+    ClientConnected {
+        client_id: String,
+    },
+    ClientDisconnected {
+        client_id: String,
+    },
+    MessageReceived {
+        client_id: String,
+        message: ClientMessage,
+    },
+    MessageSent {
+        client_id: String,
+        message: ServerMessage,
+    },
+    PatchApplied {
+        document_id: String,
+        patch: String,
+    },
+    ConflictDetected {
+        document_id: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone)]
@@ -26,43 +43,61 @@ impl MonitoringLayer {
     }
 
     pub async fn log_client_connected(&self, client_id: &str) {
-        let _ = self.tx.send(LogMessage::ClientConnected {
-            client_id: client_id.to_string(),
-        }).await;
+        let _ = self
+            .tx
+            .send(LogMessage::ClientConnected {
+                client_id: client_id.to_string(),
+            })
+            .await;
     }
 
     pub async fn log_client_disconnected(&self, client_id: &str) {
-        let _ = self.tx.send(LogMessage::ClientDisconnected {
-            client_id: client_id.to_string(),
-        }).await;
+        let _ = self
+            .tx
+            .send(LogMessage::ClientDisconnected {
+                client_id: client_id.to_string(),
+            })
+            .await;
     }
 
     pub async fn log_message_received(&self, client_id: &str, message: ClientMessage) {
-        let _ = self.tx.send(LogMessage::MessageReceived {
-            client_id: client_id.to_string(),
-            message,
-        }).await;
+        let _ = self
+            .tx
+            .send(LogMessage::MessageReceived {
+                client_id: client_id.to_string(),
+                message,
+            })
+            .await;
     }
 
     pub async fn log_message_sent(&self, client_id: &str, message: ServerMessage) {
-        let _ = self.tx.send(LogMessage::MessageSent {
-            client_id: client_id.to_string(),
-            message,
-        }).await;
+        let _ = self
+            .tx
+            .send(LogMessage::MessageSent {
+                client_id: client_id.to_string(),
+                message,
+            })
+            .await;
     }
 
     pub async fn log_patch_applied(&self, document_id: &str, patch: &serde_json::Value) {
         let patch_json = serde_json::to_string_pretty(patch).unwrap_or_default();
-        let _ = self.tx.send(LogMessage::PatchApplied {
-            document_id: document_id.to_string(),
-            patch: patch_json,
-        }).await;
+        let _ = self
+            .tx
+            .send(LogMessage::PatchApplied {
+                document_id: document_id.to_string(),
+                patch: patch_json,
+            })
+            .await;
     }
 
     pub async fn log_conflict_detected(&self, document_id: &str) {
-        let _ = self.tx.send(LogMessage::ConflictDetected {
-            document_id: document_id.to_string(),
-        }).await;
+        let _ = self
+            .tx
+            .send(LogMessage::ConflictDetected {
+                document_id: document_id.to_string(),
+            })
+            .await;
     }
 
     pub async fn log_error(&self, message: String) {
@@ -75,10 +110,10 @@ pub async fn spawn_monitoring_display(mut rx: mpsc::Receiver<LogMessage>) {
         info!("");
         info!("{}", "📋 Activity Log:".bold());
         info!("{}", "─".repeat(80).dimmed());
-        
+
         while let Some(log) = rx.recv().await {
             let timestamp = Local::now().format("%H:%M:%S%.3f");
-            
+
             match log {
                 LogMessage::ClientConnected { client_id } => {
                     info!(

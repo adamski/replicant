@@ -1,11 +1,11 @@
-use sqlx::{PgPool, postgres::PgPoolOptions};
-use uuid::Uuid;
+use crate::queries::document_to_params;
+use json_patch::Patch;
+use sqlx::{postgres::PgPoolOptions, PgPool};
 use sync_core::models::Document;
 use sync_core::protocol::{ChangeEvent, ChangeEventType};
-use json_patch::Patch;
-use crate::queries::document_to_params;
 use sync_core::SyncResult;
 use tracing::instrument;
+use uuid::Uuid;
 
 pub struct ChangeEventParams<'a> {
     pub document_id: &'a Uuid,
@@ -19,48 +19,59 @@ pub struct ChangeEventParams<'a> {
 
 pub struct ServerDatabase {
     pub pool: PgPool,
+    pub app_namespace_id: String,
 }
 
 impl ServerDatabase {
-
     #[instrument(skip(database_url))]
-    pub async fn new(database_url: &str) -> SyncResult<Self> {
+    pub async fn new(database_url: &str, app_namespace_id: String) -> SyncResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .connect(database_url)
             .await?;
-        
-        Ok(Self { pool })
+
+        Ok(Self {
+            pool,
+            app_namespace_id,
+        })
     }
-    
-    pub async fn new_with_options(database_url: &str, max_connections: u32) -> SyncResult<Self> {
+
+    pub async fn new_with_options(
+        database_url: &str,
+        app_namespace_id: String,
+        max_connections: u32,
+    ) -> SyncResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
-            .max_lifetime(std::time::Duration::from_secs(30))  // Short lifetime for tests
+            .max_lifetime(std::time::Duration::from_secs(30)) // Short lifetime for tests
             .idle_timeout(std::time::Duration::from_secs(10))
             .connect(database_url)
             .await?;
-        
-        Ok(Self { pool })
+
+        Ok(Self {
+            pool,
+            app_namespace_id,
+        })
     }
-    
+
     pub async fn run_migrations(&self) -> SyncResult<()> {
-        sqlx::migrate!("./migrations")
-            .run(&self.pool)
-            .await?;
+        sqlx::migrate!("./migrations").run(&self.pool).await?;
         Ok(())
     }
 
-    pub async fn create_user(
-        &self,
-        email: &str,
-    ) -> SyncResult<Uuid> {
+    pub async fn create_user(&self, email: &str) -> SyncResult<Uuid> {
+        // Generate deterministic user ID using UUID v5
+        // This MUST match the client's logic in ClientDatabase::generate_deterministic_user_id
+        let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, self.app_namespace_id.as_bytes());
+        let user_id = Uuid::new_v5(&app_namespace, email.as_bytes());
+
         let row = sqlx::query!(
             r#"
-            INSERT INTO users (email)
-            VALUES ($1)
+            INSERT INTO users (id, email)
+            VALUES ($1, $2)
             RETURNING id
         "#,
+            user_id,
             email
         )
         .fetch_one(&self.pool)
@@ -69,16 +80,10 @@ impl ServerDatabase {
         Ok(row.id)
     }
 
-    pub async fn get_user_by_email(
-        &self,
-        email: &str,
-    ) -> SyncResult<Option<Uuid>> {
-        let result = sqlx::query_scalar!(
-            "SELECT id FROM users WHERE email = $1",
-            email
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+    pub async fn get_user_by_email(&self, email: &str) -> SyncResult<Option<Uuid>> {
+        let result = sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", email)
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(result)
     }
@@ -101,39 +106,43 @@ impl ServerDatabase {
                 vector_clock, created_at, updated_at, deleted_at, checksum, size_bytes
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         "#,
-            params.0,  // id
-            params.1,  // user_id
-            params.2 as _,  // content_json
-            params.3,  // revision_id
-            params.4,  // version
-            params.5 as _,  // vector_clock_json
-            params.6,  // created_at
-            params.7,  // updated_at
-            params.8,  // deleted_at
-            params.9,  // checksum
-            params.10  // size_bytes
+            params.0,      // id
+            params.1,      // user_id
+            params.2 as _, // content_json
+            params.3,      // revision_id
+            params.4,      // version
+            params.5 as _, // vector_clock_json
+            params.6,      // created_at
+            params.7,      // updated_at
+            params.8,      // deleted_at
+            params.9,      // checksum
+            params.10      // size_bytes
         )
         .execute(&mut *tx)
         .await?;
 
         // Log the create event
         // For CREATE: forward_patch contains the full document, reverse_patch is null
-        let doc_json = serde_json::to_value(doc).map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
-        self.log_change_event(&mut tx, ChangeEventParams {
-            document_id: &doc.id,
-            user_id: &doc.user_id,
-            event_type: ChangeEventType::Create,
-            revision_id: &doc.revision_id,
-            forward_patch: Some(&doc_json),
-            reverse_patch: None,
-            applied: true,
-        }).await?;
+        let doc_json = serde_json::to_value(doc)
+            .map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
+        self.log_change_event(
+            &mut tx,
+            ChangeEventParams {
+                document_id: &doc.id,
+                user_id: &doc.user_id,
+                event_type: ChangeEventType::Create,
+                revision_id: &doc.revision_id,
+                forward_patch: Some(&doc_json),
+                reverse_patch: None,
+                applied: true,
+            },
+        )
+        .await?;
 
         tx.commit().await?;
         Ok(())
-
     }
-    
+
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query!(
             r#"
@@ -152,29 +161,28 @@ impl ServerDatabase {
             content: row.content,
             revision_id: row.revision_id,
             version: row.version,
-            vector_clock: serde_json::from_value(row.vector_clock.unwrap_or(serde_json::json!({}))).unwrap_or_default(),
+            vector_clock: serde_json::from_value(row.vector_clock.unwrap_or(serde_json::json!({})))
+                .unwrap_or_default(),
             created_at: row.created_at,
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,
         })
-
     }
-    
+
     pub async fn update_document(&self, doc: &Document, patch: Option<&Patch>) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
         self.update_document_in_tx(&mut tx, doc, patch).await?;
         tx.commit().await?;
         Ok(())
-
     }
-    
+
     // Update document within an existing transaction
     pub async fn update_document_in_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         doc: &Document,
-        patch: Option<&Patch>
+        patch: Option<&Patch>,
     ) -> SyncResult<()> {
         // Get the original document state before update (for computing reverse patch)
         let original_doc = self.get_document(&doc.id).await?;
@@ -190,15 +198,15 @@ impl ServerDatabase {
                 checksum = $8, size_bytes = $9
             WHERE id = $1
         "#,
-            params.0,  // id
-            params.2 as _,  // content_json
-            params.3,  // revision_id
-            params.4,  // version
-            params.5 as _,  // vector_clock_json
-            params.7,  // updated_at
-            params.8,  // deleted_at
-            params.9,  // checksum
-            params.10  // size_bytes
+            params.0,      // id
+            params.2 as _, // content_json
+            params.3,      // revision_id
+            params.4,      // version
+            params.5 as _, // vector_clock_json
+            params.7,      // updated_at
+            params.8,      // deleted_at
+            params.9,      // checksum
+            params.10      // size_bytes
         )
         .execute(&mut **tx)
         .await?;
@@ -215,20 +223,29 @@ impl ServerDatabase {
             None
         };
 
-        self.log_change_event(tx, ChangeEventParams {
-            document_id: &doc.id,
-            user_id: &doc.user_id,
-            event_type: ChangeEventType::Update,
-            revision_id: &doc.revision_id,
-            forward_patch: forward_patch_json.as_ref(),
-            reverse_patch: reverse_patch_json.as_ref(),
-            applied: true,
-        }).await?;
+        self.log_change_event(
+            tx,
+            ChangeEventParams {
+                document_id: &doc.id,
+                user_id: &doc.user_id,
+                event_type: ChangeEventType::Update,
+                revision_id: &doc.revision_id,
+                forward_patch: forward_patch_json.as_ref(),
+                reverse_patch: reverse_patch_json.as_ref(),
+                applied: true,
+            },
+        )
+        .await?;
 
         Ok(())
     }
 
-    pub async fn delete_document(&self, document_id: &Uuid, user_id: &Uuid, revision_id: &str) -> SyncResult<()> {
+    pub async fn delete_document(
+        &self,
+        document_id: &Uuid,
+        user_id: &Uuid,
+        revision_id: &str,
+    ) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
 
@@ -246,22 +263,26 @@ impl ServerDatabase {
 
         // Log the delete event
         // For DELETE: forward_patch is null, reverse_patch contains the full document
-        let doc_json = serde_json::to_value(&doc_to_delete).map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
-        self.log_change_event(&mut tx, ChangeEventParams {
-            document_id,
-            user_id,
-            event_type: ChangeEventType::Delete,
-            revision_id,
-            forward_patch: None,
-            reverse_patch: Some(&doc_json),
-            applied: true,
-        }).await?;
-        
+        let doc_json = serde_json::to_value(&doc_to_delete)
+            .map_err(|e| sqlx::Error::Protocol(format!("Serialization error: {}", e)))?;
+        self.log_change_event(
+            &mut tx,
+            ChangeEventParams {
+                document_id,
+                user_id,
+                event_type: ChangeEventType::Delete,
+                revision_id,
+                forward_patch: None,
+                reverse_patch: Some(&doc_json),
+                applied: true,
+            },
+        )
+        .await?;
+
         tx.commit().await?;
         Ok(())
-
     }
-    
+
     pub async fn get_user_documents(&self, user_id: &Uuid) -> SyncResult<Vec<Document>> {
         let rows = sqlx::query!(
             r#"
@@ -276,25 +297,26 @@ impl ServerDatabase {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|row| Document {
-            id: row.id,
-            user_id: row.user_id,
-            content: row.content,
-            revision_id: row.revision_id,
-            version: row.version,
-            vector_clock: serde_json::from_value(row.vector_clock.unwrap_or(serde_json::json!({}))).unwrap_or_default(),
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-            deleted_at: row.deleted_at,
-        }).collect())
-
+        Ok(rows
+            .into_iter()
+            .map(|row| Document {
+                id: row.id,
+                user_id: row.user_id,
+                content: row.content,
+                revision_id: row.revision_id,
+                version: row.version,
+                vector_clock: serde_json::from_value(
+                    row.vector_clock.unwrap_or(serde_json::json!({})),
+                )
+                .unwrap_or_default(),
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                deleted_at: row.deleted_at,
+            })
+            .collect())
     }
-    
-    pub async fn create_revision(
-        &self,
-        doc: &Document,
-        patch: Option<&Patch>,
-    ) -> SyncResult<()> {
+
+    pub async fn create_revision(&self, doc: &Document, patch: Option<&Patch>) -> SyncResult<()> {
         let patch_json = patch.map(|p| serde_json::to_value(p).unwrap());
         let content_json = serde_json::to_value(&doc.content).unwrap();
 
@@ -315,10 +337,13 @@ impl ServerDatabase {
         .await?;
 
         Ok(())
-
     }
-    
-    pub async fn add_active_connection(&self, user_id: &Uuid, connection_id: &Uuid) -> SyncResult<()> {
+
+    pub async fn add_active_connection(
+        &self,
+        user_id: &Uuid,
+        connection_id: &Uuid,
+    ) -> SyncResult<()> {
         sqlx::query!(
             r#"
             INSERT INTO active_connections (user_id, connection_id)
@@ -333,9 +358,8 @@ impl ServerDatabase {
         .await?;
 
         Ok(())
-
     }
-    
+
     pub async fn remove_active_connection(&self, user_id: &Uuid) -> SyncResult<()> {
         sqlx::query!(
             r#"
@@ -347,7 +371,6 @@ impl ServerDatabase {
         .await?;
 
         Ok(())
-
     }
 
     // Event logging for sequence-based sync
@@ -374,11 +397,15 @@ impl ServerDatabase {
         .await?;
 
         Ok(())
-
     }
 
     // Get changes since a specific sequence number for sync
-    pub async fn get_changes_since(&self, user_id: &Uuid, last_sequence: u64, limit: Option<u32>) -> SyncResult<Vec<ChangeEvent>> {
+    pub async fn get_changes_since(
+        &self,
+        user_id: &Uuid,
+        last_sequence: u64,
+        limit: Option<u32>,
+    ) -> SyncResult<Vec<ChangeEvent>> {
         let limit = limit.unwrap_or(100).min(1000); // Cap at 1000 for safety
         let last_seq_i64 = last_sequence as i64;
         let limit_i64 = limit as i64;
@@ -418,7 +445,6 @@ impl ServerDatabase {
         }
 
         Ok(events)
-
     }
 
     // Get the latest sequence number for a user
@@ -435,7 +461,6 @@ impl ServerDatabase {
         .await?;
 
         Ok(latest_sequence as u64)
-
     }
     // Get unapplied changes for a document (conflict losers)
     pub async fn get_unapplied_changes(&self, document_id: &Uuid) -> SyncResult<Vec<ChangeEvent>> {

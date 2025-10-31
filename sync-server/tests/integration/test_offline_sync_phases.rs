@@ -188,7 +188,7 @@ crate::integration_test!(
 
 crate::integration_test!(
     phase2_offline_changes,
-    |ctx: TestContext| async move {
+    |_ctx: TestContext| async move {
         if std::env::var("OFFLINE_TEST_PHASE").unwrap_or_default() != "phase2" {
             return;
         }
@@ -405,7 +405,7 @@ crate::integration_test!(
 
 crate::integration_test!(
     phase4_verification,
-    |ctx: TestContext| async move {
+    |_ctx: TestContext| async move {
         if std::env::var("OFFLINE_TEST_PHASE").unwrap_or_default() != "verify" {
             return;
         }

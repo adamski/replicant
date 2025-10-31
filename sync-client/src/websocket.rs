@@ -19,7 +19,6 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(Clone)]
 pub struct WebSocketClient {
     tx: mpsc::Sender<ClientMessage>,
-    is_connected: Arc<AtomicBool>,
 }
 
 pub struct WebSocketReceiver {
@@ -102,7 +101,6 @@ impl WebSocketClient {
 
         let client = Self {
             tx: tx_send.clone(),
-            is_connected: is_connected.clone(),
         };
 
         let receiver = WebSocketReceiver { rx: rx_recv };

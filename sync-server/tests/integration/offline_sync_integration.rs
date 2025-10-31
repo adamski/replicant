@@ -299,7 +299,7 @@ crate::integration_test!(
 
         // Process events
         for _ in 0..5 {
-            let n = client1.event_dispatcher().process_events();
+            let _n = client1.event_dispatcher().process_events();
             let _ = client2.event_dispatcher().process_events();
             sleep(Duration::from_millis(100)).await;
         }

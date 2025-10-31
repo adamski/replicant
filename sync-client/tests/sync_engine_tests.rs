@@ -26,7 +26,7 @@ struct MockServer {
     // Channel to receive client messages from the connected client.
     from_client_rx: mpsc::Receiver<ClientMessage>,
     // Websocket listener File Descriptor
-    listener_fd: RawFd,
+    _listener_fd: RawFd,
     // Stop signal for listener threads
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
@@ -46,7 +46,7 @@ impl MockServer {
             handle: None,
             to_client_tx,
             from_client_rx,
-            listener_fd: fd,
+            _listener_fd: fd,
             shutdown_tx: None,
         }
     }
@@ -131,7 +131,7 @@ struct TestSetup {
     engine: SyncEngine,
     server: MockServer,
     db: Arc<ClientDatabase>,
-    db_id: Uuid,
+    _db_id: Uuid,
 }
 
 /// Creates a new SyncEngine connected to an in-memory database and a mock server.
@@ -165,7 +165,7 @@ async fn setup() -> TestSetup {
         engine,
         server,
         db,
-        db_id,
+        _db_id: db_id,
     }
 }
 
@@ -998,7 +998,7 @@ async fn test_mixed_offline_operations_sync() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // 3. Mixed operations:
-    let doc2 = setup
+    let _doc2 = setup
         .engine
         .create_document(json!({ "id": 2 }))
         .await
@@ -1009,7 +1009,7 @@ async fn test_mixed_offline_operations_sync() {
         .await
         .unwrap(); // Update existing
     setup.engine.delete_document(doc1.id).await.unwrap(); // Delete the updated one
-    let doc3 = setup
+    let _doc3 = setup
         .engine
         .create_document(json!({ "id": 3 }))
         .await
@@ -1113,17 +1113,17 @@ async fn test_partial_upload_failure() {
     setup.server.stop().await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let doc1 = setup
+    let _doc1 = setup
         .engine
         .create_document(json!({ "id": 1 }))
         .await
         .unwrap();
-    let doc2 = setup
+    let _doc2 = setup
         .engine
         .create_document(json!({ "id": 2 }))
         .await
         .unwrap();
-    let doc3 = setup
+    let _doc3 = setup
         .engine
         .create_document(json!({ "id": 3 }))
         .await
@@ -1137,7 +1137,7 @@ async fn test_partial_upload_failure() {
     // Receive all 3 creates
     let msg1 = setup.server.expect_client_message().await;
     let msg2 = setup.server.expect_client_message().await;
-    let msg3 = setup.server.expect_client_message().await;
+    let _msg3 = setup.server.expect_client_message().await;
 
     // Confirm ONLY 2 out of 3 (simulate partial failure)
     if let ClientMessage::CreateDocument { document } = msg1 {

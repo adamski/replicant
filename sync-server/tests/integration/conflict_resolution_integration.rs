@@ -1,5 +1,4 @@
 use crate::integration::helpers::*;
-use futures_util::future;
 use serde_json::json;
 
 crate::integration_test!(

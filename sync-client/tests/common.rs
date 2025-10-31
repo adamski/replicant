@@ -1,10 +1,10 @@
 use chrono::Utc;
-use serde_json::Value;
-use sync_client::{ClientDatabase, SyncEngine};
+use sync_client::ClientDatabase;
 use sync_core::models::{Document, VectorClock};
 use uuid::Uuid;
 
 /// Creates a new in-memory test sqlite database and runs migrations.
+#[allow(dead_code)]
 pub async fn setup_test_db() -> ClientDatabase {
     let db_url = "sqlite::memory:";
     let db = ClientDatabase::new(db_url).await.unwrap();
@@ -13,6 +13,7 @@ pub async fn setup_test_db() -> ClientDatabase {
 }
 
 /// Creates a sample document for a given user.
+#[allow(dead_code)]
 pub fn make_document(user_id: Uuid, title: &str, text: &str, version: i64) -> Document {
     let content = serde_json::json!({
         "title": title,
@@ -37,6 +38,7 @@ pub fn make_document(user_id: Uuid, title: &str, text: &str, version: i64) -> Do
 }
 
 /// Helper to get the sync_status for a document.
+#[allow(dead_code)]
 pub async fn get_sync_status(db: &ClientDatabase, doc_id: Uuid) -> String {
     use sqlx::Row;
     sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
@@ -45,24 +47,4 @@ pub async fn get_sync_status(db: &ClientDatabase, doc_id: Uuid) -> String {
         .await
         .unwrap()
         .get::<String, _>(0)
-}
-
-/// Creates a test DB with `n` pending documents and returns their IDs.
-pub async fn seed_pending_docs(db: &ClientDatabase, user_id: Uuid, n: usize) -> Vec<Uuid> {
-    let mut ids = Vec::new();
-    for i in 0..n {
-        let doc = make_document(user_id, &format!("Doc {}", i + 1), "Pending content", 1);
-        db.save_document(&doc).await.unwrap();
-        ids.push(doc.id);
-    }
-    ids
-}
-
-/// Marks all documents in `ids` as synced with given revision id suffix.
-pub async fn mark_all_synced(db: &ClientDatabase, ids: &[Uuid]) {
-    for (i, id) in ids.iter().enumerate() {
-        db.mark_synced(id, &format!("2-synced-{}", i))
-            .await
-            .unwrap();
-    }
 }

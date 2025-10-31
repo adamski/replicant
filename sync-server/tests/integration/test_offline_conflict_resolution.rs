@@ -3,20 +3,20 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// Tests offline conflict resolution workflow.
-///
-/// Scenario:
-/// 1. Two clients (A and B) both have the same document synced
-/// 2. Both go offline
-/// 3. Both make conflicting edits to the same field
-/// 4. Both reconnect and sync
-/// 5. Server detects conflict and resolves it
-/// 6. Both clients eventually converge to the same state
-///
-/// This is a critical test for the offline-first sync system.
 crate::integration_test!(
     test_offline_conflict_detection_and_resolution,
     |ctx: TestContext| async move {
+        // Tests offline conflict resolution workflow.
+        //
+        // Scenario:
+        // 1. Two clients (A and B) both have the same document synced
+        // 2. Both go offline
+        // 3. Both make conflicting edits to the same field
+        // 4. Both reconnect and sync
+        // 5. Server detects conflict and resolves it
+        // 6. Both clients eventually converge to the same state
+        //
+        // This is a critical test for the offline-first sync system.
         tracing::info!("=== Testing Offline Conflict Resolution ===");
 
         // Create test user and credentials with unique email
@@ -170,13 +170,13 @@ crate::integration_test!(
     true
 );
 
-/// Tests that conflicts are properly logged in the change_events table.
-///
-/// This test verifies that when conflicts occur, the losing version
-/// is preserved in the event log with applied=false.
 crate::integration_test!(
     test_conflict_events_logged_correctly,
     |ctx: TestContext| async move {
+        // Tests that conflicts are properly logged in the change_events table.
+        //
+        // This test verifies that when conflicts occur, the losing version
+        // is preserved in the event log with applied=false.
         let test_id = uuid::Uuid::new_v4();
         let email = format!("conflict-events-test-{}@example.com", test_id);
         let (api_key, api_secret) = ctx

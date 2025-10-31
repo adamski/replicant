@@ -1,10 +1,8 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
 use hmac::{Hmac, Mac};
 use libc::kill;
 use serde_json::json;
 use sha2::Sha256;
-use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 use sync_client::SyncEngine as SyncClient;
@@ -228,7 +226,7 @@ impl TestContext {
     pub async fn create_authenticated_websocket(
         &self,
         email: &str,
-        token: &str,
+        _token: &str,
     ) -> WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>> {
         use futures_util::SinkExt;
         use sync_core::protocol::ClientMessage;

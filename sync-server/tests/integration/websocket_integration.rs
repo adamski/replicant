@@ -1,7 +1,6 @@
 use crate::integration::helpers::*;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use hmac::Mac;
 use serde_json::json;
 use sync_core::models::{Document, VectorClock};
 use sync_core::protocol::{ClientMessage, ServerMessage};

@@ -1,5 +1,6 @@
 use crate::errors::SyncError;
 use crate::SyncResult;
+use crate::ot::transform_operation_pair;
 use json_patch::{Patch, PatchOperation};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -38,36 +39,105 @@ pub fn compute_reverse_patch(original: &Value, forward_patch: &Patch) -> SyncRes
     Ok(reverse_patch)
 }
 
+/// Transform two patches using Operational Transformation
+///
+/// # OT Strategy (MVP)
+/// The OT algorithm handles:
+/// - Array index adjustments when operations affect the same array
+/// - Conflict detection when operations target the same path
+/// - Pass-through for Test operations (read-only)
+/// - Conflict marking for Move/Copy operations (Post-MVP)
+///
+/// # Conflict Resolution
+/// When conflicts are detected, both operations are returned unchanged.
+/// The caller must use `ConflictResolver` or timestamps to decide which wins.
+///
+/// # Example
+/// ```
+/// use sync_core::patches::{transform_patches, TransformStrategy};
+/// use json_patch::{Patch, PatchOperation, AddOperation};
+/// use serde_json::json;
+///
+/// let local = Patch(vec![
+///     PatchOperation::Add(AddOperation {
+///         path: "/items/2".into(),
+///         value: json!("local item"),
+///     })
+/// ]);
+///
+/// let remote = Patch(vec![
+///     PatchOperation::Add(AddOperation {
+///         path: "/items/5".into(),
+///         value: json!("remote item"),
+///     })
+/// ]);
+///
+/// let (local_t, remote_t) = transform_patches(&local, &remote, TransformStrategy::Operational).unwrap();
+/// // remote index adjusted from 5 to 6 to account for local's addition
+/// ```
 pub fn transform_patches(
     local: &Patch,
     remote: &Patch,
     strategy: TransformStrategy,
 ) -> SyncResult<(Patch, Patch)> {
-    // Operational transformation implementation
     match strategy {
         TransformStrategy::LastWriteWins => {
             // Simple strategy: remote wins
             Ok((Patch(vec![]), remote.clone()))
         }
         TransformStrategy::Operational => {
-            // Complex OT algorithm would go here
             transform_operations(&local.0, &remote.0)
         }
     }
 }
 
 pub enum TransformStrategy {
+    /// Remote patch wins, local patch is discarded
     LastWriteWins,
+    /// Use Operational Transformation to merge non-conflicting changes
     Operational,
 }
 
+/// Transform arrays of patch operations pairwise
+///
+/// This implements the OT algorithm by transforming each pair of operations
+/// from local and remote patches.
 fn transform_operations(
     local_ops: &[PatchOperation],
     remote_ops: &[PatchOperation],
 ) -> SyncResult<(Patch, Patch)> {
-    // Simplified OT - would need full implementation
-    // This is a placeholder for the actual OT algorithm
-    let transformed_local = Patch(local_ops.to_vec());
-    let transformed_remote = Patch(remote_ops.to_vec());
-    Ok((transformed_local, transformed_remote))
+    // For MVP: single operation patches (most common case)
+    // Full implementation would handle multiple operations with proper ordering
+
+    if local_ops.is_empty() {
+        return Ok((Patch(vec![]), Patch(remote_ops.to_vec())));
+    }
+
+    if remote_ops.is_empty() {
+        return Ok((Patch(local_ops.to_vec()), Patch(vec![])));
+    }
+
+    // Transform each pair of operations
+    let mut transformed_local = Vec::new();
+    let mut transformed_remote = Vec::new();
+
+    for local_op in local_ops {
+        for remote_op in remote_ops {
+            let (l_result, r_result) = transform_operation_pair(local_op, remote_op)?;
+
+            if let Some(l_op) = l_result {
+                if !transformed_local.contains(&l_op) {
+                    transformed_local.push(l_op);
+                }
+            }
+
+            if let Some(r_op) = r_result {
+                if !transformed_remote.contains(&r_op) {
+                    transformed_remote.push(r_op);
+                }
+            }
+        }
+    }
+
+    Ok((Patch(transformed_local), Patch(transformed_remote)))
 }

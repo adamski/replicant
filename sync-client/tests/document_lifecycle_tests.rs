@@ -54,7 +54,7 @@ async fn test_pending_documents_can_be_retrieved() {
         // Save every other document as synced, rest as pending
         if i % 2 == 0 {
             db.save_document(&doc).await.unwrap();
-            db.mark_synced(&doc.id, &doc.revision_id).await.unwrap();
+            db.mark_synced(&doc.id).await.unwrap();
         } else {
             db.save_document(&doc).await.unwrap(); // defaults to pending
         }

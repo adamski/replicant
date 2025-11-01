@@ -9,8 +9,8 @@ pub struct Document {
     pub id: Uuid,
     pub user_id: Uuid,
     pub content: serde_json::Value,
-    pub revision_id: String, // CouchDB-style: "generation-hash" e.g. "2-a8d73487645ef123abc"
     pub version: i64,
+    pub content_hash: Option<String>, // SHA256 hash for integrity verification
     pub version_vector: VersionVector,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -18,72 +18,6 @@ pub struct Document {
 }
 
 impl Document {
-    /// Get the generation number from CouchDB-style revision ID
-    /// "2-a8d73487645ef123abc" -> 2
-    pub fn generation(&self) -> u32 {
-        self.revision_id
-            .split('-')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1)
-    }
-
-    /// Get the hash part from CouchDB-style revision ID  
-    /// "2-a8d73487645ef123abc" -> "a8d73487645ef123abc"
-    pub fn hash(&self) -> &str {
-        self.revision_id.split('-').nth(1).unwrap_or("")
-    }
-
-    /// Generate next revision ID with incremented generation
-    /// Uses SHA256 hash of content for uniqueness
-    pub fn next_revision(&self, content: &serde_json::Value) -> String {
-        use sha2::{Digest, Sha256};
-
-        let content_bytes = content.to_string().into_bytes();
-        let mut hasher = Sha256::new();
-        hasher.update(&content_bytes);
-        let hash = format!("{:x}", hasher.finalize());
-
-        // Take first 16 characters of hash for brevity (like CouchDB)
-        let short_hash = &hash[..16];
-        format!("{}-{}", self.generation() + 1, short_hash)
-    }
-
-    /// Create initial revision ID for new documents
-    pub fn initial_revision(content: &serde_json::Value) -> String {
-        use sha2::{Digest, Sha256};
-
-        let content_bytes = content.to_string().into_bytes();
-        let mut hasher = Sha256::new();
-        hasher.update(&content_bytes);
-        let hash = format!("{:x}", hasher.finalize());
-
-        let short_hash = &hash[..16];
-        format!("1-{}", short_hash)
-    }
-
-    /// Check if this revision is newer than another
-    pub fn is_newer_than(&self, other_revision: &str) -> bool {
-        let other_gen = other_revision
-            .split('-')
-            .next()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(1);
-        self.generation() > other_gen
-    }
-
-    /// Check if two revisions are in conflict (same generation, different hash)
-    pub fn conflicts_with(&self, other_revision: &str) -> bool {
-        let other_gen = other_revision
-            .split('-')
-            .next()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(1);
-        let other_hash = other_revision.split('-').nth(1).unwrap_or("");
-
-        self.generation() == other_gen && self.hash() != other_hash
-    }
-
     /// Get the title from the content JSON, if present
     pub fn title(&self) -> Option<&str> {
         self.content.get("title").and_then(|v| v.as_str())
@@ -176,87 +110,6 @@ mod tests {
         assert!(vc1.is_concurrent(&vc2));
     }
 
-    #[test]
-    fn test_document_revision_generation() {
-        let doc = Document {
-            id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
-            content: serde_json::json!({"title": "Test", "test": true}),
-            revision_id: "3-a8d73487645ef123".to_string(),
-            version: 3,
-            version_vector: VersionVector::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            deleted_at: None,
-        };
-
-        assert_eq!(doc.generation(), 3);
-        assert_eq!(doc.hash(), "a8d73487645ef123");
-    }
-
-    #[test]
-    fn test_document_revision_comparison() {
-        let doc = Document {
-            id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
-            content: serde_json::json!({"title": "Test", "test": true}),
-            revision_id: "3-abc123".to_string(),
-            version: 3,
-            version_vector: VersionVector::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            deleted_at: None,
-        };
-
-        // Test newer comparison
-        assert!(doc.is_newer_than("2-def456"));
-        assert!(!doc.is_newer_than("4-def456"));
-        assert!(!doc.is_newer_than("3-def456"));
-
-        // Test conflict detection
-        assert!(doc.conflicts_with("3-def456")); // Same generation, different hash
-        assert!(!doc.conflicts_with("3-abc123")); // Same revision
-        assert!(!doc.conflicts_with("2-def456")); // Different generation
-    }
-
-    #[test]
-    fn test_initial_revision() {
-        let content = serde_json::json!({"title": "Test", "value": 42});
-        let revision = Document::initial_revision(&content);
-
-        assert!(revision.starts_with("1-"));
-        assert_eq!(revision.split('-').count(), 2);
-
-        // Same content should produce same revision
-        let revision2 = Document::initial_revision(&content);
-        assert_eq!(revision, revision2);
-    }
-
-    #[test]
-    fn test_next_revision() {
-        let doc = Document {
-            id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
-            content: serde_json::json!({"title": "Test", "test": true}),
-            revision_id: "2-abc123".to_string(),
-            version: 2,
-            version_vector: VersionVector::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            deleted_at: None,
-        };
-
-        let new_content = serde_json::json!({"test": false});
-        let next_revision = doc.next_revision(&new_content);
-
-        assert!(next_revision.starts_with("3-"));
-        assert_eq!(next_revision.split('-').count(), 2);
-
-        // Different content should produce different revision
-        let other_content = serde_json::json!({"test": "maybe"});
-        let other_revision = doc.next_revision(&other_content);
-        assert_ne!(next_revision, other_revision);
-    }
 
     #[test]
     fn test_document_title_helpers() {
@@ -265,8 +118,8 @@ mod tests {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
             content: serde_json::json!({"title": "My Document", "test": true}),
-            revision_id: "1-abc123".to_string(),
             version: 1,
+            content_hash: None,
             version_vector: VersionVector::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -281,8 +134,8 @@ mod tests {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
             content: serde_json::json!({"test": true}),
-            revision_id: "1-def456".to_string(),
             version: 1,
+            content_hash: None,
             version_vector: VersionVector::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -297,10 +150,9 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentPatch {
     pub document_id: Uuid,
-    pub revision_id: String, // CouchDB-style: "generation-hash"
     pub patch: json_patch::Patch,
     pub version_vector: VersionVector,
-    pub checksum: String,
+    pub content_hash: String, // SHA256 hash for integrity verification
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Display, EnumString)]

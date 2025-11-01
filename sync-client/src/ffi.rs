@@ -212,9 +212,9 @@ pub unsafe extern "C" fn sync_engine_create_document(
         let doc = sync_core::models::Document {
             id: doc_id,
             user_id,
-            revision_id: sync_core::models::Document::initial_revision(&content),
             content: content.clone(),
             version: 1,
+            content_hash: None,
             version_vector: sync_core::models::VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -314,9 +314,9 @@ pub unsafe extern "C" fn sync_engine_update_document(
         };
 
         let mut updated_doc = doc;
-        updated_doc.revision_id = updated_doc.next_revision(&content);
         updated_doc.content = content;
         updated_doc.version += 1;
+        updated_doc.content_hash = None; // Will be recalculated on server
         updated_doc.updated_at = chrono::Utc::now();
 
         match engine

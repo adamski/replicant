@@ -51,10 +51,10 @@ impl SyncHandler {
         match msg {
             ClientMessage::CreateDocument { document } => {
                 tracing::info!(
-                    "🔵 Received CreateDocument from user {} for doc {} (rev: {})",
+                    "🔵 Received CreateDocument from user {} for doc {} (version: {})",
                     user_id,
                     document.id,
-                    document.revision_id
+                    document.version
                 );
 
                 // Validate ownership
@@ -76,9 +76,9 @@ impl SyncHandler {
                             document.id
                         );
                         tracing::warn!(
-                            "   Server revision: {} | Client revision: {}",
-                            existing_doc.revision_id,
-                            document.revision_id
+                            "   Server version: {} | Client version: {}",
+                            existing_doc.version,
+                            document.version
                         );
                         tracing::warn!("   Server content: {:?}", existing_doc.content);
                         tracing::warn!("   Client content: {:?}", document.content);
@@ -108,7 +108,6 @@ impl SyncHandler {
                                         document_id: &document.id,
                                         user_id: &user_id,
                                         event_type: sync_core::protocol::ChangeEventType::Create,
-                                        revision_id: &existing_doc.revision_id,
                                         forward_patch: Some(&server_content_json),
                                         reverse_patch: None,
                                         applied: false,
@@ -118,8 +117,8 @@ impl SyncHandler {
                                 .map_err(|e| format!("Failed to log conflict: {}", e))?;
 
                             tracing::info!(
-                                "📝 Logged server version as conflict loser (rev: {})",
-                                existing_doc.revision_id
+                                "📝 Logged server version as conflict loser (version: {})",
+                                existing_doc.version
                             );
 
                             // Update document to client version IN SAME TRANSACTION
@@ -147,7 +146,6 @@ impl SyncHandler {
                                 self.tx
                                     .send(ServerMessage::DocumentCreatedResponse {
                                         document_id: document.id,
-                                        revision_id: document.revision_id.clone(),
                                         success: true,
                                         error: None,
                                     })
@@ -168,7 +166,6 @@ impl SyncHandler {
                                 self.tx
                                     .send(ServerMessage::DocumentCreatedResponse {
                                         document_id: document.id,
-                                        revision_id: document.revision_id.clone(),
                                         success: false,
                                         error: Some(e),
                                     })
@@ -186,7 +183,6 @@ impl SyncHandler {
                                 self.tx
                                     .send(ServerMessage::DocumentCreatedResponse {
                                         document_id: document.id,
-                                        revision_id: document.revision_id.clone(),
                                         success: true,
                                         error: None,
                                     })
@@ -206,7 +202,6 @@ impl SyncHandler {
                                 self.tx
                                     .send(ServerMessage::DocumentCreatedResponse {
                                         document_id: document.id,
-                                        revision_id: document.revision_id.clone(),
                                         success: false,
                                         error: Some(e.to_string()),
                                     })
@@ -248,24 +243,16 @@ impl SyncHandler {
                     // Last-write-wins strategy: Client patch overwrites server state
                     // Note: This applies the patch to current server state, not merging changes
                     tracing::warn!("🔥 CONFLICT DETECTED for document {}", doc.id);
-                    tracing::warn!(
-                        "   Server revision: {} | Client revision: {}",
-                        doc.revision_id,
-                        patch.revision_id
-                    );
                     tracing::warn!("   Server content before: {:?}", doc.content);
                     tracing::warn!("   Client patch: {:?}", patch.patch);
 
                     // Store the server's current state as conflict loser BEFORE applying client patch
                     let server_content_before = doc.content.clone();
-                    let server_revision_before = doc.revision_id.clone();
 
                     // Apply the client's patch (client wins)
                     apply_patch(&mut doc.content, &patch.patch)?;
 
-                    // Update revision and vector clock
-                    let old_revision = doc.revision_id.clone();
-                    doc.revision_id = doc.next_revision(&doc.content);
+                    // Update version vector and metadata
                     doc.version_vector.increment(
                         &self
                             .user_id
@@ -274,13 +261,14 @@ impl SyncHandler {
                             ))?
                             .to_string(),
                     );
+                    doc.version += 1;
+                    doc.content_hash = None; // Will be recalculated
                     doc.updated_at = chrono::Utc::now();
 
                     tracing::warn!(
                         "   Server content after conflict resolution: {:?}",
                         doc.content
                     );
-                    tracing::warn!("   New revision: {} -> {}", old_revision, doc.revision_id);
 
                     // Use single transaction to log conflict AND update document atomically
                     let result = async {
@@ -302,7 +290,6 @@ impl SyncHandler {
                                     document_id: &doc.id,
                                     user_id: &user_id,
                                     event_type: sync_core::protocol::ChangeEventType::Update,
-                                    revision_id: &server_revision_before,
                                     forward_patch: Some(&server_content_json),
                                     reverse_patch: None,
                                     applied: false,
@@ -312,8 +299,7 @@ impl SyncHandler {
                             .map_err(|e| format!("Failed to log conflict: {}", e))?;
 
                         tracing::info!(
-                            "📝 Logged server state as conflict loser (rev: {})",
-                            server_revision_before
+                            "📝 Logged server state as conflict loser"
                         );
 
                         // Update document with client's changes IN SAME TRANSACTION
@@ -337,8 +323,6 @@ impl SyncHandler {
                             self.tx
                                 .send(ServerMessage::ConflictDetected {
                                     document_id: patch.document_id,
-                                    local_revision: patch.revision_id.clone(),
-                                    server_revision: doc.revision_id.clone(),
                                     resolution_strategy: ConflictResolution::ServerWins,
                                 })
                                 .await?;
@@ -349,8 +333,6 @@ impl SyncHandler {
                             self.tx
                                 .send(ServerMessage::ConflictDetected {
                                     document_id: patch.document_id,
-                                    local_revision: patch.revision_id.clone(),
-                                    server_revision: doc.revision_id.clone(),
                                     resolution_strategy: ConflictResolution::ServerWins,
                                 })
                                 .await?;
@@ -377,8 +359,8 @@ impl SyncHandler {
                 // Apply patch (no conflict)
                 tracing::info!("📝 NORMAL UPDATE for document {}", doc.id);
                 tracing::info!(
-                    "   Revision: {} | Content before: {:?}",
-                    doc.revision_id,
+                    "   Version: {} | Content before: {:?}",
+                    doc.version,
                     doc.content
                 );
                 tracing::info!("   Patch: {:?}", patch.patch);
@@ -393,17 +375,17 @@ impl SyncHandler {
                         .await;
                 }
 
-                // Verify checksum
-                let calculated_checksum = calculate_checksum(&doc.content);
-                if calculated_checksum != patch.checksum {
-                    self.send_error(ErrorCode::InvalidPatch, "Checksum mismatch")
+                // Verify content hash
+                let calculated_hash = calculate_checksum(&doc.content);
+                if calculated_hash != patch.content_hash {
+                    self.send_error(ErrorCode::InvalidPatch, "Content hash mismatch")
                         .await?;
                     return Ok(());
                 }
 
                 // Update metadata
-                doc.revision_id = patch.revision_id.clone();
                 doc.version += 1;
+                doc.content_hash = Some(calculated_hash);
                 doc.version_vector.merge(&patch.version_vector);
                 doc.updated_at = chrono::Utc::now();
 
@@ -411,13 +393,12 @@ impl SyncHandler {
                 match self.db.update_document(&doc, Some(&patch.patch)).await {
                     Ok(_) => {
                         tracing::info!("   Content after normal update: {:?}", doc.content);
-                        tracing::info!("   New revision: {}", doc.revision_id);
+                        tracing::info!("   New version: {}", doc.version);
 
                         // Send confirmation to the sender
                         self.tx
                             .send(ServerMessage::DocumentUpdatedResponse {
                                 document_id: doc.id,
-                                revision_id: doc.revision_id.clone(),
                                 success: true,
                                 error: None,
                             })
@@ -439,7 +420,6 @@ impl SyncHandler {
                         self.tx
                             .send(ServerMessage::DocumentUpdatedResponse {
                                 document_id: patch.document_id,
-                                revision_id: patch.revision_id.clone(),
                                 success: false,
                                 error: Some(e.to_string()),
                             })
@@ -450,7 +430,6 @@ impl SyncHandler {
 
             ClientMessage::DeleteDocument {
                 document_id,
-                revision_id,
             } => {
                 let doc = self.db.get_document(&document_id).await?;
 
@@ -466,7 +445,7 @@ impl SyncHandler {
                 // Soft delete
                 match self
                     .db
-                    .delete_document(&document_id, &user_id, &revision_id)
+                    .delete_document(&document_id, &user_id)
                     .await
                 {
                     Ok(_) => {
@@ -474,7 +453,6 @@ impl SyncHandler {
                         self.tx
                             .send(ServerMessage::DocumentDeletedResponse {
                                 document_id,
-                                revision_id: revision_id.clone(),
                                 success: true,
                                 error: None,
                             })
@@ -486,7 +464,6 @@ impl SyncHandler {
                             self.client_id,
                             ServerMessage::DocumentDeleted {
                                 document_id,
-                                revision_id,
                             },
                         )
                         .await?;
@@ -496,7 +473,6 @@ impl SyncHandler {
                         self.tx
                             .send(ServerMessage::DocumentDeletedResponse {
                                 document_id,
-                                revision_id: revision_id.clone(),
                                 success: false,
                                 error: Some(e.to_string()),
                             })
@@ -532,13 +508,13 @@ impl SyncHandler {
                 for doc in &documents {
                     tracing::debug!("Sending SyncDocument for doc {}", doc.id);
                     tracing::info!(
-                        "📤 SENDING SyncDocument: {} | Title: {} | Rev: {}",
+                        "📤 SENDING SyncDocument: {} | Title: {} | Version: {}",
                         doc.id,
                         doc.content
                             .get("title")
                             .and_then(|v| v.as_str())
                             .unwrap_or("N/A"),
-                        doc.revision_id
+                        doc.version
                     );
                     self.tx
                         .send(ServerMessage::SyncDocument {

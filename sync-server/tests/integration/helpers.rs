@@ -283,8 +283,8 @@ impl TestContext {
             id: Uuid::new_v4(),
             user_id,
             content: content.clone(),
-            revision_id: Document::initial_revision(&content),
             version: 1,
+            content_hash: None,
             version_vector: sync_core::models::VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -639,10 +639,10 @@ pub async fn assert_all_clients_converge<F, Fut>(
                 if let Ok(docs) = clients[*i].get_all_documents().await {
                     for doc in &docs {
                         eprintln!(
-                            "  - {} | {} | rev: {}",
+                            "  - {} | {} | version: {}",
                             doc.id,
                             doc.title_or_default(),
-                            doc.revision_id
+                            doc.version
                         );
                     }
                 }

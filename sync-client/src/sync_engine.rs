@@ -330,9 +330,9 @@ impl SyncEngine {
         let doc = Document {
             id: Uuid::new_v4(),
             user_id: self.user_id,
-            revision_id: Document::initial_revision(&content),
             content,
             version: 1,
+            content_hash: None,
             version_vector: {
                 let mut vc = VersionVector::new();
                 vc.increment(&self.node_id);
@@ -378,14 +378,14 @@ impl SyncEngine {
     ) -> SyncResult<()> {
         let mut doc = self.db.get_document(&id).await?;
         let old_content = doc.content.clone();
-        let old_revision = doc.revision_id.clone();
+        let old_version = doc.version;
 
         tracing::info!("CLIENT {}: 📝 UPDATING DOCUMENT {}", self.client_id, id);
         tracing::info!(
-            "CLIENT {}: OLD: content={:?}, revision={}",
+            "CLIENT {}: OLD: content={:?}, version={}",
             self.client_id,
             old_content,
-            old_revision
+            old_version
         );
         tracing::info!("CLIENT {}: NEW: content={:?}", self.client_id, new_content);
 
@@ -393,16 +393,16 @@ impl SyncEngine {
         let patch = create_patch(&old_content, &new_content)?;
 
         // Update document
-        doc.revision_id = doc.next_revision(&new_content);
         doc.content = new_content.clone();
         doc.version += 1;
+        doc.content_hash = None; // Will be recalculated
         doc.version_vector.increment(&self.node_id);
         doc.updated_at = chrono::Utc::now();
 
         tracing::info!(
-            "CLIENT {}: 💾 SAVING LOCALLY: revision={}, marking as pending",
+            "CLIENT {}: 💾 SAVING LOCALLY: version={}, marking as pending",
             self.client_id,
-            doc.revision_id
+            doc.version
         );
 
         // Save locally with explicit "pending" status for sync
@@ -437,10 +437,10 @@ impl SyncEngine {
         // Verify it was saved correctly and check its sync status
         let saved_doc = self.db.get_document(&id).await?;
         tracing::info!(
-            "CLIENT {}: ✅ SAVED: content={:?}, revision={}",
+            "CLIENT {}: ✅ SAVED: content={:?}, version={}",
             self.client_id,
             saved_doc.content,
-            saved_doc.revision_id
+            saved_doc.version
         );
 
         // Check sync status after save
@@ -537,7 +537,6 @@ impl SyncEngine {
             if let Err(e) = client
                 .send(ClientMessage::DeleteDocument {
                     document_id: id,
-                    revision_id: doc.revision_id.clone(),
                 })
                 .await
             {
@@ -661,13 +660,13 @@ impl SyncEngine {
         for (i, pending_info) in pending_docs.iter().enumerate() {
             if let Ok(doc) = self.db.get_document(&pending_info.id).await {
                 tracing::info!(
-                    "CLIENT {}: PENDING {}/{}: doc_id={}, content={:?}, revision={}",
+                    "CLIENT {}: PENDING {}/{}: doc_id={}, content={:?}, version={}",
                     self.client_id,
                     i + 1,
                     pending_docs.len(),
                     pending_info.id,
                     doc.content,
-                    doc.revision_id
+                    doc.version
                 );
             }
         }
@@ -697,7 +696,6 @@ impl SyncEngine {
                             client
                                 .send(ClientMessage::DeleteDocument {
                                     document_id: pending_info.id,
-                                    revision_id: doc.revision_id.clone(),
                                 })
                                 .await?;
                         } else {
@@ -705,21 +703,16 @@ impl SyncEngine {
                         }
 
                         UploadType::Delete
-                    } else if pending_info.last_synced_revision.is_none() {
-                        // No previous sync revision = new document created offline
+                    } else if doc.version == 1 {
+                        // Version 1 = new document created offline
                         tracing::warn!(
                             "CLIENT {}: 🔍 PENDING DOCUMENT ANALYSIS for {}",
                             self.client_id,
                             pending_info.id
                         );
                         tracing::warn!(
-                            "CLIENT {}: last_synced_revision is NONE - treating as new document",
+                            "CLIENT {}: Version is 1 - treating as new document",
                             self.client_id
-                        );
-                        tracing::warn!(
-                            "CLIENT {}: Document revision: {}",
-                            self.client_id,
-                            doc.revision_id
                         );
                         tracing::warn!(
                             "CLIENT {}: This will use CreateDocument instead of UpdateDocument",
@@ -753,18 +746,16 @@ impl SyncEngine {
 
                         UploadType::Create
                     } else {
-                        // Has previous sync revision = document was updated offline
-                        let last_synced_rev = pending_info.last_synced_revision.as_ref().unwrap();
+                        // Version > 1 = document was updated offline
                         tracing::info!(
                             "CLIENT {}: 🔄 OFFLINE UPDATE DETECTED for doc {}",
                             self.client_id,
                             pending_info.id
                         );
                         tracing::info!(
-                            "CLIENT {}: Current revision: {} | Last synced: {}",
+                            "CLIENT {}: Current version: {}",
                             self.client_id,
-                            doc.revision_id,
-                            last_synced_rev
+                            doc.version
                         );
                         tracing::info!(
                             "CLIENT {}: Current content: {:?}",
@@ -796,10 +787,9 @@ impl SyncEngine {
 
                                 let document_patch = DocumentPatch {
                                     document_id: pending_info.id,
-                                    revision_id: doc.revision_id.clone(),
                                     patch: stored_patch,
                                     version_vector: doc.version_vector.clone(),
-                                    checksum: calculate_checksum(&doc.content),
+                                    content_hash: calculate_checksum(&doc.content),
                                 };
 
                                 let ws_client = self.ws_client.lock().await;
@@ -824,7 +814,7 @@ impl SyncEngine {
                                 tracing::warn!("CLIENT {}: No stored patch found for doc {}, creating UpdateDocument", 
                                              self.client_id, pending_info.id);
 
-                                match self.create_update_message(&doc, last_synced_rev).await {
+                                match self.create_update_message(&doc).await {
                                     Ok(update_message) => {
                                         tracing::info!("CLIENT {}: Created UpdateDocument message with generated patch", self.client_id);
 
@@ -1031,8 +1021,8 @@ impl SyncEngine {
 
                 // Apply patch
                 apply_patch(&mut doc.content, &patch.patch)?;
-                doc.revision_id = patch.revision_id;
                 doc.version_vector.merge(&patch.version_vector);
+                doc.content_hash = None; // Will be recalculated
                 doc.updated_at = chrono::Utc::now();
 
                 tracing::info!(
@@ -1042,7 +1032,7 @@ impl SyncEngine {
                 );
 
                 db.save_document(&doc).await?;
-                db.mark_synced(&doc.id, &doc.revision_id).await?;
+                db.mark_synced(&doc.id).await?;
 
                 // Emit event for updated document
                 event_dispatcher.emit_document_updated(&doc.id, &doc.content);
@@ -1058,9 +1048,9 @@ impl SyncEngine {
                 match db.get_document(&document.id).await {
                     Ok(existing_doc) => {
                         // We already have this document - just ensure it's marked as synced
-                        if existing_doc.revision_id == document.revision_id {
-                            tracing::info!("CLIENT: Document {} already exists locally with same revision, marking as synced", document.id);
-                            db.mark_synced(&document.id, &document.revision_id).await?;
+                        if existing_doc.version == document.version {
+                            tracing::info!("CLIENT: Document {} already exists locally with same version, marking as synced", document.id);
+                            db.mark_synced(&document.id).await?;
                         } else {
                             // Different revision - update it
                             tracing::info!("CLIENT: Document {} exists locally but has different revision, updating", document.id);
@@ -1087,21 +1077,19 @@ impl SyncEngine {
             }
             ServerMessage::DocumentDeleted {
                 document_id,
-                revision_id,
             } => {
                 // Document deleted from server - we need to delete it locally
                 tracing::info!(
-                    "CLIENT {}: Received DocumentDeleted for doc {} with revision {}",
+                    "CLIENT {}: Received DocumentDeleted for doc {}",
                     client_id,
-                    document_id,
-                    revision_id
+                    document_id
                 );
 
                 // Delete the document locally (soft delete)
                 db.delete_document(&document_id).await?;
 
                 // Mark it as synced so we don't try to sync the delete again
-                db.mark_synced(&document_id, &revision_id).await?;
+                db.mark_synced(&document_id).await?;
 
                 // Emit event for deleted document
                 event_dispatcher.emit_document_deleted(&document_id);
@@ -1115,77 +1103,70 @@ impl SyncEngine {
             ServerMessage::SyncDocument { document } => {
                 // Document sync - check if it's newer than what we have
                 tracing::info!(
-                    "CLIENT {}: 📥 RECEIVED SyncDocument: {} (rev: {})",
+                    "CLIENT {}: 📥 RECEIVED SyncDocument: {} (version: {})",
                     client_id,
                     document.id,
-                    document.revision_id
+                    document.version
                 );
 
                 match db.get_document(&document.id).await {
                     Ok(local_doc) => {
                         tracing::info!(
-                            "CLIENT {}: LOCAL  DOCUMENT: content={:?}, revision={}",
+                            "CLIENT {}: LOCAL  DOCUMENT: content={:?}, version={}",
                             client_id,
                             local_doc.content,
-                            local_doc.revision_id
+                            local_doc.version
                         );
                         tracing::info!(
-                            "CLIENT {}: SERVER DOCUMENT: content={:?}, revision={}",
+                            "CLIENT {}: SERVER DOCUMENT: content={:?}, version={}",
                             client_id,
                             document.content,
-                            document.revision_id
+                            document.version
                         );
 
-                        // Compare revisions
-                        let local_rev_parts: Vec<&str> = local_doc.revision_id.split('-').collect();
-                        let sync_rev_parts: Vec<&str> = document.revision_id.split('-').collect();
+                        // Compare versions using version vectors (primary) or version number (fallback)
+                        let should_update = if document.version_vector.is_concurrent(&local_doc.version_vector) {
+                            // Concurrent - use server version (last-write-wins)
+                            true
+                        } else {
+                            // Not concurrent - check if server version is newer
+                            document.version >= local_doc.version
+                        };
 
-                        if local_rev_parts.len() == 2 && sync_rev_parts.len() == 2 {
-                            let local_gen: u32 = local_rev_parts[0].parse().unwrap_or(0);
-                            let sync_gen: u32 = sync_rev_parts[0].parse().unwrap_or(0);
-
-                            if sync_gen >= local_gen {
-                                // Check if this might be overwriting local changes by comparing content
-                                if local_doc.content != document.content {
-                                    tracing::warn!(
-                                        "CLIENT {}: ⚠️  SERVER OVERWRITING LOCAL CHANGES!",
-                                        client_id
-                                    );
-                                    tracing::warn!(
-                                        "CLIENT {}: LOCAL: {:?} → SERVER: {:?}",
-                                        client_id,
-                                        local_doc.content,
-                                        document.content
-                                    );
-                                }
-
-                                tracing::info!(
-                                    "CLIENT {}: 🔄 Updating to newer version (gen {} -> {})",
-                                    client_id,
-                                    local_gen,
-                                    sync_gen
+                        if should_update {
+                            // Check if this might be overwriting local changes by comparing content
+                            if local_doc.content != document.content {
+                                tracing::warn!(
+                                    "CLIENT {}: ⚠️  SERVER OVERWRITING LOCAL CHANGES!",
+                                    client_id
                                 );
-                                db.save_document_with_status(&document, Some(SyncStatus::Synced))
-                                    .await?;
-
-                                // Emit event for updated document
-                                event_dispatcher
-                                    .emit_document_updated(&document.id, &document.content);
-                            } else {
-                                tracing::info!(
-                                    "CLIENT {}: Skipping older sync (local gen {} > sync gen {})",
+                                tracing::warn!(
+                                    "CLIENT {}: LOCAL: {:?} → SERVER: {:?}",
                                     client_id,
-                                    local_gen,
-                                    sync_gen
+                                    local_doc.content,
+                                    document.content
                                 );
                             }
-                        } else {
-                            // Can't compare, accept the sync
+
+                            tracing::info!(
+                                "CLIENT {}: 🔄 Updating to newer version ({} -> {})",
+                                client_id,
+                                local_doc.version,
+                                document.version
+                            );
                             db.save_document_with_status(&document, Some(SyncStatus::Synced))
                                 .await?;
 
                             // Emit event for updated document
-                            event_dispatcher.emit_document_updated(&document.id, &document.content);
+                            event_dispatcher
+                                .emit_document_updated(&document.id, &document.content);
+                        } else {
+                            tracing::info!(
+                                "CLIENT {}: Skipping older sync (local version {} >= sync version {})",
+                                client_id,
+                                local_doc.version,
+                                document.version
+                            );
                         }
                     }
                     Err(_) => {
@@ -1213,7 +1194,6 @@ impl SyncEngine {
             // Handle document operation confirmations
             ServerMessage::DocumentCreatedResponse {
                 document_id,
-                revision_id,
                 success,
                 error,
             } => {
@@ -1223,7 +1203,7 @@ impl SyncEngine {
                         client_id,
                         document_id
                     );
-                    db.mark_synced(&document_id, &revision_id).await?;
+                    db.mark_synced(&document_id).await?;
                     // Clean up sync_queue
                     db.remove_from_sync_queue(&document_id).await?;
                 } else {
@@ -1243,7 +1223,6 @@ impl SyncEngine {
 
             ServerMessage::DocumentUpdatedResponse {
                 document_id,
-                revision_id,
                 success,
                 error,
             } => {
@@ -1253,7 +1232,7 @@ impl SyncEngine {
                         client_id,
                         document_id
                     );
-                    db.mark_synced(&document_id, &revision_id).await?;
+                    db.mark_synced(&document_id).await?;
                     // Clean up sync_queue
                     db.remove_from_sync_queue(&document_id).await?;
                     tracing::info!(
@@ -1277,7 +1256,6 @@ impl SyncEngine {
 
             ServerMessage::DocumentDeletedResponse {
                 document_id,
-                revision_id,
                 success,
                 error,
             } => {
@@ -1287,7 +1265,7 @@ impl SyncEngine {
                         client_id,
                         document_id
                     );
-                    db.mark_synced(&document_id, &revision_id).await?;
+                    db.mark_synced(&document_id).await?;
                     // Clean up sync_queue
                     db.remove_from_sync_queue(&document_id).await?;
                 } else {
@@ -1409,18 +1387,18 @@ impl SyncEngine {
             document.id
         );
         tracing::info!(
-            "CLIENT {}: Document revision: {}, content: {:?}",
+            "CLIENT {}: Document version: {}, content: {:?}",
             self.client_id,
-            document.revision_id,
+            document.version,
             document.content
         );
 
-        // Determine if this is a create or update based on revision generation
-        let generation = document.generation();
-        let (operation_type, message) = if generation == 1 {
-            // New document (generation 1)
+        // Determine if this is a create or update based on version
+        let version = document.version;
+        let (operation_type, message) = if version == 1 {
+            // New document (version 1)
             tracing::info!(
-                "CLIENT {}: Sending as CREATE (generation 1)",
+                "CLIENT {}: Sending as CREATE (version 1)",
                 self.client_id
             );
             (
@@ -1430,13 +1408,13 @@ impl SyncEngine {
                 },
             )
         } else {
-            // Updated document (generation > 1) - we need to send as update
+            // Updated document (version > 1) - we need to send as update
             // For immediate sync of updates, we'll fall back to CreateDocument for now
             // since we don't have the previous content to create a proper patch
             tracing::warn!(
-                "CLIENT {}: Document update (gen {}) - using CreateDocument as fallback",
+                "CLIENT {}: Document update (version {}) - using CreateDocument as fallback",
                 self.client_id,
-                generation
+                version
             );
             tracing::warn!(
                 "CLIENT {}: This may cause conflicts - proper UpdateDocument with patch needed",
@@ -1507,11 +1485,10 @@ impl SyncEngine {
         }
     }
 
-    /// Create an UpdateDocument message with proper patch from last synced revision
+    /// Create an UpdateDocument message with proper patch
     async fn create_update_message(
         &self,
         current_doc: &Document,
-        _last_synced_revision: &str,
     ) -> SyncResult<ClientMessage> {
         use sync_core::models::DocumentPatch;
         use sync_core::patches::{calculate_checksum, create_patch};
@@ -1536,10 +1513,9 @@ impl SyncEngine {
 
         let document_patch = DocumentPatch {
             document_id: current_doc.id,
-            revision_id: current_doc.revision_id.clone(),
             patch,
             version_vector: current_doc.version_vector.clone(),
-            checksum: calculate_checksum(&current_doc.content),
+            content_hash: calculate_checksum(&current_doc.content),
         };
 
         Ok(ClientMessage::UpdateDocument {
@@ -1836,7 +1812,6 @@ impl SyncEngine {
                             client
                                 .send(ClientMessage::DeleteDocument {
                                     document_id: pending_info.id,
-                                    revision_id: doc.revision_id.clone(),
                                 })
                                 .await?;
                         } else {
@@ -1845,17 +1820,15 @@ impl SyncEngine {
                             ))?;
                         }
                     } else {
-                        // Handle pending update/create - check last_synced_revision to determine message type
-                        let use_update_message = pending_info.last_synced_revision.is_some();
+                        // Handle pending update/create - check version to determine message type
+                        let use_update_message = doc.version > 1;
 
                         if use_update_message {
-                            let last_synced_rev =
-                                pending_info.last_synced_revision.as_ref().unwrap();
                             tracing::info!(
-                                "CLIENT {}: Using UpdateDocument for doc {} (last_synced: {})",
+                                "CLIENT {}: Using UpdateDocument for doc {} (version: {})",
                                 client_id,
                                 pending_info.id,
-                                last_synced_rev
+                                doc.version
                             );
 
                             // Get the stored patch from sync_queue
@@ -1867,10 +1840,9 @@ impl SyncEngine {
 
                                     DocumentPatch {
                                         document_id: pending_info.id,
-                                        revision_id: doc.revision_id.clone(),
                                         patch: json_patch,
                                         version_vector: doc.version_vector.clone(),
-                                        checksum: calculate_checksum(&doc.content),
+                                        content_hash: calculate_checksum(&doc.content),
                                     }
                                 }
                                 Ok(None) => {

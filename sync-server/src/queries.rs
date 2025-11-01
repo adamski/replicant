@@ -7,13 +7,12 @@ pub type DocumentParams = (
     Uuid,                                  // id
     Uuid,                                  // user_id
     serde_json::Value,                     // content
-    String,                                // revision_id
     i64,                                   // version
     serde_json::Value,                     // version_vector
     chrono::DateTime<chrono::Utc>,         // created_at
     chrono::DateTime<chrono::Utc>,         // updated_at
     Option<chrono::DateTime<chrono::Utc>>, // deleted_at
-    String,                                // checksum
+    Option<String>,                        // content_hash
     i32,                                   // size_bytes
 );
 
@@ -23,8 +22,8 @@ pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
         id: row.try_get("id")?,
         user_id: row.try_get("user_id")?,
         content: row.try_get("content")?,
-        revision_id: row.try_get("revision_id")?,
         version: row.try_get("version")?,
+        content_hash: row.try_get("content_hash").ok(),
         version_vector: serde_json::from_value(row.try_get("version_vector")?).unwrap_or_default(),
         created_at: row
             .try_get::<chrono::DateTime<chrono::Local>, _>("created_at")?
@@ -41,20 +40,20 @@ pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
 /// Prepare document values for database insertion
 pub fn document_to_params(doc: &Document) -> DocumentParams {
     let content_str = doc.content.to_string();
-    let checksum = sync_core::patches::calculate_checksum(&doc.content);
+    let content_hash = doc.content_hash.clone()
+        .unwrap_or_else(|| sync_core::patches::calculate_checksum(&doc.content));
     let size_bytes = content_str.len() as i32;
 
     (
         doc.id,
         doc.user_id,
         doc.content.clone(),
-        doc.revision_id.clone(),
         doc.version,
         serde_json::to_value(&doc.version_vector).unwrap_or(serde_json::json!({})),
         doc.created_at,
         doc.updated_at,
         doc.deleted_at,
-        checksum,
+        Some(content_hash),
         size_bytes,
     )
 }

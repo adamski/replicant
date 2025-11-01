@@ -247,8 +247,8 @@ crate::integration_test!(
                 "phase": "2",
                 "created_offline": true
             }),
-            revision_id: "1-offline".to_string(),
             version: 1,
+            content_hash: None,
             version_vector: sync_core::models::VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

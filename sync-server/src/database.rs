@@ -103,7 +103,7 @@ impl ServerDatabase {
             r#"
             INSERT INTO documents (
                 id, user_id, content, revision_id, version,
-                vector_clock, created_at, updated_at, deleted_at, checksum, size_bytes
+                version_vector, created_at, updated_at, deleted_at, checksum, size_bytes
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         "#,
             params.0,      // id
@@ -111,7 +111,7 @@ impl ServerDatabase {
             params.2 as _, // content_json
             params.3,      // revision_id
             params.4,      // version
-            params.5 as _, // vector_clock_json
+            params.5 as _, // version_vector_json
             params.6,      // created_at
             params.7,      // updated_at
             params.8,      // deleted_at
@@ -146,7 +146,7 @@ impl ServerDatabase {
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query!(
             r#"
-            SELECT id, user_id, content, revision_id, version, vector_clock, created_at, updated_at, deleted_at
+            SELECT id, user_id, content, revision_id, version, version_vector, created_at, updated_at, deleted_at
             FROM documents
             WHERE id = $1
         "#,
@@ -161,7 +161,7 @@ impl ServerDatabase {
             content: row.content,
             revision_id: row.revision_id,
             version: row.version,
-            vector_clock: serde_json::from_value(row.vector_clock.unwrap_or(serde_json::json!({})))
+            version_vector: serde_json::from_value(row.version_vector.unwrap_or(serde_json::json!({})))
                 .unwrap_or_default(),
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -194,7 +194,7 @@ impl ServerDatabase {
             r#"
             UPDATE documents
             SET content = $2, revision_id = $3, version = $4,
-                vector_clock = $5, updated_at = $6, deleted_at = $7,
+                version_vector = $5, updated_at = $6, deleted_at = $7,
                 checksum = $8, size_bytes = $9
             WHERE id = $1
         "#,
@@ -202,7 +202,7 @@ impl ServerDatabase {
             params.2 as _, // content_json
             params.3,      // revision_id
             params.4,      // version
-            params.5 as _, // vector_clock_json
+            params.5 as _, // version_vector_json
             params.7,      // updated_at
             params.8,      // deleted_at
             params.9,      // checksum
@@ -287,7 +287,7 @@ impl ServerDatabase {
         let rows = sqlx::query!(
             r#"
             SELECT id, user_id, content, revision_id, version,
-                   vector_clock, created_at, updated_at, deleted_at
+                   version_vector, created_at, updated_at, deleted_at
             FROM documents
             WHERE user_id = $1 AND deleted_at IS NULL
             ORDER BY updated_at DESC
@@ -305,8 +305,8 @@ impl ServerDatabase {
                 content: row.content,
                 revision_id: row.revision_id,
                 version: row.version,
-                vector_clock: serde_json::from_value(
-                    row.vector_clock.unwrap_or(serde_json::json!({})),
+                version_vector: serde_json::from_value(
+                    row.version_vector.unwrap_or(serde_json::json!({})),
                 )
                 .unwrap_or_default(),
                 created_at: row.created_at,

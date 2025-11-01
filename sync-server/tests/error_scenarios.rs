@@ -11,7 +11,7 @@
 //! - Constraint violations
 
 use serde_json::json;
-use sync_core::models::{Document, VectorClock};
+use sync_core::models::{Document, VersionVector};
 use sync_server::database::ServerDatabase;
 use uuid::Uuid;
 
@@ -68,7 +68,7 @@ async fn test_transaction_rollback_on_partial_failure() {
         content: json!({"test": "data"}),
         revision_id: "1-abc".to_string(),
         version: 1,
-        vector_clock: VectorClock::new(),
+        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -121,7 +121,7 @@ async fn test_malformed_json_in_document_content() {
     // Try to insert malformed JSON directly via SQL
     // This tests database-level validation
     let result = sqlx::query(
-        "INSERT INTO documents (id, user_id, content, revision_id, version, vector_clock, created_at, updated_at)
+        "INSERT INTO documents (id, user_id, content, revision_id, version, version_vector, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())"
     )
     .bind(doc_id.to_string())
@@ -157,7 +157,7 @@ async fn test_invalid_uuid_handling() {
 
     // Try to insert document with invalid UUID format
     let result = sqlx::query(
-        "INSERT INTO documents (id, user_id, content, revision_id, version, vector_clock, created_at, updated_at)
+        "INSERT INTO documents (id, user_id, content, revision_id, version, version_vector, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())"
     )
     .bind("not-a-valid-uuid")  // Invalid UUID
@@ -196,7 +196,7 @@ async fn test_foreign_key_constraint_enforcement() {
         content: json!({"test": "data"}),
         revision_id: "1-abc".to_string(),
         version: 1,
-        vector_clock: VectorClock::new(),
+        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -228,7 +228,7 @@ async fn test_not_null_constraint_enforcement() {
 
     // Try to insert document with NULL content
     let result = sqlx::query(
-        "INSERT INTO documents (id, user_id, content, revision_id, version, vector_clock, created_at, updated_at)
+        "INSERT INTO documents (id, user_id, content, revision_id, version, version_vector, created_at, updated_at)
          VALUES ($1, $2, NULL, $3, $4, $5, NOW(), NOW())"
     )
     .bind(Uuid::new_v4().to_string())
@@ -268,7 +268,7 @@ async fn test_update_non_existent_document() {
         content: json!({"test": "updated"}),
         revision_id: "2-abc".to_string(),
         version: 2,
-        vector_clock: VectorClock::new(),
+        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -334,7 +334,7 @@ async fn test_large_document_handling() {
         content: large_content,
         revision_id: "1-large".to_string(),
         version: 1,
-        vector_clock: VectorClock::new(),
+        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -386,7 +386,7 @@ async fn test_deeply_nested_json() {
         content: nested,
         revision_id: "1-nested".to_string(),
         version: 1,
-        vector_clock: VectorClock::new(),
+        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,

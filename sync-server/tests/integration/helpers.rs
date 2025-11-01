@@ -285,7 +285,7 @@ impl TestContext {
             content: content.clone(),
             revision_id: Document::initial_revision(&content),
             version: 1,
-            vector_clock: sync_core::models::VectorClock::new(),
+            version_vector: sync_core::models::VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

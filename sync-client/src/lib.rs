@@ -21,7 +21,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use sqlx::Row;
-    use sync_core::models::{Document, VectorClock};
+    use sync_core::models::{Document, VersionVector};
     use uuid::Uuid;
 
     #[tokio::test]
@@ -44,7 +44,7 @@ mod tests {
                 content JSON NOT NULL,
                 revision_id TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                vector_clock JSON,
+                version_vector JSON,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 deleted_at TIMESTAMP,
@@ -84,7 +84,7 @@ mod tests {
             content: content.clone(),
             revision_id: Document::initial_revision(&content),
             version: 1,
-            vector_clock: VectorClock::new(),
+            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -116,7 +116,7 @@ mod tests {
                 content: test_content.clone(),
                 revision_id: Document::initial_revision(&test_content),
                 version: 1,
-                vector_clock: VectorClock::new(),
+                version_vector: VersionVector::new(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
@@ -156,7 +156,7 @@ mod tests {
                 content JSON NOT NULL,
                 revision_id TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                vector_clock JSON,
+                version_vector JSON,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 deleted_at TIMESTAMP,
@@ -191,7 +191,7 @@ mod tests {
             content: content.clone(),
             revision_id: Document::initial_revision(&content),
             version: 1,
-            vector_clock: VectorClock::new(),
+            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

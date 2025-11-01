@@ -274,7 +274,7 @@ crate::integration_test!(
 */
 
 crate::integration_test!(
-    test_vector_clock_convergence,
+    test_version_vector_convergence,
     |ctx: TestContext| async move {
         let email = "dave@test.local";
 

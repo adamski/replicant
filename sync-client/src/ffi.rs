@@ -215,7 +215,7 @@ pub unsafe extern "C" fn sync_engine_create_document(
             revision_id: sync_core::models::Document::initial_revision(&content),
             content: content.clone(),
             version: 1,
-            vector_clock: sync_core::models::VectorClock::new(),
+            version_vector: sync_core::models::VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

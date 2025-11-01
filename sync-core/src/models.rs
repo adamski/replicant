@@ -11,7 +11,7 @@ pub struct Document {
     pub content: serde_json::Value,
     pub revision_id: String, // CouchDB-style: "generation-hash" e.g. "2-a8d73487645ef123abc"
     pub version: i64,
-    pub vector_clock: VectorClock,
+    pub version_vector: VersionVector,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -96,9 +96,9 @@ impl Document {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct VectorClock(pub HashMap<String, u64>);
+pub struct VersionVector(pub HashMap<String, u64>);
 
-impl VectorClock {
+impl VersionVector {
     pub fn new() -> Self {
         Self(HashMap::new())
     }
@@ -108,14 +108,14 @@ impl VectorClock {
         *counter += 1;
     }
 
-    pub fn merge(&mut self, other: &VectorClock) {
+    pub fn merge(&mut self, other: &VersionVector) {
         for (node, &timestamp) in &other.0 {
             let current = self.0.entry(node.clone()).or_insert(0);
             *current = (*current).max(timestamp);
         }
     }
 
-    pub fn is_concurrent(&self, other: &VectorClock) -> bool {
+    pub fn is_concurrent(&self, other: &VersionVector) -> bool {
         let mut self_ahead = false;
         let mut other_ahead = false;
 
@@ -143,8 +143,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_vector_clock_increment() {
-        let mut vc = VectorClock::new();
+    fn test_version_vector_increment() {
+        let mut vc = VersionVector::new();
         vc.increment("node1");
         assert_eq!(vc.0.get("node1"), Some(&1));
 
@@ -153,9 +153,9 @@ mod tests {
     }
 
     #[test]
-    fn test_vector_clock_merge() {
-        let mut vc1 = VectorClock::new();
-        let mut vc2 = VectorClock::new();
+    fn test_version_vector_merge() {
+        let mut vc1 = VersionVector::new();
+        let mut vc2 = VersionVector::new();
 
         vc1.increment("node1");
         vc2.increment("node2");
@@ -166,9 +166,9 @@ mod tests {
     }
 
     #[test]
-    fn test_vector_clock_concurrent() {
-        let mut vc1 = VectorClock::new();
-        let mut vc2 = VectorClock::new();
+    fn test_version_vector_concurrent() {
+        let mut vc1 = VersionVector::new();
+        let mut vc2 = VersionVector::new();
 
         vc1.increment("node1");
         vc2.increment("node2");
@@ -184,7 +184,7 @@ mod tests {
             content: serde_json::json!({"title": "Test", "test": true}),
             revision_id: "3-a8d73487645ef123".to_string(),
             version: 3,
-            vector_clock: VectorClock::new(),
+            version_vector: VersionVector::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
@@ -202,7 +202,7 @@ mod tests {
             content: serde_json::json!({"title": "Test", "test": true}),
             revision_id: "3-abc123".to_string(),
             version: 3,
-            vector_clock: VectorClock::new(),
+            version_vector: VersionVector::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
@@ -240,7 +240,7 @@ mod tests {
             content: serde_json::json!({"title": "Test", "test": true}),
             revision_id: "2-abc123".to_string(),
             version: 2,
-            vector_clock: VectorClock::new(),
+            version_vector: VersionVector::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
@@ -267,7 +267,7 @@ mod tests {
             content: serde_json::json!({"title": "My Document", "test": true}),
             revision_id: "1-abc123".to_string(),
             version: 1,
-            vector_clock: VectorClock::new(),
+            version_vector: VersionVector::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
@@ -283,7 +283,7 @@ mod tests {
             content: serde_json::json!({"test": true}),
             revision_id: "1-def456".to_string(),
             version: 1,
-            vector_clock: VectorClock::new(),
+            version_vector: VersionVector::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
@@ -299,7 +299,7 @@ pub struct DocumentPatch {
     pub document_id: Uuid,
     pub revision_id: String, // CouchDB-style: "generation-hash"
     pub patch: json_patch::Patch,
-    pub vector_clock: VectorClock,
+    pub version_vector: VersionVector,
     pub checksum: String,
 }
 

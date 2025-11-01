@@ -239,7 +239,7 @@ impl SyncHandler {
                 }
 
                 // Check for conflicts
-                if doc.vector_clock.is_concurrent(&patch.vector_clock) {
+                if doc.version_vector.is_concurrent(&patch.version_vector) {
                     // Log conflict if monitoring is enabled
                     if let Some(ref monitoring) = self.monitoring {
                         monitoring.log_conflict_detected(&doc.id.to_string()).await;
@@ -266,7 +266,7 @@ impl SyncHandler {
                     // Update revision and vector clock
                     let old_revision = doc.revision_id.clone();
                     doc.revision_id = doc.next_revision(&doc.content);
-                    doc.vector_clock.increment(
+                    doc.version_vector.increment(
                         &self
                             .user_id
                             .ok_or(ServerError::ServerSync(
@@ -404,7 +404,7 @@ impl SyncHandler {
                 // Update metadata
                 doc.revision_id = patch.revision_id.clone();
                 doc.version += 1;
-                doc.vector_clock.merge(&patch.vector_clock);
+                doc.version_vector.merge(&patch.version_vector);
                 doc.updated_at = chrono::Utc::now();
 
                 // Save to database

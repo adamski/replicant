@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS documents (
     content JSON NOT NULL,                        -- Document data
     revision_id TEXT NOT NULL,                    -- UUID for each revision
     version INTEGER NOT NULL DEFAULT 1,           -- Incremental version
-    vector_clock JSON,                            -- For conflict resolution
+    version_vector JSON,                          -- For conflict resolution
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP,                         -- Soft delete

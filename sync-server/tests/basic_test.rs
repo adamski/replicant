@@ -1,13 +1,13 @@
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use sync_core::models::VectorClock;
+    use sync_core::models::VersionVector;
     use sync_core::patches::{apply_patch, calculate_checksum, create_patch};
 
     #[test]
-    fn test_vector_clock() {
-        let mut vc1 = VectorClock::new();
-        let mut vc2 = VectorClock::new();
+    fn test_version_vector() {
+        let mut vc1 = VersionVector::new();
+        let mut vc2 = VersionVector::new();
 
         vc1.increment("node1");
         vc2.increment("node2");

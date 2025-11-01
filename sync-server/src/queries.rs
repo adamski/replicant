@@ -9,7 +9,7 @@ pub type DocumentParams = (
     serde_json::Value,                     // content
     String,                                // revision_id
     i64,                                   // version
-    serde_json::Value,                     // vector_clock
+    serde_json::Value,                     // version_vector
     chrono::DateTime<chrono::Utc>,         // created_at
     chrono::DateTime<chrono::Utc>,         // updated_at
     Option<chrono::DateTime<chrono::Utc>>, // deleted_at
@@ -25,7 +25,7 @@ pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
         content: row.try_get("content")?,
         revision_id: row.try_get("revision_id")?,
         version: row.try_get("version")?,
-        vector_clock: serde_json::from_value(row.try_get("vector_clock")?).unwrap_or_default(),
+        version_vector: serde_json::from_value(row.try_get("version_vector")?).unwrap_or_default(),
         created_at: row
             .try_get::<chrono::DateTime<chrono::Local>, _>("created_at")?
             .with_timezone(&chrono::Utc),
@@ -50,7 +50,7 @@ pub fn document_to_params(doc: &Document) -> DocumentParams {
         doc.content.clone(),
         doc.revision_id.clone(),
         doc.version,
-        serde_json::to_value(&doc.vector_clock).unwrap_or(serde_json::json!({})),
+        serde_json::to_value(&doc.version_vector).unwrap_or(serde_json::json!({})),
         doc.created_at,
         doc.updated_at,
         doc.deleted_at,

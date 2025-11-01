@@ -132,7 +132,7 @@ impl ClientDatabase {
 
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query(r#"
-            SELECT id, user_id, content, revision_id, version, vector_clock, created_at, updated_at, deleted_at
+            SELECT id, user_id, content, revision_id, version, version_vector, created_at, updated_at, deleted_at
             FROM documents
             WHERE id = $1
         "#)
@@ -171,7 +171,7 @@ impl ClientDatabase {
             .bind(params.2) // content
             .bind(params.3) // revision_id
             .bind(params.4) // version
-            .bind(params.5) // vector_clock
+            .bind(params.5) // version_vector
             .bind(params.6) // created_at
             .bind(params.7) // updated_at
             .bind(params.8) // deleted_at

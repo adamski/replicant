@@ -8,7 +8,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use sync_core::{
     errors::ClientError,
-    models::{Document, SyncStatus, VectorClock},
+    models::{Document, SyncStatus, VersionVector},
     patches::{apply_patch, create_patch},
     protocol::{ClientMessage, ServerMessage},
     SyncResult,
@@ -333,8 +333,8 @@ impl SyncEngine {
             revision_id: Document::initial_revision(&content),
             content,
             version: 1,
-            vector_clock: {
-                let mut vc = VectorClock::new();
+            version_vector: {
+                let mut vc = VersionVector::new();
                 vc.increment(&self.node_id);
                 vc
             },
@@ -396,7 +396,7 @@ impl SyncEngine {
         doc.revision_id = doc.next_revision(&new_content);
         doc.content = new_content.clone();
         doc.version += 1;
-        doc.vector_clock.increment(&self.node_id);
+        doc.version_vector.increment(&self.node_id);
         doc.updated_at = chrono::Utc::now();
 
         tracing::info!(
@@ -798,7 +798,7 @@ impl SyncEngine {
                                     document_id: pending_info.id,
                                     revision_id: doc.revision_id.clone(),
                                     patch: stored_patch,
-                                    vector_clock: doc.vector_clock.clone(),
+                                    version_vector: doc.version_vector.clone(),
                                     checksum: calculate_checksum(&doc.content),
                                 };
 
@@ -1020,7 +1020,7 @@ impl SyncEngine {
                 tracing::info!("CLIENT {}: Patch to apply: {:?}", client_id, patch.patch);
 
                 // Check for conflicts
-                if doc.vector_clock.is_concurrent(&patch.vector_clock) {
+                if doc.version_vector.is_concurrent(&patch.version_vector) {
                     tracing::warn!(
                         "CLIENT {}: Conflict detected for document {}",
                         client_id,
@@ -1032,7 +1032,7 @@ impl SyncEngine {
                 // Apply patch
                 apply_patch(&mut doc.content, &patch.patch)?;
                 doc.revision_id = patch.revision_id;
-                doc.vector_clock.merge(&patch.vector_clock);
+                doc.version_vector.merge(&patch.version_vector);
                 doc.updated_at = chrono::Utc::now();
 
                 tracing::info!(
@@ -1538,7 +1538,7 @@ impl SyncEngine {
             document_id: current_doc.id,
             revision_id: current_doc.revision_id.clone(),
             patch,
-            vector_clock: current_doc.vector_clock.clone(),
+            version_vector: current_doc.version_vector.clone(),
             checksum: calculate_checksum(&current_doc.content),
         };
 
@@ -1869,7 +1869,7 @@ impl SyncEngine {
                                         document_id: pending_info.id,
                                         revision_id: doc.revision_id.clone(),
                                         patch: json_patch,
-                                        vector_clock: doc.vector_clock.clone(),
+                                        version_vector: doc.version_vector.clone(),
                                         checksum: calculate_checksum(&doc.content),
                                     }
                                 }

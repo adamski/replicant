@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 content: full_content.clone(),
                 revision_id: sync_core::models::Document::initial_revision(&full_content),
                 version: 1,
-                vector_clock: sync_core::models::VectorClock::new(),
+                version_vector: sync_core::models::VersionVector::new(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,

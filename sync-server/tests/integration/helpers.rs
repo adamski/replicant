@@ -441,25 +441,19 @@ impl TestContext {
 
         pool.close().await;
 
-        // Run migrations on the new database
+        // Run migrations on the new database using Rust migration API
         tracing::debug!("Running migrations on fresh database");
 
-        // Find the project root directory (where Cargo.toml is)
-        let project_root = std::env::current_dir()?.join("../");
+        // Create a new database instance and run migrations
+        let db = sync_server::database::ServerDatabase::new(
+            &self.db_url,
+            "com.example.sync-task-list".to_string(),
+        )
+        .await?;
 
-        let migration_result = tokio::process::Command::new("sqlx")
-            .args(&["migrate", "run", "--source", "sync-server/migrations"])
-            .current_dir(&project_root)
-            .env("DATABASE_URL", &self.db_url)
-            .output()
-            .await?;
+        db.run_migrations().await?;
 
-        if !migration_result.status.success() {
-            let stderr = String::from_utf8_lossy(&migration_result.stderr);
-            let stdout = String::from_utf8_lossy(&migration_result.stdout);
-            anyhow::bail!("Migration failed: stdout: {}, stderr: {}", stdout, stderr);
-        }
-
+        tracing::debug!("Migrations completed successfully");
         Ok(())
     }
 

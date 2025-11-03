@@ -97,10 +97,8 @@ mod database_tests {
                 "title": "Test Document",
                 "text": "Hello, World!"
             }),
-            revision_id: Document::initial_revision(&json!({
-                "text": "Hello, World!"
-            })),
             version: 1,
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -112,7 +110,7 @@ mod database_tests {
             .expect("Failed to create document");
 
         // Delete document
-        db.delete_document(&doc.id, &user_id, "1-delete")
+        db.delete_document(&doc.id, &user_id)
             .await
             .expect("Failed to delete document");
 
@@ -155,10 +153,8 @@ mod database_tests {
             id: Uuid::new_v4(),
             user_id,
             content: json!({"title": "Event Test Document", "text": "Testing events", "version": 1}),
-            revision_id: Document::initial_revision(
-                &json!({"text": "Testing events", "version": 1}),
-            ),
             version: 1,
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -185,7 +181,6 @@ mod database_tests {
         );
         assert_eq!(events[0].document_id, doc.id);
         assert_eq!(events[0].user_id, user_id);
-        assert_eq!(events[0].revision_id, doc.revision_id);
         assert!(
             events[0].forward_patch.is_some(),
             "Create events should have the document as forward_patch"
@@ -203,7 +198,6 @@ mod database_tests {
         // Update the document - this should log an UPDATE event
         let mut updated_doc = doc.clone();
         updated_doc.content = json!({"text": "Updated content", "version": 2});
-        updated_doc.revision_id = updated_doc.next_revision(&updated_doc.content);
         updated_doc.version = 2;
         updated_doc.updated_at = chrono::Utc::now();
 
@@ -239,7 +233,6 @@ mod database_tests {
             sync_core::protocol::ChangeEventType::Update
         );
         assert_eq!(events[1].document_id, doc.id);
-        assert_eq!(events[1].revision_id, updated_doc.revision_id);
         assert!(
             events[1].forward_patch.is_some(),
             "Update events should have forward patch data"
@@ -255,7 +248,7 @@ mod database_tests {
         );
 
         // Delete the document - this should log a DELETE event
-        db.delete_document(&doc.id, &user_id, "2-delete")
+        db.delete_document(&doc.id, &user_id)
             .await
             .expect("Failed to delete document");
 
@@ -275,7 +268,6 @@ mod database_tests {
             sync_core::protocol::ChangeEventType::Delete
         );
         assert_eq!(events[2].document_id, doc.id);
-        assert_eq!(events[2].revision_id, "2-delete");
         assert!(
             events[2].forward_patch.is_none(),
             "Delete events should not have forward patch"
@@ -338,8 +330,8 @@ mod database_tests {
             id: doc_id,
             user_id,
             content: json!({"value": "server-content", "source": "server"}),
-            revision_id: "1-server".to_string(),
             version: 1,
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -355,8 +347,8 @@ mod database_tests {
             id: doc_id,
             user_id,
             content: json!({"value": "client-content", "source": "client"}),
-            revision_id: "1-client".to_string(),
             version: 1,
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -373,7 +365,6 @@ mod database_tests {
                 document_id: &doc_id,
                 user_id: &user_id,
                 event_type: sync_core::protocol::ChangeEventType::Create,
-                revision_id: &server_doc.revision_id,
                 forward_patch: Some(&server_content_json),
                 reverse_patch: None,
                 applied: false,
@@ -414,10 +405,6 @@ mod database_tests {
             1,
             "Should have exactly 1 unapplied change (conflict loser)"
         );
-        assert_eq!(
-            conflicts[0].revision_id, "1-server",
-            "Conflict should be server's revision"
-        );
         assert!(
             conflicts[0].forward_patch.is_some(),
             "Conflict should preserve server content"
@@ -456,8 +443,8 @@ mod database_tests {
             id: doc_id,
             user_id,
             content: json!({"value": 1, "name": "initial"}),
-            revision_id: "1-initial".to_string(),
             version: 1,
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -471,7 +458,6 @@ mod database_tests {
         // Simulate concurrent update scenario
         // Server's state before conflict
         let server_state = json!({"value": 2, "name": "server-update"});
-        let server_revision = "2-server".to_string();
 
         // Start transaction to log server's state as conflict loser
         let mut tx = db.pool.begin().await.expect("Failed to begin transaction");
@@ -483,7 +469,6 @@ mod database_tests {
                 document_id: &doc_id,
                 user_id: &user_id,
                 event_type: sync_core::protocol::ChangeEventType::Update,
-                revision_id: &server_revision,
                 forward_patch: Some(&server_content_json),
                 reverse_patch: None,
                 applied: false,
@@ -498,7 +483,6 @@ mod database_tests {
         // Apply client's winning update
         let mut winning_doc = doc.clone();
         winning_doc.content = json!({"value": 3, "name": "client-wins"});
-        winning_doc.revision_id = "2-client".to_string();
         winning_doc.version = 2;
 
         db.update_document(&winning_doc, None)
@@ -514,10 +498,6 @@ mod database_tests {
         println!("📊 Unapplied changes: {}", conflicts.len());
 
         assert_eq!(conflicts.len(), 1, "Should have 1 unapplied change");
-        assert_eq!(
-            conflicts[0].revision_id, "2-server",
-            "Should be server's revision"
-        );
         assert!(
             conflicts[0].forward_patch.is_some(),
             "Should preserve server's state"
@@ -557,8 +537,8 @@ mod database_tests {
             id: doc_id,
             user_id,
             content: json!({"version": 0}),
-            revision_id: "1-initial".to_string(),
             version: 1,
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -581,7 +561,6 @@ mod database_tests {
                     document_id: &doc_id,
                     user_id: &user_id,
                     event_type: sync_core::protocol::ChangeEventType::Update,
-                    revision_id: &format!("{}-conflict", i),
                     forward_patch: Some(&conflict_json),
                     reverse_patch: None,
                     applied: false,
@@ -616,8 +595,8 @@ mod database_tests {
         // Verify all are unapplied conflicts
         for (idx, conflict) in conflicts.iter().enumerate() {
             println!(
-                "  Conflict {}: seq={}, rev={}",
-                idx, conflict.sequence, conflict.revision_id
+                "  Conflict {}: seq={}",
+                idx, conflict.sequence
             );
             assert!(
                 conflict.forward_patch.is_some(),

@@ -1209,14 +1209,10 @@ async fn test_server_sends_document_updated_patch() {
     let new_content = json!({ "value": 2 });
     let patch = create_patch(&old_content, &new_content).unwrap();
 
-    let mut updated_vc = doc.version_vector.clone();
-    updated_vc.increment("server_node");
-
     let document_patch = DocumentPatch {
         document_id: doc.id,
         patch,
-        version_vector: updated_vc,
-        checksum: calculate_checksum(&new_content),
+        content_hash: calculate_checksum(&new_content),
     };
 
     setup
@@ -1250,7 +1246,7 @@ async fn test_server_sends_new_document_created() {
         user_id,
         content: json!({ "from_server": true }),
         version: 1,
-        version_vector: sync_core::models::VersionVector::new(),
+        content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,

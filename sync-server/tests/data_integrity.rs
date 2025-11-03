@@ -9,7 +9,6 @@
 //! - Patch application failures
 //! - Checksum validation
 //! - Event log sequence integrity
-//! - Revision ID parsing
 
 use serde_json::json;
 use std::sync::Arc;
@@ -68,8 +67,8 @@ async fn test_concurrent_writes_to_same_document() {
         id: Uuid::new_v4(),
         user_id,
         content: json!({"value": 0}),
-        revision_id: "1-initial".to_string(),
         version: 1,
+        content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -90,8 +89,8 @@ async fn test_concurrent_writes_to_same_document() {
                 id: doc_id,
                 user_id,
                 content: json!({"value": i}),
-                revision_id: format!("{}-update", i + 1),
                 version: i + 1,
+                content_hash: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
@@ -145,8 +144,8 @@ async fn test_document_update_consistency() {
         id: Uuid::new_v4(),
         user_id,
         content: original_content.clone(),
-        revision_id: "1-initial".to_string(),
         version: 1,
+        content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -158,7 +157,6 @@ async fn test_document_update_consistency() {
     for i in 2..=5 {
         let mut updated_doc = doc.clone();
         updated_doc.content = json!({"name": "Alice", "age": 30 + i});
-        updated_doc.revision_id = format!("{}-update", i);
         updated_doc.version = i;
 
         db.update_document(&updated_doc, None).await.unwrap();
@@ -172,50 +170,6 @@ async fn test_document_update_consistency() {
     println!("✅ Document update consistency test passed");
 }
 
-/// Tests that malformed revision IDs are handled gracefully.
-#[tokio::test]
-async fn test_revision_id_parsing_failures() {
-    let db = match setup_test_db().await {
-        Ok(db) => db,
-        Err(e) => {
-            println!("⏭️ Skipping test: {}", e);
-            return;
-        }
-    };
-
-    let user_id = db.create_user("revision-test@example.com").await.unwrap();
-
-    // Test various invalid revision ID formats
-    let invalid_revisions = vec![
-        "invalid", // No hyphen
-        "abc-123", // Non-numeric generation
-        "-hash",   // Missing generation
-        "1-",      // Missing hash
-        "",        // Empty
-        "0-hash",  // Zero generation
-        "-1-hash", // Negative generation
-    ];
-
-    for (i, revision_id) in invalid_revisions.iter().enumerate() {
-        let doc = Document {
-            id: Uuid::new_v4(),
-            user_id,
-            content: json!({"test": i}),
-            revision_id: revision_id.to_string(),
-            version: 1,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            deleted_at: None,
-        };
-
-        let result = db.create_document(&doc).await;
-
-        // System should either accept it (being lenient) or reject it cleanly
-        println!("Revision '{}': {:?}", revision_id, result.is_ok());
-    }
-
-    println!("✅ Revision ID parsing test passed - no panics");
-}
 
 /// Tests that event log sequence numbers are always incrementing.
 #[tokio::test]
@@ -237,8 +191,8 @@ async fn test_event_log_sequence_integrity() {
             id: Uuid::new_v4(),
             user_id,
             content: json!({"index": i}),
-            revision_id: format!("1-doc{}", i),
             version: 1,
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -286,8 +240,8 @@ async fn test_version_vector_comparison_edge_cases() {
         id: Uuid::new_v4(),
         user_id,
         content: json!({"value": 1}),
-        revision_id: "1-a".to_string(),
         version: 1,
+        content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -298,7 +252,6 @@ async fn test_version_vector_comparison_edge_cases() {
     // Create concurrent update with different clock
     let mut doc2 = doc.clone();
     doc2.content = json!({"value": 2});
-    doc2.revision_id = "1-b".to_string();
 
     let result = db.update_document(&doc2, None).await;
 
@@ -327,8 +280,8 @@ async fn test_duplicate_document_id_handling() {
         id: shared_id,
         user_id,
         content: json!({"version": 1}),
-        revision_id: "1-first".to_string(),
         version: 1,
+        content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -341,8 +294,8 @@ async fn test_duplicate_document_id_handling() {
         id: shared_id,
         user_id,
         content: json!({"version": 2}),
-        revision_id: "1-second".to_string(),
         version: 1,
+        content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -375,8 +328,8 @@ async fn test_no_orphaned_documents_after_user_deletion() {
             id: Uuid::new_v4(),
             user_id,
             content: json!({"index": i}),
-            revision_id: format!("1-doc{}", i),
             version: 1,
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

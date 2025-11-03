@@ -1831,7 +1831,6 @@ async fn toggle_task_completion(
     } else {
         // Offline update
         let mut updated_doc = doc;
-        updated_doc.revision_id = updated_doc.next_revision(&content);
         updated_doc.content = content;
         updated_doc.version += 1;
         updated_doc.updated_at = chrono::Utc::now();
@@ -1886,10 +1885,9 @@ async fn create_sample_task(
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            revision_id: Document::initial_revision(&content),
             content,
             version: 1,
-            version_vector: sync_core::models::VersionVector::new(),
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -1973,7 +1971,6 @@ async fn save_task_edit(
     } else {
         // Offline update
         let mut updated_doc = doc;
-        updated_doc.revision_id = updated_doc.next_revision(&content);
         updated_doc.content = content;
         updated_doc.version += 1;
         updated_doc.updated_at = chrono::Utc::now();

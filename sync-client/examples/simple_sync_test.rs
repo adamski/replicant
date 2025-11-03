@@ -129,8 +129,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             debug!("Creating document with content: {:?}", content);
             let document = engine.create_document(content).await?;
             info!(
-                "Successfully created document: {} with revision: {}",
-                document.id, document.revision_id
+                "Successfully created document: {}",
+                document.id
             );
             println!("Created document: {}", document.id);
 
@@ -186,8 +186,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or("");
 
                     println!(
-                        "Document: {} | Title: {} | Description: {} | Rev: {}",
-                        doc.id, title, desc, doc.revision_id
+                        "Document: {} | Title: {} | Description: {}",
+                        doc.id, title, desc
                     );
                 }
             }
@@ -218,7 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("No title");
 
-                println!("  {} | {} | Rev: {}", doc.id, title, doc.revision_id);
+                println!("  {} | {}", doc.id, title);
             }
 
             // Allow extra time for potential incoming sync messages (like auto-sync after reconnection)
@@ -359,8 +359,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("No title");
                                     println!(
-                                        "RESPONSE:DOC:{}:{}:{}",
-                                        doc.id, title, doc.revision_id
+                                        "RESPONSE:DOC:{}:{}",
+                                        doc.id, title
                                     );
                                 }
                                 println!("RESPONSE:LIST_END");

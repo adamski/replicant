@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT sequence, document_id, user_id, event_type, revision_id,\n                   forward_patch, reverse_patch, created_at\n            FROM change_events\n            WHERE document_id = $1 AND applied = false\n            ORDER BY sequence DESC\n            ",
+  "query": "\n            SELECT sequence, document_id, user_id, event_type,\n                   forward_patch, reverse_patch, created_at\n            FROM change_events\n            WHERE document_id = $1 AND applied = false\n            ORDER BY sequence DESC\n            ",
   "describe": {
     "columns": [
       {
@@ -25,21 +25,16 @@
       },
       {
         "ordinal": 4,
-        "name": "revision_id",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 5,
         "name": "forward_patch",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "reverse_patch",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -54,11 +49,10 @@
       false,
       false,
       false,
-      false,
       true,
       true,
       false
     ]
   },
-  "hash": "8b574d1e31067258c5df5d99c0e605ee8a22e39212ba5d997a13af32cc98c44d"
+  "hash": "00c6850917dcade2bc114081644a36d3850b279bd8f769743d0eed649debe781"
 }

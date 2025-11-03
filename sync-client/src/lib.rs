@@ -21,7 +21,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use sqlx::Row;
-    use sync_core::models::{Document, VersionVector};
+    use sync_core::models::Document;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -43,7 +43,6 @@ mod tests {
                 user_id TEXT NOT NULL,
                 content JSON NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                version_vector JSON,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 deleted_at TIMESTAMP,
@@ -82,7 +81,6 @@ mod tests {
             content: content.clone(),
             content_hash: None,
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -114,7 +112,6 @@ mod tests {
                 content: test_content.clone(),
                 version: 1,
                 content_hash: None,
-                version_vector: VersionVector::new(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
@@ -152,7 +149,6 @@ mod tests {
                 user_id TEXT NOT NULL,
                 content JSON NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                version_vector JSON,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 deleted_at TIMESTAMP,
@@ -186,7 +182,6 @@ mod tests {
             content: content.clone(),
             content_hash: None,
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

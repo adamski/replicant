@@ -11,7 +11,7 @@
 //! - Constraint violations
 
 use serde_json::json;
-use sync_core::models::{Document, VersionVector};
+use sync_core::models::Document;
 use sync_server::database::ServerDatabase;
 use uuid::Uuid;
 
@@ -68,7 +68,6 @@ async fn test_transaction_rollback_on_partial_failure() {
         content: json!({"test": "data"}),
         revision_id: "1-abc".to_string(),
         version: 1,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -196,7 +195,6 @@ async fn test_foreign_key_constraint_enforcement() {
         content: json!({"test": "data"}),
         revision_id: "1-abc".to_string(),
         version: 1,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -268,7 +266,6 @@ async fn test_update_non_existent_document() {
         content: json!({"test": "updated"}),
         revision_id: "2-abc".to_string(),
         version: 2,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -334,7 +331,6 @@ async fn test_large_document_handling() {
         content: large_content,
         revision_id: "1-large".to_string(),
         version: 1,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -386,7 +382,6 @@ async fn test_deeply_nested_json() {
         content: nested,
         revision_id: "1-nested".to_string(),
         version: 1,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,

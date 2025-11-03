@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, user_id, content, revision_id, version, version_vector, created_at, updated_at, deleted_at\n            FROM documents\n            WHERE id = $1\n        ",
+  "query": "\n            SELECT id, user_id, content, version, content_hash,\n                   created_at, updated_at, deleted_at\n            FROM documents\n            WHERE user_id = $1 AND deleted_at IS NULL\n            ORDER BY updated_at DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -20,31 +20,26 @@
       },
       {
         "ordinal": 3,
-        "name": "revision_id",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 4,
         "name": "version",
         "type_info": "Int8"
       },
       {
-        "ordinal": 5,
-        "name": "version_vector",
-        "type_info": "Jsonb"
+        "ordinal": 4,
+        "name": "content_hash",
+        "type_info": "Text"
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
@@ -59,12 +54,11 @@
       false,
       false,
       false,
-      false,
       true,
       false,
       false,
       true
     ]
   },
-  "hash": "4d01a2da3fda4e6a4b99dcadf9a56f010bf7d55744601f6a73740dc3858d05e6"
+  "hash": "eb04c76856a9e1903e510ba068d562610fc1cf6078d1e3f02cedbaedb0193b3c"
 }

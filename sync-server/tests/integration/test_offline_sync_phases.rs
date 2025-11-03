@@ -249,7 +249,6 @@ crate::integration_test!(
             }),
             version: 1,
             content_hash: None,
-            version_vector: sync_core::models::VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

@@ -13,7 +13,7 @@
 
 use serde_json::json;
 use std::sync::Arc;
-use sync_core::models::{Document, VersionVector};
+use sync_core::models::Document;
 use sync_server::database::ServerDatabase;
 use uuid::Uuid;
 
@@ -70,7 +70,6 @@ async fn test_concurrent_writes_to_same_document() {
         content: json!({"value": 0}),
         revision_id: "1-initial".to_string(),
         version: 1,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -87,18 +86,16 @@ async fn test_concurrent_writes_to_same_document() {
         let user_id = user_id;
 
         let handle = tokio::spawn(async move {
-            let mut updated_doc = Document {
+            let updated_doc = Document {
                 id: doc_id,
                 user_id,
                 content: json!({"value": i}),
                 revision_id: format!("{}-update", i + 1),
                 version: i + 1,
-                version_vector: VersionVector::new(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
             };
-            updated_doc.version_vector.increment(&format!("client-{}", i));
 
             db_clone.update_document(&updated_doc, None).await
         });
@@ -150,7 +147,6 @@ async fn test_document_update_consistency() {
         content: original_content.clone(),
         revision_id: "1-initial".to_string(),
         version: 1,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -207,7 +203,6 @@ async fn test_revision_id_parsing_failures() {
             content: json!({"test": i}),
             revision_id: revision_id.to_string(),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -244,7 +239,6 @@ async fn test_event_log_sequence_integrity() {
             content: json!({"index": i}),
             revision_id: format!("1-doc{}", i),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -288,16 +282,12 @@ async fn test_version_vector_comparison_edge_cases() {
     let user_id = db.create_user("vclock-test@example.com").await.unwrap();
 
     // Create document with initial vector clock
-    let mut vc1 = VersionVector::new();
-    vc1.increment("client-a");
-
     let doc = Document {
         id: Uuid::new_v4(),
         user_id,
         content: json!({"value": 1}),
         revision_id: "1-a".to_string(),
         version: 1,
-        version_vector: vc1.clone(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -306,13 +296,9 @@ async fn test_version_vector_comparison_edge_cases() {
     db.create_document(&doc).await.unwrap();
 
     // Create concurrent update with different clock
-    let mut vc2 = VersionVector::new();
-    vc2.increment("client-b");
-
     let mut doc2 = doc.clone();
     doc2.content = json!({"value": 2});
     doc2.revision_id = "1-b".to_string();
-    doc2.version_vector = vc2;
 
     let result = db.update_document(&doc2, None).await;
 
@@ -343,7 +329,6 @@ async fn test_duplicate_document_id_handling() {
         content: json!({"version": 1}),
         revision_id: "1-first".to_string(),
         version: 1,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -358,7 +343,6 @@ async fn test_duplicate_document_id_handling() {
         content: json!({"version": 2}),
         revision_id: "1-second".to_string(),
         version: 1,
-        version_vector: VersionVector::new(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -393,7 +377,6 @@ async fn test_no_orphaned_documents_after_user_deletion() {
             content: json!({"index": i}),
             revision_id: format!("1-doc{}", i),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

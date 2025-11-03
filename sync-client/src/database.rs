@@ -165,11 +165,10 @@ impl ClientDatabase {
             .bind(params.1) // user_id
             .bind(params.2) // content
             .bind(params.3) // version
-            .bind(params.4) // version_vector
-            .bind(params.5) // created_at
-            .bind(params.6) // updated_at
-            .bind(params.7) // deleted_at
-            .bind(params.8) // sync_status
+            .bind(params.4) // created_at
+            .bind(params.5) // updated_at
+            .bind(params.6) // deleted_at
+            .bind(params.7) // sync_status
             .execute(&self.pool)
             .await?;
 

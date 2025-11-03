@@ -21,7 +21,7 @@ fn test_api_credentials_generation() {
 #[cfg(test)]
 mod database_tests {
     use serde_json::json;
-    use sync_core::models::{Document, VersionVector};
+    use sync_core::models::Document;
     use sync_server::database::ServerDatabase;
     use uuid::Uuid;
 
@@ -101,7 +101,6 @@ mod database_tests {
                 "text": "Hello, World!"
             })),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -160,7 +159,6 @@ mod database_tests {
                 &json!({"text": "Testing events", "version": 1}),
             ),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -336,18 +334,16 @@ mod database_tests {
 
         // Create document v1 on "server"
         let doc_id = Uuid::new_v4();
-        let mut server_doc = Document {
+        let server_doc = Document {
             id: doc_id,
             user_id,
             content: json!({"value": "server-content", "source": "server"}),
             revision_id: "1-server".to_string(),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
         };
-        server_doc.version_vector.increment(&"server".to_string());
 
         db.create_document(&server_doc)
             .await
@@ -355,18 +351,16 @@ mod database_tests {
         println!("✅ Created server version of document");
 
         // Simulate client creating same document (conflict scenario)
-        let mut client_doc = Document {
+        let client_doc = Document {
             id: doc_id,
             user_id,
             content: json!({"value": "client-content", "source": "client"}),
             revision_id: "1-client".to_string(),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
         };
-        client_doc.version_vector.increment(&"client".to_string());
 
         // Start transaction to log conflict (simulating sync_handler behavior)
         let mut tx = db.pool.begin().await.expect("Failed to begin transaction");
@@ -458,18 +452,16 @@ mod database_tests {
 
         // Create initial document
         let doc_id = Uuid::new_v4();
-        let mut doc = Document {
+        let doc = Document {
             id: doc_id,
             user_id,
             content: json!({"value": 1, "name": "initial"}),
             revision_id: "1-initial".to_string(),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
         };
-        doc.version_vector.increment(&"node1".to_string());
 
         db.create_document(&doc)
             .await
@@ -567,7 +559,6 @@ mod database_tests {
             content: json!({"version": 0}),
             revision_id: "1-initial".to_string(),
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

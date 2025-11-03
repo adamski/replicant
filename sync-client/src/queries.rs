@@ -12,7 +12,6 @@ pub type DocumentParams = (
     String,         // user_id
     String,         // content
     i64,            // version
-    String,         // version_vector
     String,         // created_at
     String,         // updated_at
     Option<String>, // deleted_at
@@ -36,7 +35,6 @@ impl Queries {
             user_id TEXT NOT NULL,
             content JSON NOT NULL,
             version INTEGER NOT NULL DEFAULT 1,
-            version_vector JSON,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             deleted_at TIMESTAMP,
@@ -78,7 +76,7 @@ impl Queries {
     // Document queries
     pub const GET_DOCUMENT: &'static str = r#"
         SELECT id, user_id, content, version,
-               version_vector, created_at, updated_at, deleted_at
+               created_at, updated_at, deleted_at
         FROM documents
         WHERE id = ?1
     "#;
@@ -86,12 +84,11 @@ impl Queries {
     pub const UPSERT_DOCUMENT: &'static str = r#"
         INSERT INTO documents (
             id, user_id, content, version,
-            version_vector, created_at, updated_at, deleted_at, sync_status
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            created_at, updated_at, deleted_at, sync_status
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ON CONFLICT(id) DO UPDATE SET
             content = excluded.content,
             version = excluded.version,
-            version_vector = excluded.version_vector,
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at,
             sync_status = excluded.sync_status
@@ -157,7 +154,6 @@ impl DbHelpers {
         let user_id: String = row.get("user_id");
         let content: String = row.get("content");
         let version: i64 = row.get("version");
-        let version_vector: Option<String> = row.get("version_vector");
         let created_at: String = row.get("created_at");
         let updated_at: String = row.get("updated_at");
         let deleted_at: Option<String> = row.get("deleted_at");
@@ -168,7 +164,6 @@ impl DbHelpers {
             content: serde_json::from_str(&content)?,
             version,
             content_hash: None, // Not stored in client database
-            version_vector: serde_json::from_str(&version_vector.unwrap_or_else(|| "{}".to_string()))?,
             created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
             updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
             deleted_at: deleted_at
@@ -189,7 +184,6 @@ impl DbHelpers {
             doc.user_id.to_string(),
             serde_json::to_string(&doc.content)?,
             doc.version,
-            serde_json::to_string(&doc.version_vector)?,
             doc.created_at.to_rfc3339(),
             doc.updated_at.to_rfc3339(),
             doc.deleted_at.map(|dt| dt.to_rfc3339()),

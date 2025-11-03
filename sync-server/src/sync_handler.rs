@@ -3,7 +3,7 @@ use std::sync::Arc;
 use sync_core::{
     errors::ServerError,
     patches::{apply_patch, calculate_checksum},
-    protocol::{ClientMessage, ConflictResolution, ErrorCode, ServerMessage},
+    protocol::{ClientMessage, ErrorCode, ServerMessage},
     SyncResult,
 };
 use tokio::sync::mpsc;
@@ -233,131 +233,9 @@ impl SyncHandler {
                     return Ok(());
                 }
 
-                // Check for conflicts
-                if doc.version_vector.is_concurrent(&patch.version_vector) {
-                    // Log conflict if monitoring is enabled
-                    if let Some(ref monitoring) = self.monitoring {
-                        monitoring.log_conflict_detected(&doc.id.to_string()).await;
-                    }
-
-                    // Last-write-wins strategy: Client patch overwrites server state
-                    // Note: This applies the patch to current server state, not merging changes
-                    tracing::warn!("🔥 CONFLICT DETECTED for document {}", doc.id);
-                    tracing::warn!("   Server content before: {:?}", doc.content);
-                    tracing::warn!("   Client patch: {:?}", patch.patch);
-
-                    // Store the server's current state as conflict loser BEFORE applying client patch
-                    let server_content_before = doc.content.clone();
-
-                    // Apply the client's patch (client wins)
-                    apply_patch(&mut doc.content, &patch.patch)?;
-
-                    // Update version vector and metadata
-                    doc.version_vector.increment(
-                        &self
-                            .user_id
-                            .ok_or(ServerError::ServerSync(
-                                "Unauthorized: user_id not found".to_string(),
-                            ))?
-                            .to_string(),
-                    );
-                    doc.version += 1;
-                    doc.content_hash = None; // Will be recalculated
-                    doc.updated_at = chrono::Utc::now();
-
-                    tracing::warn!(
-                        "   Server content after conflict resolution: {:?}",
-                        doc.content
-                    );
-
-                    // Use single transaction to log conflict AND update document atomically
-                    let result = async {
-                        let mut tx = self
-                            .db
-                            .pool
-                            .begin()
-                            .await
-                            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
-
-                        // Log server's pre-conflict state as unapplied (conflict loser)
-                        let server_content_json = serde_json::to_value(&server_content_before)
-                            .map_err(|e| format!("Failed to serialize server content: {}", e))?;
-
-                        self.db
-                            .log_change_event(
-                                &mut tx,
-                                crate::database::ChangeEventParams {
-                                    document_id: &doc.id,
-                                    user_id: &user_id,
-                                    event_type: sync_core::protocol::ChangeEventType::Update,
-                                    forward_patch: Some(&server_content_json),
-                                    reverse_patch: None,
-                                    applied: false,
-                                },
-                            )
-                            .await
-                            .map_err(|e| format!("Failed to log conflict: {}", e))?;
-
-                        tracing::info!(
-                            "📝 Logged server state as conflict loser"
-                        );
-
-                        // Update document with client's changes IN SAME TRANSACTION
-                        self.db
-                            .update_document_in_tx(&mut tx, &doc, Some(&patch.patch))
-                            .await
-                            .map_err(|e| format!("Failed to update document: {}", e))?;
-
-                        // Commit both operations atomically
-                        tx.commit()
-                            .await
-                            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
-
-                        Ok::<(), String>(())
-                    }
-                    .await;
-
-                    match result {
-                        Ok(_) => {
-                            // Notify client of conflict resolution
-                            self.tx
-                                .send(ServerMessage::ConflictDetected {
-                                    document_id: patch.document_id,
-                                    resolution_strategy: ConflictResolution::ServerWins,
-                                })
-                                .await?;
-                        }
-                        Err(e) => {
-                            tracing::error!("❌ Conflict resolution failed: {}", e);
-                            // Notify client that the update failed
-                            self.tx
-                                .send(ServerMessage::ConflictDetected {
-                                    document_id: patch.document_id,
-                                    resolution_strategy: ConflictResolution::ServerWins,
-                                })
-                                .await?;
-                            return Ok(());
-                        }
-                    }
-                    // Broadcast the final state to ALL clients to ensure convergence
-                    // This ensures all clients get the authoritative state after conflict resolution
-                    tracing::info!(
-                        "🔸 Broadcasting final document state after conflict resolution"
-                    );
-                    self.broadcast_to_user_except(
-                        user_id,
-                        self.client_id,
-                        ServerMessage::SyncDocument {
-                            document: doc.clone(),
-                        },
-                    )
-                    .await?;
-
-                    return Ok(());
-                }
-
-                // Apply patch (no conflict)
-                tracing::info!("📝 NORMAL UPDATE for document {}", doc.id);
+                // Note: Simple last-write-wins - server applies client patches
+                // Conflict detection happens via optimistic locking (version comparison)
+                tracing::info!("📝 UPDATE for document {}", doc.id);
                 tracing::info!(
                     "   Version: {} | Content before: {:?}",
                     doc.version,
@@ -365,7 +243,13 @@ impl SyncHandler {
                 );
                 tracing::info!("   Patch: {:?}", patch.patch);
 
+                // Apply the client's patch
                 apply_patch(&mut doc.content, &patch.patch)?;
+
+                // Update metadata
+                doc.version += 1;
+                doc.content_hash = None; // Will be recalculated
+                doc.updated_at = chrono::Utc::now();
 
                 // Log patch applied if monitoring is enabled
                 if let Some(ref monitoring) = self.monitoring {
@@ -383,11 +267,7 @@ impl SyncHandler {
                     return Ok(());
                 }
 
-                // Update metadata
-                doc.version += 1;
                 doc.content_hash = Some(calculated_hash);
-                doc.version_vector.merge(&patch.version_vector);
-                doc.updated_at = chrono::Utc::now();
 
                 // Save to database
                 match self.db.update_document(&doc, Some(&patch.patch)).await {

@@ -8,7 +8,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use sync_core::{
     errors::ClientError,
-    models::{Document, SyncStatus, VersionVector},
+    models::{Document, SyncStatus},
     patches::{apply_patch, create_patch},
     protocol::{ClientMessage, ServerMessage},
     SyncResult,
@@ -37,7 +37,6 @@ pub struct SyncEngine {
     ws_client: Arc<Mutex<Option<WebSocketClient>>>,
     user_id: Uuid,
     client_id: Uuid,
-    node_id: String,
     message_rx: Option<mpsc::Receiver<ServerMessage>>,
     event_dispatcher: Arc<EventDispatcher>,
     pending_uploads: Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
@@ -70,7 +69,6 @@ impl SyncEngine {
             .await?;
 
         let (user_id, client_id) = db.get_user_and_client_id().await?;
-        let node_id = format!("client_{}", user_id);
 
         // Create the event dispatcher first
         let event_dispatcher = Arc::new(EventDispatcher::new());
@@ -113,7 +111,6 @@ impl SyncEngine {
             ws_client: Arc::new(Mutex::new(ws_client)),
             user_id,
             client_id,
-            node_id,
             message_rx: Some(rx),
             event_dispatcher: event_dispatcher.clone(),
             pending_uploads: Arc::new(Mutex::new(HashMap::new())),
@@ -333,11 +330,6 @@ impl SyncEngine {
             content,
             version: 1,
             content_hash: None,
-            version_vector: {
-                let mut vc = VersionVector::new();
-                vc.increment(&self.node_id);
-                vc
-            },
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -396,7 +388,6 @@ impl SyncEngine {
         doc.content = new_content.clone();
         doc.version += 1;
         doc.content_hash = None; // Will be recalculated
-        doc.version_vector.increment(&self.node_id);
         doc.updated_at = chrono::Utc::now();
 
         tracing::info!(
@@ -523,8 +514,6 @@ impl SyncEngine {
     }
 
     pub async fn delete_document(&self, id: Uuid) -> SyncResult<()> {
-        let doc = self.db.get_document(&id).await?;
-
         // Mark as deleted locally first
         self.db.delete_document(&id).await?;
 
@@ -788,7 +777,6 @@ impl SyncEngine {
                                 let document_patch = DocumentPatch {
                                     document_id: pending_info.id,
                                     patch: stored_patch,
-                                    version_vector: doc.version_vector.clone(),
                                     content_hash: calculate_checksum(&doc.content),
                                 };
 
@@ -1009,19 +997,8 @@ impl SyncEngine {
                 );
                 tracing::info!("CLIENT {}: Patch to apply: {:?}", client_id, patch.patch);
 
-                // Check for conflicts
-                if doc.version_vector.is_concurrent(&patch.version_vector) {
-                    tracing::warn!(
-                        "CLIENT {}: Conflict detected for document {}",
-                        client_id,
-                        patch.document_id
-                    );
-                    // Handle conflict - for now, server wins
-                }
-
                 // Apply patch
                 apply_patch(&mut doc.content, &patch.patch)?;
-                doc.version_vector.merge(&patch.version_vector);
                 doc.content_hash = None; // Will be recalculated
                 doc.updated_at = chrono::Utc::now();
 
@@ -1124,14 +1101,8 @@ impl SyncEngine {
                             document.version
                         );
 
-                        // Compare versions using version vectors (primary) or version number (fallback)
-                        let should_update = if document.version_vector.is_concurrent(&local_doc.version_vector) {
-                            // Concurrent - use server version (last-write-wins)
-                            true
-                        } else {
-                            // Not concurrent - check if server version is newer
-                            document.version >= local_doc.version
-                        };
+                        // Compare versions - server wins if version is newer or equal
+                        let should_update = document.version >= local_doc.version;
 
                         if should_update {
                             // Check if this might be overwriting local changes by comparing content
@@ -1514,7 +1485,6 @@ impl SyncEngine {
         let document_patch = DocumentPatch {
             document_id: current_doc.id,
             patch,
-            version_vector: current_doc.version_vector.clone(),
             content_hash: calculate_checksum(&current_doc.content),
         };
 
@@ -1841,7 +1811,6 @@ impl SyncEngine {
                                     DocumentPatch {
                                         document_id: pending_info.id,
                                         patch: json_patch,
-                                        version_vector: doc.version_vector.clone(),
                                         content_hash: calculate_checksum(&doc.content),
                                     }
                                 }

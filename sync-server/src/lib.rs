@@ -31,7 +31,7 @@ pub struct AppState {
 mod tests {
     use super::*;
     use serde_json::json;
-    use sync_core::models::{Document, VersionVector};
+    use sync_core::models::Document;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -67,7 +67,6 @@ mod tests {
             content: content.clone(),
             version: 1,
             content_hash: None,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

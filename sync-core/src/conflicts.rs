@@ -1,5 +1,5 @@
 use crate::errors::SyncError;
-use crate::models::{Document, VersionVector};
+use crate::models::Document;
 use crate::SyncResult;
 use serde_json::Value;
 
@@ -49,9 +49,6 @@ impl ConflictResolver {
         merged_doc.version = local.version.max(remote.version) + 1;
         merged_doc.content_hash = None; // Will be recalculated when saved
 
-        // Merge version vectors
-        merged_doc.version_vector.merge(&remote.version_vector);
-
         Ok(merged_doc)
     }
 }
@@ -89,8 +86,4 @@ fn merge_json_values(local: &Value, remote: &Value) -> SyncResult<Value> {
             Ok(remote.clone())
         }
     }
-}
-
-pub fn detect_conflict(local: &VersionVector, remote: &VersionVector) -> bool {
-    local.is_concurrent(remote)
 }

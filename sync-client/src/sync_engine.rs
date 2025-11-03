@@ -396,34 +396,21 @@ impl SyncEngine {
             doc.version
         );
 
-        // Save locally with explicit "pending" status for sync
-        self.db
-            .save_document_with_status(&doc, Some(SyncStatus::Pending))
-            .await?;
-
-        // Store patch in sync_queue for offline sync
+        // CRITICAL: Atomically save document and queue patch
+        // This prevents data loss if app crashes between operations
         use sync_core::protocol::ChangeEventType;
         tracing::info!(
-            "CLIENT {}: 📋 About to call queue_sync_operation for doc {}",
+            "CLIENT {}: 📋 Atomically saving document and queueing patch for doc {}",
             self.client_id,
             doc.id
         );
-        let queue_result = self
-            .db
-            .queue_sync_operation(&doc.id, ChangeEventType::Update, Some(&patch))
-            .await;
-        match &queue_result {
-            Ok(_) => tracing::info!(
-                "CLIENT {}: 📋 Successfully stored update patch in sync_queue",
-                self.client_id
-            ),
-            Err(e) => tracing::error!(
-                "CLIENT {}: 📋 FAILED to store patch in sync_queue: {}",
-                self.client_id,
-                e
-            ),
-        }
-        queue_result?;
+        self.db
+            .save_document_and_queue_patch(&doc, &patch, ChangeEventType::Update)
+            .await?;
+        tracing::info!(
+            "CLIENT {}: ✅ Successfully saved document and queued patch atomically",
+            self.client_id
+        );
 
         // Verify it was saved correctly and check its sync status
         let saved_doc = self.db.get_document(&id).await?;

@@ -301,6 +301,73 @@ impl ClientDatabase {
         Ok(())
     }
 
+    /// CRITICAL: Atomically save document and queue patch
+    /// This prevents data loss if app crashes between separate operations
+    pub async fn save_document_and_queue_patch(
+        &self,
+        doc: &Document,
+        patch: &json_patch::Patch,
+        operation_type: ChangeEventType,
+    ) -> SyncResult<()> {
+        // Start a transaction for atomicity
+        let mut tx = self.pool.begin().await?;
+
+        // Save document with pending status (in transaction)
+        let params = DbHelpers::document_to_params(doc, Some(SyncStatus::Pending))?;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO documents (
+                id, user_id, content, version,
+                created_at, updated_at, deleted_at, sync_status
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(id) DO UPDATE SET
+                content = excluded.content,
+                version = excluded.version,
+                updated_at = excluded.updated_at,
+                deleted_at = excluded.deleted_at,
+                sync_status = excluded.sync_status
+            "#,
+            params.0,  // id
+            params.1,  // user_id
+            params.2,  // content
+            params.3,  // version
+            params.4,  // created_at
+            params.5,  // updated_at
+            params.6,  // deleted_at
+            params.7   // sync_status
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Queue sync operation (in transaction)
+        let patch_json = serde_json::to_string(patch)?;
+        let doc_id = doc.id.to_string();
+        let op_type = operation_type.to_string();
+
+        sqlx::query!(
+            r#"
+            INSERT INTO sync_queue (document_id, operation_type, patch)
+            VALUES (?1, ?2, ?3)
+            "#,
+            doc_id,     // document_id
+            op_type,    // operation_type
+            patch_json  // patch
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Commit atomically - both operations succeed or both fail
+        tx.commit().await?;
+
+        tracing::info!(
+            "DATABASE: Atomically saved document {} with pending status and queued patch",
+            doc.id
+        );
+
+        Ok(())
+    }
+
     pub async fn get_queued_patch(
         &self,
         document_id: &Uuid,

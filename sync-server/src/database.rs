@@ -3,7 +3,7 @@ use json_patch::Patch;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use sync_core::models::Document;
 use sync_core::protocol::{ChangeEvent, ChangeEventType};
-use sync_core::SyncResult;
+use sync_core::{SyncError, SyncResult};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -172,30 +172,64 @@ impl ServerDatabase {
         doc: &Document,
         patch: Option<&Patch>,
     ) -> SyncResult<()> {
-        // Get the original document state before update (for computing reverse patch)
-        let original_doc = self.get_document(&doc.id).await?;
+        // CRITICAL: Read the original document INSIDE the transaction with row lock
+        // This prevents race conditions in computing reverse patches
+        let original_doc = sqlx::query!(
+            r#"
+            SELECT id, user_id, content, version, content_hash, created_at, updated_at, deleted_at
+            FROM documents
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+            doc.id
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map(|row| Document {
+            id: row.id,
+            user_id: row.user_id,
+            content: row.content,
+            version: row.version,
+            content_hash: row.content_hash,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            deleted_at: row.deleted_at,
+        })?;
 
         let params = document_to_params(doc);
+        let expected_version = original_doc.version;
 
-        // Update the document
-        sqlx::query!(
+        // CRITICAL: Atomic version increment with optimistic locking
+        // The WHERE clause ensures we only update if version hasn't changed (optimistic lock)
+        let result = sqlx::query!(
             r#"
             UPDATE documents
-            SET content = $2, version = $3,
-                updated_at = $4, deleted_at = $5,
-                content_hash = $6, size_bytes = $7
-            WHERE id = $1
-        "#,
-            params.0,      // id
-            params.2 as _, // content_json
-            params.3,      // version
-            params.5,      // updated_at
-            params.6,      // deleted_at
-            params.7,      // content_hash
-            params.8       // size_bytes
+            SET content = $2,
+                version = version + 1,
+                updated_at = NOW(),
+                deleted_at = $3,
+                content_hash = $4,
+                size_bytes = $5
+            WHERE id = $1 AND version = $6
+            "#,
+            params.0,          // id
+            params.2 as _,     // content_json
+            params.6,          // deleted_at
+            params.7,          // content_hash
+            params.8,          // size_bytes
+            expected_version   // optimistic lock check
         )
         .execute(&mut **tx)
         .await?;
+
+        // Check if the update actually happened
+        if result.rows_affected() == 0 {
+            // Version mismatch - another transaction updated the document first
+            return Err(SyncError::VersionMismatch {
+                expected: expected_version,
+                actual: doc.version, // The version the client sent
+            });
+        }
 
         // Compute patches for the event log
         let forward_patch_json = patch.map(|p| serde_json::to_value(p).unwrap());

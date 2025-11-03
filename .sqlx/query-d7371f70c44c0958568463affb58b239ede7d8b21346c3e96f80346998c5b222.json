@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO documents (\n                id, user_id, content, version,\n                created_at, updated_at, deleted_at, sync_status\n            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)\n            ON CONFLICT(id) DO UPDATE SET\n                content = excluded.content,\n                version = excluded.version,\n                updated_at = excluded.updated_at,\n                deleted_at = excluded.deleted_at,\n                sync_status = excluded.sync_status\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "d7371f70c44c0958568463affb58b239ede7d8b21346c3e96f80346998c5b222"
+}

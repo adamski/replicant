@@ -4,7 +4,7 @@ use sync_core::{
     errors::ServerError,
     patches::{apply_patch, calculate_checksum},
     protocol::{ClientMessage, ErrorCode, ServerMessage},
-    SyncResult,
+    SyncError, SyncResult,
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -65,6 +65,43 @@ impl SyncHandler {
                     )
                     .await?;
                     return Ok(());
+                }
+
+                // CRITICAL: Validate version for new documents
+                // Clients must always send version=1 for new documents
+                // This prevents version inflation attacks
+                if document.version != 1 {
+                    tracing::warn!(
+                        "Client sent invalid version {} for new document {}. Rejecting.",
+                        document.version,
+                        document.id
+                    );
+                    self.send_error(
+                        ErrorCode::InvalidPatch,
+                        &format!("New documents must have version=1, got version={}", document.version),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+
+                // CRITICAL: Verify content hash for data integrity
+                // This must happen BEFORE any data is written to prevent corruption
+                if let Some(ref hash) = document.content_hash {
+                    let calculated_hash = calculate_checksum(&document.content);
+                    if calculated_hash != *hash {
+                        tracing::warn!(
+                            "Content hash mismatch for document {}: expected {}, got {}",
+                            document.id,
+                            calculated_hash,
+                            hash
+                        );
+                        self.send_error(
+                            ErrorCode::InvalidPatch,
+                            "Content hash mismatch - data may be corrupted",
+                        )
+                        .await?;
+                        return Ok(());
+                    }
                 }
 
                 // Check if document already exists (conflict detection)
@@ -243,13 +280,21 @@ impl SyncHandler {
                 );
                 tracing::info!("   Patch: {:?}", patch.patch);
 
+                // CRITICAL: Verify content hash BEFORE applying patch
+                // This prevents corrupted data from being written to database
+                let calculated_hash = calculate_checksum(&doc.content);
+                if calculated_hash != patch.content_hash {
+                    self.send_error(ErrorCode::InvalidPatch, "Content hash mismatch")
+                        .await?;
+                    return Ok(());
+                }
+
                 // Apply the client's patch
                 apply_patch(&mut doc.content, &patch.patch)?;
 
-                // Update metadata
-                doc.version += 1;
-                doc.content_hash = None; // Will be recalculated
-                doc.updated_at = chrono::Utc::now();
+                // Update metadata (version will be incremented atomically by database)
+                doc.content_hash = Some(calculate_checksum(&doc.content));
+                // Note: updated_at is set by database with NOW()
 
                 // Log patch applied if monitoring is enabled
                 if let Some(ref monitoring) = self.monitoring {
@@ -259,21 +304,11 @@ impl SyncHandler {
                         .await;
                 }
 
-                // Verify content hash
-                let calculated_hash = calculate_checksum(&doc.content);
-                if calculated_hash != patch.content_hash {
-                    self.send_error(ErrorCode::InvalidPatch, "Content hash mismatch")
-                        .await?;
-                    return Ok(());
-                }
-
-                doc.content_hash = Some(calculated_hash);
-
-                // Save to database
+                // Save to database with atomic version increment
                 match self.db.update_document(&doc, Some(&patch.patch)).await {
                     Ok(_) => {
                         tracing::info!("   Content after normal update: {:?}", doc.content);
-                        tracing::info!("   New version: {}", doc.version);
+                        tracing::info!("   Version incremented atomically by database");
 
                         // Send confirmation to the sender
                         self.tx
@@ -296,6 +331,24 @@ impl SyncHandler {
                         .await?;
                     }
                     Err(e) => {
+                        // Handle version mismatch errors specially
+                        if let SyncError::VersionMismatch { expected, actual } = &e {
+                            tracing::warn!(
+                                "Version mismatch for document {}: expected {}, client sent {}. Another client updated first.",
+                                patch.document_id, expected, actual
+                            );
+
+                            // Fetch the current server state to send back to client
+                            if let Ok(current_doc) = self.db.get_document(&patch.document_id).await {
+                                // Send the current server state so client can re-sync
+                                self.tx
+                                    .send(ServerMessage::SyncDocument {
+                                        document: current_doc,
+                                    })
+                                    .await?;
+                            }
+                        }
+
                         // Send error response to the sender
                         self.tx
                             .send(ServerMessage::DocumentUpdatedResponse {

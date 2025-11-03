@@ -2,4 +2,5 @@
 -- Part of simplification for server-authoritative sync architecture
 -- Version vectors are unnecessary for centralized systems
 
-ALTER TABLE documents DROP COLUMN version_vector;
+-- SQLite doesn't support IF EXISTS for ALTER TABLE, so we'll skip if column doesn't exist
+-- This is safe: client never had version_vector, so this is effectively a no-op

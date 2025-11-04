@@ -1,6 +1,7 @@
 pub mod auth_integration;
 pub mod concurrent_clients_integration;
 pub mod conflict_resolution_integration;
+pub mod data_integrity;
 pub mod debug_test;
 pub mod helpers;
 pub mod multi_client_sync_integration;

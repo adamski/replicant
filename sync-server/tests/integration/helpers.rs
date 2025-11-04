@@ -409,7 +409,7 @@ impl TestContext {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    async fn recreate_database(&self) -> Result<()> {
+    pub async fn recreate_database(&self) -> Result<()> {
         tracing::debug!("Recreating database for fresh state");
 
         // Extract database name from URL

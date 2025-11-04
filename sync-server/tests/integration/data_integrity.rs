@@ -10,6 +10,7 @@
 //! - Checksum validation
 //! - Event log sequence integrity
 
+use super::helpers::TestContext;
 use serde_json::json;
 use std::sync::Arc;
 use sync_core::models::Document;
@@ -17,35 +18,14 @@ use sync_server::database::ServerDatabase;
 use uuid::Uuid;
 
 async fn setup_test_db() -> Result<ServerDatabase, Box<dyn std::error::Error>> {
-    let database_url =
-        std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL environment variable not set")?;
+    // Use TestContext for unique database per test (enables parallel test execution)
+    let ctx = TestContext::new();
+    ctx.recreate_database().await?;
 
     let app_namespace_id = "com.example.sync-task-list".to_string();
-    let db = ServerDatabase::new(&database_url, app_namespace_id).await?;
-    db.run_migrations().await?;
-    cleanup_database(&db).await?;
+    let db = ServerDatabase::new(&ctx.db_url, app_namespace_id).await?;
 
     Ok(db)
-}
-
-async fn cleanup_database(db: &ServerDatabase) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query("DELETE FROM change_events")
-        .execute(&db.pool)
-        .await?;
-    sqlx::query("DELETE FROM document_revisions")
-        .execute(&db.pool)
-        .await?;
-    sqlx::query("DELETE FROM active_connections")
-        .execute(&db.pool)
-        .await?;
-    sqlx::query("DELETE FROM documents")
-        .execute(&db.pool)
-        .await?;
-    sqlx::query("DELETE FROM users").execute(&db.pool).await?;
-    sqlx::query("DELETE FROM api_credentials")
-        .execute(&db.pool)
-        .await?;
-    Ok(())
 }
 
 /// Tests that concurrent updates to the same document are handled correctly.

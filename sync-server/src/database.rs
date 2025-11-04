@@ -24,8 +24,17 @@ pub struct ServerDatabase {
 impl ServerDatabase {
     #[instrument(skip(database_url))]
     pub async fn new(database_url: &str, app_namespace_id: String) -> SyncResult<Self> {
+        // Use smaller connection pool in test environments to avoid exhausting PostgreSQL connections
+        let max_connections = if std::env::var("RUN_INTEGRATION_TESTS").is_ok() {
+            3 // Tests need fewer connections per server instance
+        } else {
+            10 // Production default
+        };
+
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(max_connections)
+            .max_lifetime(std::time::Duration::from_secs(30))
+            .idle_timeout(std::time::Duration::from_secs(10))
             .connect(database_url)
             .await?;
 

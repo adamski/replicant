@@ -12,6 +12,18 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
+// Global semaphore to limit concurrent integration tests to avoid resource exhaustion
+static INTEGRATION_TEST_SEMAPHORE: tokio::sync::OnceCell<Arc<Semaphore>> =
+    tokio::sync::OnceCell::const_new();
+
+pub async fn get_integration_test_semaphore() -> &'static Arc<Semaphore> {
+    INTEGRATION_TEST_SEMAPHORE
+        .get_or_init(|| async {
+            Arc::new(Semaphore::new(8)) // Allow max 8 concurrent integration tests (8 * 4 connections = 32)
+        })
+        .await
+}
+
 // Global semaphore to limit concurrent client connections in tests
 static CLIENT_CONNECTION_SEMAPHORE: tokio::sync::OnceCell<Arc<Semaphore>> =
     tokio::sync::OnceCell::const_new();
@@ -68,8 +80,11 @@ impl TestContext {
     }
 
     pub async fn generate_test_credentials(&self, name: &str) -> Result<(String, String)> {
-        // Connect to test database
-        let pool = sqlx::postgres::PgPool::connect(&self.db_url)
+        // Connect to test database with minimal connection pool to avoid exhaustion
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1) // Only need 1 connection for this quick operation
+            .idle_timeout(std::time::Duration::from_secs(1))
+            .connect(&self.db_url)
             .await
             .context("Failed to connect to test database")?;
 
@@ -94,7 +109,10 @@ impl TestContext {
     pub async fn create_test_user(&self, email: &str) -> Result<Uuid> {
         // Create user directly in database (since REST endpoint was removed)
         // WebSocket auto-creation is the production flow, but tests need user_id upfront
-        let pool = sqlx::postgres::PgPool::connect(&self.db_url)
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1) // Only need 1 connection for this quick operation
+            .idle_timeout(std::time::Duration::from_secs(1))
+            .connect(&self.db_url)
             .await
             .context("Failed to connect to test database")?;
 
@@ -675,6 +693,10 @@ macro_rules! integration_test {
                 eprintln!("Skipping integration test. Set RUN_INTEGRATION_TESTS=1 to run.");
                 return;
             }
+
+            // Acquire integration test semaphore to limit concurrent tests and prevent resource exhaustion
+            let semaphore = crate::integration::helpers::get_integration_test_semaphore().await;
+            let _permit = semaphore.acquire().await.unwrap();
 
             let mut ctx = crate::integration::helpers::TestContext::new();
             // Full teardown and setup for complete isolation

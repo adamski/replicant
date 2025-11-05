@@ -51,6 +51,8 @@ pub struct SyncEngine {
     // Channel for triggering pending sync after reconnection
     reconnect_sync_tx: mpsc::Sender<()>,
     reconnect_sync_rx: Option<mpsc::Receiver<()>>,
+    // Queue for deferred sync messages during upload protection
+    deferred_messages: Arc<Mutex<Vec<ServerMessage>>>,
 }
 
 impl SyncEngine {
@@ -124,6 +126,7 @@ impl SyncEngine {
             api_secret: api_secret.to_string(),
             reconnect_sync_tx,
             reconnect_sync_rx: Some(reconnect_sync_rx),
+            deferred_messages: Arc::new(Mutex::new(Vec::new())),
         };
 
         // Automatically start background tasks
@@ -155,6 +158,7 @@ impl SyncEngine {
         let upload_complete_notifier = self.upload_complete_notifier.clone();
         let sync_protection_mode = self.sync_protection_mode.clone();
         let ws_client = self.ws_client.clone();
+        let deferred_messages = self.deferred_messages.clone();
 
         // Clone variables for the reconnection sync handler
         let db_for_reconnect_sync = db.clone();
@@ -181,6 +185,7 @@ impl SyncEngine {
                     &pending_uploads,
                     &upload_complete_notifier,
                     &sync_protection_mode,
+                    &deferred_messages,
                 )
                 .await
                 {
@@ -307,6 +312,19 @@ impl SyncEngine {
                 self.client_id
             );
 
+            // Process any deferred messages that were queued during upload phase
+            if let Err(e) = Self::process_deferred_messages(
+                &self.deferred_messages,
+                &self.db,
+                self.client_id,
+                &self.event_dispatcher,
+            ).await {
+                tracing::error!(
+                    "CLIENT {}: Error processing deferred messages: {}",
+                    self.client_id, e
+                );
+            }
+
             // Second: Download current server state (which now includes our uploaded documents)
             tracing::info!(
                 "CLIENT {}: Upload phase complete, requesting server state",
@@ -328,7 +346,7 @@ impl SyncEngine {
             id: Uuid::new_v4(),
             user_id: self.user_id,
             content,
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -370,7 +388,7 @@ impl SyncEngine {
     ) -> SyncResult<()> {
         let mut doc = self.db.get_document(&id).await?;
         let old_content = doc.content.clone();
-        let old_version = doc.version;
+        let old_version = doc.sync_revision;
 
         tracing::info!("CLIENT {}: 📝 UPDATING DOCUMENT {}", self.client_id, id);
         tracing::info!(
@@ -386,26 +404,32 @@ impl SyncEngine {
 
         // Update document
         doc.content = new_content.clone();
-        doc.version += 1;
+        // DON'T increment version locally - server is authoritative for versions
+        // Server will increment atomically and broadcast back to all clients
         doc.content_hash = None; // Will be recalculated
         doc.updated_at = chrono::Utc::now();
 
         tracing::info!(
             "CLIENT {}: 💾 SAVING LOCALLY: version={}, marking as pending",
             self.client_id,
-            doc.version
+            doc.sync_revision
         );
 
         // CRITICAL: Atomically save document and queue patch
         // This prevents data loss if app crashes between operations
         use sync_core::protocol::ChangeEventType;
+        use sync_core::patches::calculate_checksum;
+
+        // Calculate hash of old content for optimistic locking
+        let old_content_hash = calculate_checksum(&old_content);
+
         tracing::info!(
             "CLIENT {}: 📋 Atomically saving document and queueing patch for doc {}",
             self.client_id,
             doc.id
         );
         self.db
-            .save_document_and_queue_patch(&doc, &patch, ChangeEventType::Update)
+            .save_document_and_queue_patch(&doc, &patch, ChangeEventType::Update, Some(old_content_hash))
             .await?;
         tracing::info!(
             "CLIENT {}: ✅ Successfully saved document and queued patch atomically",
@@ -418,7 +442,7 @@ impl SyncEngine {
             "CLIENT {}: ✅ SAVED: content={:?}, version={}",
             self.client_id,
             saved_doc.content,
-            saved_doc.version
+            saved_doc.sync_revision
         );
 
         // Check sync status after save
@@ -642,7 +666,7 @@ impl SyncEngine {
                     pending_docs.len(),
                     pending_info.id,
                     doc.content,
-                    doc.version
+                    doc.sync_revision
                 );
             }
         }
@@ -679,92 +703,37 @@ impl SyncEngine {
                         }
 
                         UploadType::Delete
-                    } else if doc.version == 1 {
-                        // Version 1 = new document created offline
-                        tracing::warn!(
-                            "CLIENT {}: 🔍 PENDING DOCUMENT ANALYSIS for {}",
-                            self.client_id,
-                            pending_info.id
-                        );
-                        tracing::warn!(
-                            "CLIENT {}: Version is 1 - treating as new document",
-                            self.client_id
-                        );
-                        tracing::warn!(
-                            "CLIENT {}: This will use CreateDocument instead of UpdateDocument",
-                            self.client_id
-                        );
-                        tracing::info!(
-                            "CLIENT {}: Uploading new document {} created offline",
-                            self.client_id,
-                            pending_info.id
-                        );
-
-                        // Track this upload
-                        self.pending_uploads.lock().await.insert(
-                            pending_info.id,
-                            PendingUpload {
-                                operation_type: UploadType::Create,
-                                sent_at: Instant::now(),
-                            },
-                        );
-
-                        let ws_client = self.ws_client.lock().await;
-                        if let Some(client) = ws_client.as_ref() {
-                            client
-                                .send(ClientMessage::CreateDocument {
-                                    document: doc.clone(),
-                                })
-                                .await?;
-                        } else {
-                            return Err(ClientError::WebSocket("Not connected".to_string()))?;
-                        }
-
-                        UploadType::Create
                     } else {
-                        // Version > 1 = document was updated offline
-                        tracing::info!(
-                            "CLIENT {}: 🔄 OFFLINE UPDATE DETECTED for doc {}",
-                            self.client_id,
-                            pending_info.id
-                        );
-                        tracing::info!(
-                            "CLIENT {}: Current version: {}",
-                            self.client_id,
-                            doc.version
-                        );
-                        tracing::info!(
-                            "CLIENT {}: Current content: {:?}",
-                            self.client_id,
-                            doc.content
-                        );
-
-                        // Track this upload
-                        self.pending_uploads.lock().await.insert(
-                            pending_info.id,
-                            PendingUpload {
-                                operation_type: UploadType::Update,
-                                sent_at: Instant::now(),
-                            },
-                        );
-
-                        // Check if we have a patch stored in sync_queue
+                        // Check if we have a patch stored in sync_queue to determine if this is create or update
+                        // With server-authoritative versioning, we can't rely on version number anymore
                         match self.db.get_queued_patch(&pending_info.id).await? {
-                            Some(stored_patch) => {
+                            Some((stored_patch, old_hash_opt)) => {
+                                // Have a queued patch = this is an UPDATE
                                 tracing::info!(
-                                    "CLIENT {}: 📋 Found stored patch in sync_queue for doc {}",
+                                    "CLIENT {}: 📋 Found stored patch in sync_queue for doc {} - treating as UPDATE",
                                     self.client_id,
                                     pending_info.id
+                                );
+
+                                // Track this upload
+                                self.pending_uploads.lock().await.insert(
+                                    pending_info.id,
+                                    PendingUpload {
+                                        operation_type: UploadType::Update,
+                                        sent_at: Instant::now(),
+                                    },
                                 );
 
                                 // Use the stored patch for UpdateDocument
                                 use sync_core::models::DocumentPatch;
                                 use sync_core::patches::calculate_checksum;
 
+                                let content_hash = old_hash_opt.unwrap_or_else(|| calculate_checksum(&doc.content));
+
                                 let document_patch = DocumentPatch {
                                     document_id: pending_info.id,
                                     patch: stored_patch,
-                                    content_hash: calculate_checksum(&doc.content),
+                                    content_hash,
                                 };
 
                                 let ws_client = self.ws_client.lock().await;
@@ -783,48 +752,40 @@ impl SyncEngine {
                                         "Not connected".to_string(),
                                     ))?;
                                 }
+
+                                UploadType::Update
                             }
                             None => {
-                                // No stored patch - try to create one or fall back
-                                tracing::warn!("CLIENT {}: No stored patch found for doc {}, creating UpdateDocument", 
-                                             self.client_id, pending_info.id);
+                                // No queued patch = this is a CREATE
+                                tracing::info!(
+                                    "CLIENT {}: No queued patch found for doc {} - treating as CREATE",
+                                    self.client_id,
+                                    pending_info.id
+                                );
 
-                                match self.create_update_message(&doc).await {
-                                    Ok(update_message) => {
-                                        tracing::info!("CLIENT {}: Created UpdateDocument message with generated patch", self.client_id);
+                                // Track this upload
+                                self.pending_uploads.lock().await.insert(
+                                    pending_info.id,
+                                    PendingUpload {
+                                        operation_type: UploadType::Create,
+                                        sent_at: Instant::now(),
+                                    },
+                                );
 
-                                        let ws_client = self.ws_client.lock().await;
-                                        if let Some(client) = ws_client.as_ref() {
-                                            client.send(update_message).await?;
-                                        } else {
-                                            return Err(ClientError::WebSocket(
-                                                "Not connected".to_string(),
-                                            ))?;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        // Fall back to CreateDocument if we can't create proper patch
-                                        tracing::warn!("CLIENT {}: Failed to create UpdateDocument patch: {}. Falling back to CreateDocument", 
-                                                     self.client_id, e);
-
-                                        let ws_client = self.ws_client.lock().await;
-                                        if let Some(client) = ws_client.as_ref() {
-                                            client
-                                                .send(ClientMessage::CreateDocument {
-                                                    document: doc.clone(),
-                                                })
-                                                .await?;
-                                        } else {
-                                            return Err(ClientError::WebSocket(
-                                                "Not connected".to_string(),
-                                            ))?;
-                                        }
-                                    }
+                                let ws_client = self.ws_client.lock().await;
+                                if let Some(client) = ws_client.as_ref() {
+                                    client
+                                        .send(ClientMessage::CreateDocument {
+                                            document: doc.clone(),
+                                        })
+                                        .await?;
+                                } else {
+                                    return Err(ClientError::WebSocket("Not connected".to_string()))?;
                                 }
+
+                                UploadType::Create
                             }
                         }
-
-                        UploadType::Update
                     };
 
                     tracing::debug!(
@@ -862,6 +823,7 @@ impl SyncEngine {
         pending_uploads: &Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
         upload_complete_notifier: &Arc<Notify>,
         sync_protection_mode: &Arc<AtomicBool>,
+        deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
     ) -> SyncResult<()> {
         match &msg {
             // Handle upload confirmations first
@@ -902,6 +864,25 @@ impl SyncEngine {
                             upload_complete_notifier.notify_one();
                         }
                     }
+                    // Release the lock before processing deferred messages
+                    drop(uploads);
+
+                    // Process any deferred messages now that this upload is complete
+                    // Some messages might have been queued while this document was uploading
+                    if let Err(e) = Self::process_deferred_messages(
+                        deferred_messages,
+                        db,
+                        client_id,
+                        event_dispatcher,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            "CLIENT {}: Error processing deferred messages after upload: {}",
+                            client_id,
+                            e
+                        );
+                    }
                 } else {
                     tracing::error!(
                         "CLIENT {}: Upload failed for document {}",
@@ -918,12 +899,24 @@ impl SyncEngine {
             ServerMessage::SyncDocument { document } => {
                 // Check if we're in protection mode
                 if sync_protection_mode.load(Ordering::Relaxed) {
-                    tracing::debug!(
-                        "CLIENT {}: Initial upload phase active, deferring sync for document {}",
+                    tracing::info!(
+                        "CLIENT {}: 🔒 QUEUEING sync for {} v{} (protection mode active)",
                         client_id,
-                        document.id
+                        document.id,
+                        document.sync_revision
                     );
-                    return Ok(()); // Defer this message
+                    // Queue message for later processing instead of dropping it
+                    const MAX_DEFERRED_MESSAGES: usize = 100;
+                    let mut queue = deferred_messages.lock().await;
+                    if queue.len() >= MAX_DEFERRED_MESSAGES {
+                        tracing::warn!(
+                            "CLIENT {}: Deferred queue full ({} messages), dropping oldest",
+                            client_id, queue.len()
+                        );
+                        queue.remove(0);
+                    }
+                    queue.push(ServerMessage::SyncDocument { document: document.clone() });
+                    return Ok(());
                 }
 
                 // Check if document has pending changes
@@ -931,12 +924,23 @@ impl SyncEngine {
                     // Check if this document has an active upload in progress
                     // This is our primary protection mechanism
                     if Self::has_pending_upload(pending_uploads, &document.id).await {
-                        tracing::debug!(
-                            "CLIENT {}: Deferring server sync for document {} (upload in progress)",
+                        tracing::info!(
+                            "CLIENT {}: 🔒 QUEUEING sync for {} v{} (upload in progress)",
                             client_id,
-                            document.id
+                            document.id,
+                            document.sync_revision
                         );
-                        // Don't emit error - this is expected behavior during upload phase
+                        // Queue message for later processing instead of dropping it
+                        const MAX_DEFERRED_MESSAGES: usize = 100;
+                        let mut queue = deferred_messages.lock().await;
+                        if queue.len() >= MAX_DEFERRED_MESSAGES {
+                            tracing::warn!(
+                                "CLIENT {}: Deferred queue full ({} messages), dropping oldest",
+                                client_id, queue.len()
+                            );
+                            queue.remove(0);
+                        }
+                        queue.push(ServerMessage::SyncDocument { document: document.clone() });
                         return Ok(());
                     }
                 }
@@ -950,6 +954,46 @@ impl SyncEngine {
                 return Self::handle_server_message(msg, db, client_id, event_dispatcher).await;
             }
         }
+    }
+
+    /// Process all deferred sync messages that were queued during upload protection
+    async fn process_deferred_messages(
+        deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
+        db: &Arc<ClientDatabase>,
+        client_id: Uuid,
+        event_dispatcher: &Arc<EventDispatcher>,
+    ) -> SyncResult<()> {
+        let mut messages = deferred_messages.lock().await;
+        let count = messages.len();
+
+        if count == 0 {
+            return Ok(());
+        }
+
+        tracing::info!(
+            "CLIENT {}: Processing {} deferred sync messages",
+            client_id, count
+        );
+
+        // Process all deferred messages in order
+        for msg in messages.drain(..) {
+            if let Err(e) = Self::handle_server_message(
+                msg, db, client_id, event_dispatcher
+            ).await {
+                tracing::error!(
+                    "CLIENT {}: Error processing deferred message: {}",
+                    client_id, e
+                );
+                // Continue processing remaining messages even if one fails
+            }
+        }
+
+        tracing::info!(
+            "CLIENT {}: Completed processing deferred messages",
+            client_id
+        );
+
+        Ok(())
     }
 
     // Check if a document has an active upload in progress
@@ -1012,8 +1056,8 @@ impl SyncEngine {
                 match db.get_document(&document.id).await {
                     Ok(existing_doc) => {
                         // We already have this document - just ensure it's marked as synced
-                        if existing_doc.version == document.version {
-                            tracing::info!("CLIENT: Document {} already exists locally with same version, marking as synced", document.id);
+                        if existing_doc.sync_revision == document.sync_revision {
+                            tracing::info!("CLIENT: Document {} already exists locally with same sync_revision, marking as synced", document.id);
                             db.mark_synced(&document.id).await?;
                         } else {
                             // Different revision - update it
@@ -1067,10 +1111,10 @@ impl SyncEngine {
             ServerMessage::SyncDocument { document } => {
                 // Document sync - check if it's newer than what we have
                 tracing::info!(
-                    "CLIENT {}: 📥 RECEIVED SyncDocument: {} (version: {})",
+                    "CLIENT {}: 📥 RECEIVED SyncDocument: {} (sync_revision: {})",
                     client_id,
                     document.id,
-                    document.version
+                    document.sync_revision
                 );
 
                 match db.get_document(&document.id).await {
@@ -1079,17 +1123,27 @@ impl SyncEngine {
                             "CLIENT {}: LOCAL  DOCUMENT: content={:?}, version={}",
                             client_id,
                             local_doc.content,
-                            local_doc.version
+                            local_doc.sync_revision
                         );
                         tracing::info!(
                             "CLIENT {}: SERVER DOCUMENT: content={:?}, version={}",
                             client_id,
                             document.content,
-                            document.version
+                            document.sync_revision
                         );
 
-                        // Compare versions - server wins if version is newer or equal
-                        let should_update = document.version >= local_doc.version;
+                        // Compare versions - server wins if version is >= local
+                        // This handles the case where server broadcasts back our own update
+                        let should_update = document.sync_revision >= local_doc.sync_revision;
+
+                        tracing::info!(
+                            "CLIENT {}: 📊 VERSION COMPARISON for doc {}: server v{} vs local v{} → should_update={}",
+                            client_id,
+                            document.id,
+                            document.sync_revision,
+                            local_doc.sync_revision,
+                            should_update
+                        );
 
                         if should_update {
                             // Check if this might be overwriting local changes by comparing content
@@ -1109,8 +1163,8 @@ impl SyncEngine {
                             tracing::info!(
                                 "CLIENT {}: 🔄 Updating to newer version ({} -> {})",
                                 client_id,
-                                local_doc.version,
-                                document.version
+                                local_doc.sync_revision,
+                                document.sync_revision
                             );
                             db.save_document_with_status(&document, Some(SyncStatus::Synced))
                                 .await?;
@@ -1122,8 +1176,8 @@ impl SyncEngine {
                             tracing::info!(
                                 "CLIENT {}: Skipping older sync (local version {} >= sync version {})",
                                 client_id,
-                                local_doc.version,
-                                document.version
+                                local_doc.sync_revision,
+                                document.sync_revision
                             );
                         }
                     }
@@ -1345,45 +1399,71 @@ impl SyncEngine {
             document.id
         );
         tracing::info!(
-            "CLIENT {}: Document version: {}, content: {:?}",
+            "CLIENT {}: Document sync_revision: {}, content: {:?}",
             self.client_id,
-            document.version,
+            document.sync_revision,
             document.content
         );
 
-        // Determine if this is a create or update based on version
-        let version = document.version;
-        let (operation_type, message) = if version == 1 {
-            // New document (version 1)
-            tracing::info!(
-                "CLIENT {}: Sending as CREATE (version 1)",
-                self.client_id
-            );
-            (
-                UploadType::Create,
-                ClientMessage::CreateDocument {
-                    document: document.clone(),
-                },
-            )
-        } else {
-            // Updated document (version > 1) - we need to send as update
-            // For immediate sync of updates, we'll fall back to CreateDocument for now
-            // since we don't have the previous content to create a proper patch
-            tracing::warn!(
-                "CLIENT {}: Document update (version {}) - using CreateDocument as fallback",
-                self.client_id,
-                version
-            );
-            tracing::warn!(
-                "CLIENT {}: This may cause conflicts - proper UpdateDocument with patch needed",
-                self.client_id
-            );
-            (
-                UploadType::Update,
-                ClientMessage::CreateDocument {
-                    document: document.clone(),
-                },
-            )
+        // Determine if this is create or update by checking for queued patch
+        // If we have a queued patch, it's an update. Otherwise, it's a create.
+        // This works correctly with server-authoritative versioning where client
+        // doesn't increment version locally.
+        let (operation_type, message) = match self.db.get_queued_patch(&document.id).await {
+            Ok(Some((patch, old_hash_opt))) => {
+                // Have a queued patch = this is an UPDATE
+                tracing::info!(
+                    "CLIENT {}: Sending UPDATE with queued patch for doc {}",
+                    self.client_id,
+                    document.id
+                );
+
+                use sync_core::models::DocumentPatch;
+                use sync_core::patches::calculate_checksum;
+
+                // Use the stored old content hash, or calculate from current content as fallback
+                let content_hash = old_hash_opt.unwrap_or_else(|| calculate_checksum(&document.content));
+
+                (
+                    UploadType::Update,
+                    ClientMessage::UpdateDocument {
+                        patch: DocumentPatch {
+                            document_id: document.id,
+                            patch,
+                            content_hash,
+                        },
+                    },
+                )
+            }
+            Ok(None) => {
+                // No queued patch = this is a CREATE
+                tracing::info!(
+                    "CLIENT {}: Sending CREATE for doc {} (no queued patch found)",
+                    self.client_id,
+                    document.id
+                );
+                (
+                    UploadType::Create,
+                    ClientMessage::CreateDocument {
+                        document: document.clone(),
+                    },
+                )
+            }
+            Err(e) => {
+                // Error querying patch = this is a CREATE
+                tracing::warn!(
+                    "CLIENT {}: Sending CREATE for doc {} (error getting queued patch: {})",
+                    self.client_id,
+                    document.id,
+                    e
+                );
+                (
+                    UploadType::Create,
+                    ClientMessage::CreateDocument {
+                        document: document.clone(),
+                    },
+                )
+            }
         };
 
         // Add to pending uploads for tracking
@@ -1443,43 +1523,6 @@ impl SyncEngine {
         }
     }
 
-    /// Create an UpdateDocument message with proper patch
-    async fn create_update_message(
-        &self,
-        current_doc: &Document,
-    ) -> SyncResult<ClientMessage> {
-        use sync_core::models::DocumentPatch;
-        use sync_core::patches::{calculate_checksum, create_patch};
-
-        // For now, since we don't store the last synced content, we'll construct a simple patch
-        // that represents the entire content change. This is not ideal but better than CreateDocument.
-        // TODO: Store last synced content to create proper granular patches
-
-        tracing::warn!(
-            "CLIENT {}: Creating simplified UpdateDocument patch (full content replacement)",
-            self.client_id
-        );
-        tracing::warn!(
-            "CLIENT {}: For proper patches, need to store last synced content in database",
-            self.client_id
-        );
-
-        // Create a patch that replaces the entire content
-        // We'll use an empty object as the "from" state since we don't have the last synced content
-        let empty_content = serde_json::json!({});
-        let patch = create_patch(&empty_content, &current_doc.content)?;
-
-        let document_patch = DocumentPatch {
-            document_id: current_doc.id,
-            patch,
-            content_hash: calculate_checksum(&current_doc.content),
-        };
-
-        Ok(ClientMessage::UpdateDocument {
-            patch: document_patch,
-        })
-    }
-
     /// Start the reconnection loop if not already running
     fn start_reconnection_loop(&self) {
         let is_connected = self.is_connected.clone();
@@ -1496,6 +1539,7 @@ impl SyncEngine {
         let reconnect_sync_tx = self.reconnect_sync_tx.clone();
         let sync_protection_mode = self.sync_protection_mode.clone();
         let last_ping_time = self.last_ping_time.clone();
+        let deferred_messages = self.deferred_messages.clone();
 
         tracing::info!(
             "🔄 CLIENT {}: Starting continuous reconnection monitor (5-second intervals)",
@@ -1577,6 +1621,7 @@ impl SyncEngine {
                             let pending_uploads_clone = pending_uploads.clone();
                             let upload_complete_notifier_clone = upload_complete_notifier.clone();
                             let sync_protection_mode_clone = sync_protection_mode.clone();
+                            let deferred_messages_clone = deferred_messages.clone();
                             let handler_is_connected = is_connected.clone();
                             let handler_client_id = client_id;
                             let handler_server_url = server_url.clone();
@@ -1590,6 +1635,7 @@ impl SyncEngine {
                                         &pending_uploads_clone,
                                         &upload_complete_notifier_clone,
                                         &sync_protection_mode_clone,
+                                        &deferred_messages_clone,
                                     )
                                     .await
                                     {
@@ -1777,96 +1823,80 @@ impl SyncEngine {
                             ))?;
                         }
                     } else {
-                        // Handle pending update/create - check version to determine message type
-                        let use_update_message = doc.version > 1;
+                        // Check if we have a queued patch to determine if this is create or update
+                        // With server-authoritative versioning, we can't rely on version number anymore
+                        match db.get_queued_patch(&pending_info.id).await {
+                            Ok(Some((json_patch, old_hash_opt))) => {
+                                // Have a queued patch = this is an UPDATE
+                                tracing::info!(
+                                    "CLIENT {}: Found queued patch for doc {} - using UpdateDocument",
+                                    client_id,
+                                    pending_info.id
+                                );
 
-                        if use_update_message {
-                            tracing::info!(
-                                "CLIENT {}: Using UpdateDocument for doc {} (version: {})",
-                                client_id,
-                                pending_info.id,
-                                doc.version
-                            );
+                                // Convert the stored patch to DocumentPatch
+                                use sync_core::models::DocumentPatch;
+                                use sync_core::patches::calculate_checksum;
 
-                            // Get the stored patch from sync_queue
-                            let patch_result = match db.get_queued_patch(&pending_info.id).await {
-                                Ok(Some(json_patch)) => {
-                                    // Convert the stored patch to DocumentPatch
-                                    use sync_core::models::DocumentPatch;
-                                    use sync_core::patches::calculate_checksum;
+                                let content_hash = old_hash_opt.unwrap_or_else(|| calculate_checksum(&doc.content));
 
-                                    DocumentPatch {
-                                        document_id: pending_info.id,
-                                        patch: json_patch,
-                                        content_hash: calculate_checksum(&doc.content),
-                                    }
+                                let patch_result = DocumentPatch {
+                                    document_id: pending_info.id,
+                                    patch: json_patch,
+                                    content_hash,
+                                };
+
+                                // Track this upload
+                                pending_uploads.lock().await.insert(
+                                    pending_info.id,
+                                    PendingUpload {
+                                        operation_type: UploadType::Update,
+                                        sent_at: Instant::now(),
+                                    },
+                                );
+
+                                let ws_client_guard = ws_client.lock().await;
+                                if let Some(client) = ws_client_guard.as_ref() {
+                                    client
+                                        .send(ClientMessage::UpdateDocument {
+                                            patch: patch_result,
+                                        })
+                                        .await?;
+                                } else {
+                                    return Err(ClientError::WebSocket(
+                                        "Not connected during reconnection sync".to_string(),
+                                    ))?;
                                 }
-                                Ok(None) => {
-                                    tracing::warn!(
-                                        "CLIENT {}: No patch found in sync_queue for {}, skipping",
-                                        client_id,
-                                        pending_info.id
-                                    );
-                                    continue;
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "CLIENT {}: Failed to get patch from sync_queue: {}",
-                                        client_id,
-                                        e
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            // Track this upload
-                            pending_uploads.lock().await.insert(
-                                pending_info.id,
-                                PendingUpload {
-                                    operation_type: UploadType::Update,
-                                    sent_at: Instant::now(),
-                                },
-                            );
-
-                            let ws_client_guard = ws_client.lock().await;
-                            if let Some(client) = ws_client_guard.as_ref() {
-                                client
-                                    .send(ClientMessage::UpdateDocument {
-                                        patch: patch_result,
-                                    })
-                                    .await?;
-                            } else {
-                                return Err(ClientError::WebSocket(
-                                    "Not connected during reconnection sync".to_string(),
-                                ))?;
                             }
-                        } else {
-                            tracing::info!(
-                                "CLIENT {}: Using CreateDocument for doc {} (never synced)",
-                                client_id,
-                                pending_info.id
-                            );
+                            Ok(None) | Err(_) => {
+                                // No queued patch = this is a CREATE
+                                tracing::info!(
+                                    "CLIENT {}: No queued patch for doc {} - using CreateDocument",
+                                    client_id,
+                                    pending_info.id
+                                );
 
-                            // Track this upload
-                            pending_uploads.lock().await.insert(
-                                pending_info.id,
-                                PendingUpload {
-                                    operation_type: UploadType::Create,
-                                    sent_at: Instant::now(),
-                                },
-                            );
+                                // Track this upload
+                                pending_uploads.lock().await.insert(
+                                    pending_info.id,
+                                    PendingUpload {
+                                        operation_type: UploadType::Create,
+                                        sent_at: Instant::now(),
+                                    },
+                                );
 
-                            let ws_client_guard = ws_client.lock().await;
-                            if let Some(client) = ws_client_guard.as_ref() {
-                                client
-                                    .send(ClientMessage::CreateDocument {
-                                        document: doc.clone(),
-                                    })
-                                    .await?;
-                            } else {
-                                return Err(ClientError::WebSocket(
-                                    "Not connected during reconnection sync".to_string(),
-                                ))?;
+                                let ws_client_guard = ws_client.lock().await;
+                                if let Some(client) = ws_client_guard.as_ref() {
+                                    client
+                                        .send(ClientMessage::CreateDocument {
+                                            document: doc.clone(),
+                                        })
+                                        .await?;
+                                } else {
+                                    return Err(ClientError::WebSocket(
+                                        "Not connected during reconnection sync".to_string(),
+                                    ))?;
+                                }
                             }
                         }
                     }

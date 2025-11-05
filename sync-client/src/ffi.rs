@@ -40,7 +40,7 @@ pub struct Document {
     pub id: *mut c_char,
     pub title: *mut c_char,
     pub content: *mut c_char,
-    pub version: i64,
+    pub sync_revision: i64,
 }
 
 /// Create a new sync engine instance
@@ -213,7 +213,7 @@ pub unsafe extern "C" fn sync_engine_create_document(
             id: doc_id,
             user_id,
             content: content.clone(),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -314,7 +314,7 @@ pub unsafe extern "C" fn sync_engine_update_document(
 
         let mut updated_doc = doc;
         updated_doc.content = content;
-        updated_doc.version += 1;
+        updated_doc.sync_revision += 1;
         updated_doc.content_hash = None; // Will be recalculated on server
         updated_doc.updated_at = chrono::Utc::now();
 

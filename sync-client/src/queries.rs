@@ -11,7 +11,7 @@ pub type DocumentParams = (
     String,         // id
     String,         // user_id
     String,         // content
-    i64,            // version
+    i64,            // sync_revision
     String,         // created_at
     String,         // updated_at
     Option<String>, // deleted_at
@@ -34,7 +34,7 @@ impl Queries {
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
             content JSON NOT NULL,
-            version INTEGER NOT NULL DEFAULT 1,
+            sync_revision INTEGER NOT NULL DEFAULT 1,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             deleted_at TIMESTAMP,
@@ -48,6 +48,7 @@ impl Queries {
             document_id TEXT NOT NULL,
             operation_type TEXT NOT NULL,
             patch JSON,
+            old_content_hash TEXT,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             retry_count INTEGER DEFAULT 0,
             FOREIGN KEY (document_id) REFERENCES documents(id),
@@ -75,7 +76,7 @@ impl Queries {
 
     // Document queries
     pub const GET_DOCUMENT: &'static str = r#"
-        SELECT id, user_id, content, version,
+        SELECT id, user_id, content, sync_revision,
                created_at, updated_at, deleted_at
         FROM documents
         WHERE id = ?1
@@ -83,12 +84,12 @@ impl Queries {
 
     pub const UPSERT_DOCUMENT: &'static str = r#"
         INSERT INTO documents (
-            id, user_id, content, version,
+            id, user_id, content, sync_revision,
             created_at, updated_at, deleted_at, sync_status
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ON CONFLICT(id) DO UPDATE SET
             content = excluded.content,
-            version = excluded.version,
+            sync_revision = excluded.sync_revision,
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at,
             sync_status = excluded.sync_status
@@ -153,7 +154,7 @@ impl DbHelpers {
         let id: String = row.get("id");
         let user_id: String = row.get("user_id");
         let content: String = row.get("content");
-        let version: i64 = row.get("version");
+        let sync_revision: i64 = row.get("sync_revision");
         let created_at: String = row.get("created_at");
         let updated_at: String = row.get("updated_at");
         let deleted_at: Option<String> = row.get("deleted_at");
@@ -162,7 +163,7 @@ impl DbHelpers {
             id: Uuid::parse_str(&id)?,
             user_id: Uuid::parse_str(&user_id)?,
             content: serde_json::from_str(&content)?,
-            version,
+            sync_revision,
             content_hash: None, // Not stored in client database
             created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
             updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
@@ -183,7 +184,7 @@ impl DbHelpers {
             doc.id.to_string(),
             doc.user_id.to_string(),
             serde_json::to_string(&doc.content)?,
-            doc.version,
+            doc.sync_revision,
             doc.created_at.to_rfc3339(),
             doc.updated_at.to_rfc3339(),
             doc.deleted_at.map(|dt| dt.to_rfc3339()),

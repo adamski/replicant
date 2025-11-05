@@ -104,7 +104,7 @@ impl ServerDatabase {
         sqlx::query!(
             r#"
             INSERT INTO documents (
-                id, user_id, content, version,
+                id, user_id, content, sync_revision,
                 created_at, updated_at, deleted_at, content_hash, size_bytes
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         "#,
@@ -145,7 +145,7 @@ impl ServerDatabase {
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query!(
             r#"
-            SELECT id, user_id, content, version, content_hash, created_at, updated_at, deleted_at
+            SELECT id, user_id, content, sync_revision, content_hash, created_at, updated_at, deleted_at
             FROM documents
             WHERE id = $1
         "#,
@@ -158,7 +158,7 @@ impl ServerDatabase {
             id: row.id,
             user_id: row.user_id,
             content: row.content,
-            version: row.version,
+            sync_revision: row.sync_revision,
             content_hash: row.content_hash,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -185,7 +185,7 @@ impl ServerDatabase {
         // This prevents race conditions in computing reverse patches
         let original_doc = sqlx::query!(
             r#"
-            SELECT id, user_id, content, version, content_hash, created_at, updated_at, deleted_at
+            SELECT id, user_id, content, sync_revision, content_hash, created_at, updated_at, deleted_at
             FROM documents
             WHERE id = $1
             FOR UPDATE
@@ -198,7 +198,7 @@ impl ServerDatabase {
             id: row.id,
             user_id: row.user_id,
             content: row.content,
-            version: row.version,
+            sync_revision: row.sync_revision,
             content_hash: row.content_hash,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -206,7 +206,7 @@ impl ServerDatabase {
         })?;
 
         let params = document_to_params(doc);
-        let expected_version = original_doc.version;
+        let expected_sync_revision = original_doc.sync_revision;
 
         // CRITICAL: Atomic version increment with optimistic locking
         // The WHERE clause ensures we only update if version hasn't changed (optimistic lock)
@@ -214,19 +214,19 @@ impl ServerDatabase {
             r#"
             UPDATE documents
             SET content = $2,
-                version = version + 1,
+                sync_revision = sync_revision + 1,
                 updated_at = NOW(),
                 deleted_at = $3,
                 content_hash = $4,
                 size_bytes = $5
-            WHERE id = $1 AND version = $6
+            WHERE id = $1 AND sync_revision = $6
             "#,
             params.0,          // id
             params.2 as _,     // content_json
             params.6,          // deleted_at
             params.7,          // content_hash
             params.8,          // size_bytes
-            expected_version   // optimistic lock check
+            expected_sync_revision   // optimistic lock check
         )
         .execute(&mut **tx)
         .await?;
@@ -235,8 +235,8 @@ impl ServerDatabase {
         if result.rows_affected() == 0 {
             // Version mismatch - another transaction updated the document first
             return Err(SyncError::VersionMismatch {
-                expected: expected_version,
-                actual: doc.version, // The version the client sent
+                expected: expected_sync_revision,
+                actual: doc.sync_revision, // The version the client sent
             });
         }
 
@@ -312,7 +312,7 @@ impl ServerDatabase {
     pub async fn get_user_documents(&self, user_id: &Uuid) -> SyncResult<Vec<Document>> {
         let rows = sqlx::query!(
             r#"
-            SELECT id, user_id, content, version, content_hash,
+            SELECT id, user_id, content, sync_revision, content_hash,
                    created_at, updated_at, deleted_at
             FROM documents
             WHERE user_id = $1 AND deleted_at IS NULL
@@ -329,7 +329,7 @@ impl ServerDatabase {
                 id: row.id,
                 user_id: row.user_id,
                 content: row.content,
-                version: row.version,
+                sync_revision: row.sync_revision,
                 content_hash: row.content_hash,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
@@ -345,13 +345,13 @@ impl ServerDatabase {
         sqlx::query!(
             r#"
             INSERT INTO document_revisions (
-                document_id, content, patch, version, created_by
+                document_id, content, patch, sync_revision, created_by
             ) VALUES ($1, $2, $3, $4, $5)
         "#,
             doc.id,
             content_json as _,
             patch_json as _,
-            doc.version,
+            doc.sync_revision,
             doc.user_id
         )
         .execute(&self.pool)

@@ -80,7 +80,7 @@ struct Task {
     tags: Vec<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
-    version: i64,
+    sync_revision: i64,
     sync_status: Option<String>,
 }
 
@@ -1266,7 +1266,7 @@ fn render_task_details(f: &mut Frame, area: Rect, app_state: &AppState) {
                 ]));
                 metadata_lines.push(Line::from(vec![
                     Span::styled("Version: ", Style::default().fg(Color::Gray)),
-                    Span::styled(task.version.to_string(), Style::default().fg(Color::Yellow)),
+                    Span::styled(task.sync_revision.to_string(), Style::default().fg(Color::Yellow)),
                 ]));
 
                 let metadata_paragraph = Paragraph::new(metadata_lines).wrap(Wrap { trim: true });
@@ -1367,7 +1367,7 @@ fn render_task_details(f: &mut Frame, area: Rect, app_state: &AppState) {
         ]));
         metadata_lines.push(Line::from(vec![
             Span::styled("Version: ", Style::default().fg(Color::Gray)),
-            Span::styled(task.version.to_string(), Style::default().fg(Color::Yellow)),
+            Span::styled(task.sync_revision.to_string(), Style::default().fg(Color::Yellow)),
         ]));
 
         let metadata_paragraph = Paragraph::new(metadata_lines).wrap(Wrap { trim: true });
@@ -1753,7 +1753,7 @@ async fn load_tasks(
                 .unwrap_or_default(),
             created_at,
             updated_at,
-            version,
+            sync_revision,
             sync_status,
         };
 
@@ -1832,7 +1832,7 @@ async fn toggle_task_completion(
         // Offline update
         let mut updated_doc = doc;
         updated_doc.content = content;
-        updated_doc.version += 1;
+        updated_doc.sync_revision += 1;
         updated_doc.updated_at = chrono::Utc::now();
 
         let _ = db.save_document(&updated_doc).await;
@@ -1886,7 +1886,7 @@ async fn create_sample_task(
             id: Uuid::new_v4(),
             user_id,
             content,
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -1972,7 +1972,7 @@ async fn save_task_edit(
         // Offline update
         let mut updated_doc = doc;
         updated_doc.content = content;
-        updated_doc.version += 1;
+        updated_doc.sync_revision += 1;
         updated_doc.updated_at = chrono::Utc::now();
 
         let _ = db.save_document(&updated_doc).await;

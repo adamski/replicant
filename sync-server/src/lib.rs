@@ -65,7 +65,7 @@ mod tests {
             id: Uuid::new_v4(),
             user_id,
             content: content.clone(),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

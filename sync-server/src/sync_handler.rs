@@ -51,10 +51,10 @@ impl SyncHandler {
         match msg {
             ClientMessage::CreateDocument { document } => {
                 tracing::info!(
-                    "🔵 Received CreateDocument from user {} for doc {} (version: {})",
+                    "🔵 Received CreateDocument from user {} for doc {} (sync_revision: {})",
                     user_id,
                     document.id,
-                    document.version
+                    document.sync_revision
                 );
 
                 // Validate ownership
@@ -70,15 +70,15 @@ impl SyncHandler {
                 // CRITICAL: Validate version for new documents
                 // Clients must always send version=1 for new documents
                 // This prevents version inflation attacks
-                if document.version != 1 {
+                if document.sync_revision != 1 {
                     tracing::warn!(
                         "Client sent invalid version {} for new document {}. Rejecting.",
-                        document.version,
+                        document.sync_revision,
                         document.id
                     );
                     self.send_error(
                         ErrorCode::InvalidPatch,
-                        &format!("New documents must have version=1, got version={}", document.version),
+                        &format!("New documents must have version=1, got version={}", document.sync_revision),
                     )
                     .await?;
                     return Ok(());
@@ -113,9 +113,9 @@ impl SyncHandler {
                             document.id
                         );
                         tracing::warn!(
-                            "   Server version: {} | Client version: {}",
-                            existing_doc.version,
-                            document.version
+                            "   Server sync_revision: {} | Client sync_revision: {}",
+                            existing_doc.sync_revision,
+                            document.sync_revision
                         );
                         tracing::warn!("   Server content: {:?}", existing_doc.content);
                         tracing::warn!("   Client content: {:?}", document.content);
@@ -154,8 +154,8 @@ impl SyncHandler {
                                 .map_err(|e| format!("Failed to log conflict: {}", e))?;
 
                             tracing::info!(
-                                "📝 Logged server version as conflict loser (version: {})",
-                                existing_doc.version
+                                "📝 Logged server version as conflict loser (sync_revision: {})",
+                                existing_doc.sync_revision
                             );
 
                             // Update document to client version IN SAME TRANSACTION
@@ -275,7 +275,7 @@ impl SyncHandler {
                 tracing::info!("📝 UPDATE for document {}", doc.id);
                 tracing::info!(
                     "   Version: {} | Content before: {:?}",
-                    doc.version,
+                    doc.sync_revision,
                     doc.content
                 );
                 tracing::info!("   Patch: {:?}", patch.patch);
@@ -307,25 +307,29 @@ impl SyncHandler {
                 // Save to database with atomic version increment
                 match self.db.update_document(&doc, Some(&patch.patch)).await {
                     Ok(_) => {
-                        tracing::info!("   Content after normal update: {:?}", doc.content);
-                        tracing::info!("   Version incremented atomically by database");
+                        // CRITICAL: Fetch the updated document with incremented version from database
+                        let updated_doc = self.db.get_document(&doc.id).await?;
+
+                        tracing::info!("   Content after update: {:?}", updated_doc.content);
+                        tracing::info!("   Version after update: {}", updated_doc.sync_revision);
 
                         // Send confirmation to the sender
                         self.tx
                             .send(ServerMessage::DocumentUpdatedResponse {
-                                document_id: doc.id,
+                                document_id: updated_doc.id,
                                 success: true,
                                 error: None,
                             })
                             .await?;
 
-                        // Broadcast final state to ALL OTHER clients to ensure convergence
-                        tracing::info!("Broadcasting final document state for doc {} to other clients of user {}", doc.id, user_id);
+                        // Broadcast the UPDATED document (with incremented version) to ALL OTHER clients
+                        tracing::info!("Broadcasting updated document state for doc {} (sync_revision: {}) to other clients of user {}",
+                                      updated_doc.id, updated_doc.sync_revision, user_id);
                         self.broadcast_to_user_except(
                             user_id,
                             self.client_id,
                             ServerMessage::SyncDocument {
-                                document: doc.clone(),
+                                document: updated_doc,
                             },
                         )
                         .await?;
@@ -338,14 +342,28 @@ impl SyncHandler {
                                 patch.document_id, expected, actual
                             );
 
-                            // Fetch the current server state to send back to client
+                            // Fetch the current server state
                             if let Ok(current_doc) = self.db.get_document(&patch.document_id).await {
-                                // Send the current server state so client can re-sync
+                                tracing::info!("Sending current server state (sync_revision: {}) back to client with conflict",
+                                              current_doc.sync_revision);
+
+                                // Send to the client that had the conflict
                                 self.tx
                                     .send(ServerMessage::SyncDocument {
-                                        document: current_doc,
+                                        document: current_doc.clone(),
                                     })
                                     .await?;
+
+                                // Also broadcast to all other clients to ensure convergence
+                                tracing::info!("Broadcasting current state to all other clients for convergence");
+                                self.broadcast_to_user_except(
+                                    user_id,
+                                    self.client_id,
+                                    ServerMessage::SyncDocument {
+                                        document: current_doc,
+                                    },
+                                )
+                                .await?;
                             }
                         }
 
@@ -447,7 +465,7 @@ impl SyncHandler {
                             .get("title")
                             .and_then(|v| v.as_str())
                             .unwrap_or("N/A"),
-                        doc.version
+                        doc.sync_revision
                     );
                     self.tx
                         .send(ServerMessage::SyncDocument {

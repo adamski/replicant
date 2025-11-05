@@ -152,10 +152,10 @@ impl ClientDatabase {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "synced".to_string());
         tracing::info!(
-            "DATABASE: 💾 Saving document {} with status: {}, version: {}",
+            "DATABASE: 💾 Saving document {} with status: {}, sync_revision: {}",
             doc.id,
             status_str,
-            doc.version
+            doc.sync_revision
         );
 
         let params = DbHelpers::document_to_params(doc, sync_status)?;
@@ -308,6 +308,7 @@ impl ClientDatabase {
         doc: &Document,
         patch: &json_patch::Patch,
         operation_type: ChangeEventType,
+        old_content_hash: Option<String>,
     ) -> SyncResult<()> {
         // Start a transaction for atomicity
         let mut tx = self.pool.begin().await?;
@@ -330,12 +331,25 @@ impl ClientDatabase {
         // Queue sync operation (in transaction)
         let patch_json = serde_json::to_string(patch)?;
 
-        sqlx::query(Queries::INSERT_SYNC_QUEUE)
-            .bind(doc.id.to_string()) // document_id
-            .bind(operation_type.to_string()) // operation_type
-            .bind(patch_json) // patch
+        // Store old_content_hash if provided (for update operations)
+        if let Some(hash) = old_content_hash {
+            sqlx::query(
+                "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash) VALUES (?, ?, ?, ?)"
+            )
+            .bind(doc.id.to_string())
+            .bind(operation_type.to_string())
+            .bind(patch_json)
+            .bind(hash)
             .execute(&mut *tx)
             .await?;
+        } else {
+            sqlx::query(Queries::INSERT_SYNC_QUEUE)
+                .bind(doc.id.to_string()) // document_id
+                .bind(operation_type.to_string()) // operation_type
+                .bind(patch_json) // patch
+                .execute(&mut *tx)
+                .await?;
+        }
 
         // Commit atomically - both operations succeed or both fail
         tx.commit().await?;
@@ -351,9 +365,9 @@ impl ClientDatabase {
     pub async fn get_queued_patch(
         &self,
         document_id: &Uuid,
-    ) -> SyncResult<Option<json_patch::Patch>> {
+    ) -> SyncResult<Option<(json_patch::Patch, Option<String>)>> {
         let row = sqlx::query(
-            "SELECT patch FROM sync_queue WHERE document_id = ? AND operation_type = 'update' ORDER BY created_at DESC LIMIT 1"
+            "SELECT patch, old_content_hash FROM sync_queue WHERE document_id = ? AND operation_type = 'update' ORDER BY created_at DESC LIMIT 1"
         )
         .bind(document_id.to_string())
         .fetch_optional(&self.pool)
@@ -362,8 +376,9 @@ impl ClientDatabase {
         match row {
             Some(row) => {
                 let patch_json: Option<String> = row.try_get("patch")?;
+                let old_hash: Option<String> = row.try_get("old_content_hash").ok().flatten();
                 match patch_json {
-                    Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+                    Some(json) => Ok(Some((serde_json::from_str(&json)?, old_hash))),
                     None => Ok(None),
                 }
             }

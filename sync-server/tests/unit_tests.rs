@@ -97,7 +97,7 @@ mod database_tests {
                 "title": "Test Document",
                 "text": "Hello, World!"
             }),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -153,7 +153,7 @@ mod database_tests {
             id: Uuid::new_v4(),
             user_id,
             content: json!({"title": "Event Test Document", "text": "Testing events", "version": 1}),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -198,7 +198,7 @@ mod database_tests {
         // Update the document - this should log an UPDATE event
         let mut updated_doc = doc.clone();
         updated_doc.content = json!({"text": "Updated content", "version": 2});
-        updated_doc.version = 2;
+        updated_doc.sync_revision = 2;
         updated_doc.updated_at = chrono::Utc::now();
 
         // Create a simple patch for testing
@@ -330,7 +330,7 @@ mod database_tests {
             id: doc_id,
             user_id,
             content: json!({"value": "server-content", "source": "server"}),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -347,7 +347,7 @@ mod database_tests {
             id: doc_id,
             user_id,
             content: json!({"value": "client-content", "source": "client"}),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -443,7 +443,7 @@ mod database_tests {
             id: doc_id,
             user_id,
             content: json!({"value": 1, "name": "initial"}),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -483,7 +483,7 @@ mod database_tests {
         // Apply client's winning update
         let mut winning_doc = doc.clone();
         winning_doc.content = json!({"value": 3, "name": "client-wins"});
-        winning_doc.version = 2;
+        winning_doc.sync_revision = 2;
 
         db.update_document(&winning_doc, None)
             .await
@@ -537,7 +537,7 @@ mod database_tests {
             id: doc_id,
             user_id,
             content: json!({"version": 0}),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

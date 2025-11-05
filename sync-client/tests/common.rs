@@ -14,7 +14,7 @@ pub async fn setup_test_db() -> ClientDatabase {
 
 /// Creates a sample document for a given user.
 #[allow(dead_code)]
-pub fn make_document(user_id: Uuid, title: &str, text: &str, version: i64) -> Document {
+pub fn make_document(user_id: Uuid, title: &str, text: &str, sync_revision: i64) -> Document {
     let content = serde_json::json!({
         "title": title,
         "text": text
@@ -24,7 +24,7 @@ pub fn make_document(user_id: Uuid, title: &str, text: &str, version: i64) -> Do
         id: Uuid::new_v4(),
         user_id,
         content: content.clone(),
-        version,
+        sync_revision,
         content_hash: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),

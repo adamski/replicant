@@ -319,7 +319,7 @@ async fn create_task(
             id: Uuid::new_v4(),
             user_id,
             content: full_content.clone(),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -420,7 +420,7 @@ async fn complete_task(
         let doc = db.get_document(&doc_id).await?;
         let mut updated_doc = doc;
         updated_doc.content = task_content.clone();
-        updated_doc.version += 1;
+        updated_doc.sync_revision += 1;
         updated_doc.updated_at = chrono::Utc::now();
 
         db.save_document(&updated_doc).await?;
@@ -621,7 +621,7 @@ async fn edit_task(
         let mut full_content = new_content.clone();
         full_content["title"] = serde_json::json!(new_title);
         updated_doc.content = full_content;
-        updated_doc.version += 1;
+        updated_doc.sync_revision += 1;
         updated_doc.updated_at = chrono::Utc::now();
 
         db.save_document(&updated_doc).await?;

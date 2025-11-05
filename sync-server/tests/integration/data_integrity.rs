@@ -47,7 +47,7 @@ async fn test_concurrent_writes_to_same_document() {
         id: Uuid::new_v4(),
         user_id,
         content: json!({"value": 0}),
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -69,7 +69,7 @@ async fn test_concurrent_writes_to_same_document() {
                 id: doc_id,
                 user_id,
                 content: json!({"value": i}),
-                version: i + 1,
+                sync_revision: i + 1,
                 content_hash: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
@@ -124,7 +124,7 @@ async fn test_document_update_consistency() {
         id: Uuid::new_v4(),
         user_id,
         content: original_content.clone(),
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -137,7 +137,7 @@ async fn test_document_update_consistency() {
     for i in 2..=5 {
         let mut updated_doc = doc.clone();
         updated_doc.content = json!({"name": "Alice", "age": 30 + i});
-        updated_doc.version = i;
+        updated_doc.sync_revision = i;
 
         db.update_document(&updated_doc, None).await.unwrap();
     }
@@ -171,7 +171,7 @@ async fn test_event_log_sequence_integrity() {
             id: Uuid::new_v4(),
             user_id,
             content: json!({"index": i}),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -220,7 +220,7 @@ async fn test_version_vector_comparison_edge_cases() {
         id: Uuid::new_v4(),
         user_id,
         content: json!({"value": 1}),
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -260,7 +260,7 @@ async fn test_duplicate_document_id_handling() {
         id: shared_id,
         user_id,
         content: json!({"version": 1}),
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -274,7 +274,7 @@ async fn test_duplicate_document_id_handling() {
         id: shared_id,
         user_id,
         content: json!({"version": 2}),
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -308,7 +308,7 @@ async fn test_no_orphaned_documents_after_user_deletion() {
             id: Uuid::new_v4(),
             user_id,
             content: json!({"index": i}),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

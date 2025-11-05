@@ -66,7 +66,7 @@ async fn test_transaction_rollback_on_partial_failure() {
         id: Uuid::new_v4(),
         user_id,
         content: json!({"test": "data"}),
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -120,7 +120,7 @@ async fn test_malformed_json_in_document_content() {
     // Try to insert malformed JSON directly via SQL
     // This tests database-level validation
     let result = sqlx::query(
-        "INSERT INTO documents (id, user_id, content, version, version_vector, created_at, updated_at)
+        "INSERT INTO documents (id, user_id, content, sync_revision, version_vector, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW(), NOW())"
     )
     .bind(doc_id.to_string())
@@ -155,7 +155,7 @@ async fn test_invalid_uuid_handling() {
 
     // Try to insert document with invalid UUID format
     let result = sqlx::query(
-        "INSERT INTO documents (id, user_id, content, version, version_vector, created_at, updated_at)
+        "INSERT INTO documents (id, user_id, content, sync_revision, version_vector, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW(), NOW())"
     )
     .bind("not-a-valid-uuid")  // Invalid UUID
@@ -191,7 +191,7 @@ async fn test_foreign_key_constraint_enforcement() {
         id: Uuid::new_v4(),
         user_id: non_existent_user_id,
         content: json!({"test": "data"}),
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -224,7 +224,7 @@ async fn test_not_null_constraint_enforcement() {
 
     // Try to insert document with NULL content
     let result = sqlx::query(
-        "INSERT INTO documents (id, user_id, content, version, version_vector, created_at, updated_at)
+        "INSERT INTO documents (id, user_id, content, sync_revision, version_vector, created_at, updated_at)
          VALUES ($1, $2, NULL, $3, $4, NOW(), NOW())"
     )
     .bind(Uuid::new_v4().to_string())
@@ -261,7 +261,7 @@ async fn test_update_non_existent_document() {
         id: non_existent_doc_id,
         user_id,
         content: json!({"test": "updated"}),
-        version: 2,
+        sync_revision: 2,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -326,7 +326,7 @@ async fn test_large_document_handling() {
         id: Uuid::new_v4(),
         user_id,
         content: large_content,
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -377,7 +377,7 @@ async fn test_deeply_nested_json() {
         id: Uuid::new_v4(),
         user_id,
         content: nested,
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

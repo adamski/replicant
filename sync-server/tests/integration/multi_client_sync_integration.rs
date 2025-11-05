@@ -485,7 +485,7 @@ crate::integration_test!(
 
         // Both should have the same final state
         assert_eq!(
-            final_doc1.version, final_doc2.version,
+            final_doc1.sync_revision, final_doc2.sync_revision,
             "Clients should converge to same version"
         );
         assert_eq!(
@@ -496,7 +496,7 @@ crate::integration_test!(
         tracing::info!(
             "✓ Rapid concurrent updates resolved correctly - both clients converged to same state"
         );
-        tracing::info!("  Final version: {}", final_doc1.version);
+        tracing::info!("  Final sync_revision: {}", final_doc1.sync_revision);
         tracing::info!("  Final counter: {}", final_doc1.content["counter"]);
     },
     true

@@ -346,7 +346,7 @@ impl SyncEngine {
             id: Uuid::new_v4(),
             user_id: self.user_id,
             content,
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -388,7 +388,7 @@ impl SyncEngine {
     ) -> SyncResult<()> {
         let mut doc = self.db.get_document(&id).await?;
         let old_content = doc.content.clone();
-        let old_version = doc.version;
+        let old_version = doc.sync_revision;
 
         tracing::info!("CLIENT {}: 📝 UPDATING DOCUMENT {}", self.client_id, id);
         tracing::info!(
@@ -412,7 +412,7 @@ impl SyncEngine {
         tracing::info!(
             "CLIENT {}: 💾 SAVING LOCALLY: version={}, marking as pending",
             self.client_id,
-            doc.version
+            doc.sync_revision
         );
 
         // CRITICAL: Atomically save document and queue patch
@@ -442,7 +442,7 @@ impl SyncEngine {
             "CLIENT {}: ✅ SAVED: content={:?}, version={}",
             self.client_id,
             saved_doc.content,
-            saved_doc.version
+            saved_doc.sync_revision
         );
 
         // Check sync status after save
@@ -666,7 +666,7 @@ impl SyncEngine {
                     pending_docs.len(),
                     pending_info.id,
                     doc.content,
-                    doc.version
+                    doc.sync_revision
                 );
             }
         }
@@ -903,7 +903,7 @@ impl SyncEngine {
                         "CLIENT {}: 🔒 QUEUEING sync for {} v{} (protection mode active)",
                         client_id,
                         document.id,
-                        document.version
+                        document.sync_revision
                     );
                     // Queue message for later processing instead of dropping it
                     const MAX_DEFERRED_MESSAGES: usize = 100;
@@ -928,7 +928,7 @@ impl SyncEngine {
                             "CLIENT {}: 🔒 QUEUEING sync for {} v{} (upload in progress)",
                             client_id,
                             document.id,
-                            document.version
+                            document.sync_revision
                         );
                         // Queue message for later processing instead of dropping it
                         const MAX_DEFERRED_MESSAGES: usize = 100;
@@ -1056,8 +1056,8 @@ impl SyncEngine {
                 match db.get_document(&document.id).await {
                     Ok(existing_doc) => {
                         // We already have this document - just ensure it's marked as synced
-                        if existing_doc.version == document.version {
-                            tracing::info!("CLIENT: Document {} already exists locally with same version, marking as synced", document.id);
+                        if existing_doc.sync_revision == document.sync_revision {
+                            tracing::info!("CLIENT: Document {} already exists locally with same sync_revision, marking as synced", document.id);
                             db.mark_synced(&document.id).await?;
                         } else {
                             // Different revision - update it
@@ -1111,10 +1111,10 @@ impl SyncEngine {
             ServerMessage::SyncDocument { document } => {
                 // Document sync - check if it's newer than what we have
                 tracing::info!(
-                    "CLIENT {}: 📥 RECEIVED SyncDocument: {} (version: {})",
+                    "CLIENT {}: 📥 RECEIVED SyncDocument: {} (sync_revision: {})",
                     client_id,
                     document.id,
-                    document.version
+                    document.sync_revision
                 );
 
                 match db.get_document(&document.id).await {
@@ -1123,25 +1123,25 @@ impl SyncEngine {
                             "CLIENT {}: LOCAL  DOCUMENT: content={:?}, version={}",
                             client_id,
                             local_doc.content,
-                            local_doc.version
+                            local_doc.sync_revision
                         );
                         tracing::info!(
                             "CLIENT {}: SERVER DOCUMENT: content={:?}, version={}",
                             client_id,
                             document.content,
-                            document.version
+                            document.sync_revision
                         );
 
                         // Compare versions - server wins if version is >= local
                         // This handles the case where server broadcasts back our own update
-                        let should_update = document.version >= local_doc.version;
+                        let should_update = document.sync_revision >= local_doc.sync_revision;
 
                         tracing::info!(
                             "CLIENT {}: 📊 VERSION COMPARISON for doc {}: server v{} vs local v{} → should_update={}",
                             client_id,
                             document.id,
-                            document.version,
-                            local_doc.version,
+                            document.sync_revision,
+                            local_doc.sync_revision,
                             should_update
                         );
 
@@ -1163,8 +1163,8 @@ impl SyncEngine {
                             tracing::info!(
                                 "CLIENT {}: 🔄 Updating to newer version ({} -> {})",
                                 client_id,
-                                local_doc.version,
-                                document.version
+                                local_doc.sync_revision,
+                                document.sync_revision
                             );
                             db.save_document_with_status(&document, Some(SyncStatus::Synced))
                                 .await?;
@@ -1176,8 +1176,8 @@ impl SyncEngine {
                             tracing::info!(
                                 "CLIENT {}: Skipping older sync (local version {} >= sync version {})",
                                 client_id,
-                                local_doc.version,
-                                document.version
+                                local_doc.sync_revision,
+                                document.sync_revision
                             );
                         }
                     }
@@ -1399,9 +1399,9 @@ impl SyncEngine {
             document.id
         );
         tracing::info!(
-            "CLIENT {}: Document version: {}, content: {:?}",
+            "CLIENT {}: Document sync_revision: {}, content: {:?}",
             self.client_id,
-            document.version,
+            document.sync_revision,
             document.content
         );
 

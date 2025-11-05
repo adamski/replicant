@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, user_id, content, version, content_hash, created_at, updated_at, deleted_at\n            FROM documents\n            WHERE id = $1\n            FOR UPDATE\n            ",
+  "query": "\n            SELECT id, user_id, content, sync_revision, content_hash, created_at, updated_at, deleted_at\n            FROM documents\n            WHERE id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -20,7 +20,7 @@
       },
       {
         "ordinal": 3,
-        "name": "version",
+        "name": "sync_revision",
         "type_info": "Int8"
       },
       {
@@ -60,5 +60,5 @@
       true
     ]
   },
-  "hash": "f93d00b1578f95776992a766d8dd87bbb58c0501f104bc1715367a8d9ab358dc"
+  "hash": "dca6751ce091b067fbe1ea04964689bac74516c0bd08702bba2936945aad6dda"
 }

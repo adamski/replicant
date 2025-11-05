@@ -152,10 +152,10 @@ impl ClientDatabase {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "synced".to_string());
         tracing::info!(
-            "DATABASE: 💾 Saving document {} with status: {}, version: {}",
+            "DATABASE: 💾 Saving document {} with status: {}, sync_revision: {}",
             doc.id,
             status_str,
-            doc.version
+            doc.sync_revision
         );
 
         let params = DbHelpers::document_to_params(doc, sync_status)?;

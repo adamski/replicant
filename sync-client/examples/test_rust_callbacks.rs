@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: Uuid::new_v4(),
                 user_id,
                 content: full_content.clone(),
-                version: 1,
+                sync_revision: 1,
                 content_hash: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),

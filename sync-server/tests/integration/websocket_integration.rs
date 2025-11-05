@@ -185,7 +185,7 @@ crate::integration_test!(
             id: Uuid::new_v4(),
             user_id,
             content: content.clone(),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),

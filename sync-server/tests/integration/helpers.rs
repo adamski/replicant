@@ -301,7 +301,7 @@ impl TestContext {
             id: Uuid::new_v4(),
             user_id,
             content: content.clone(),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -650,10 +650,10 @@ pub async fn assert_all_clients_converge<F, Fut>(
                 if let Ok(docs) = clients[*i].get_all_documents().await {
                     for doc in &docs {
                         eprintln!(
-                            "  - {} | {} | version: {}",
+                            "  - {} | {} | sync_revision: {}",
                             doc.id,
                             doc.title_or_default(),
-                            doc.version
+                            doc.sync_revision
                         );
                     }
                 }

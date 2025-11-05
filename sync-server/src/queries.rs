@@ -7,7 +7,7 @@ pub type DocumentParams = (
     Uuid,                                  // id
     Uuid,                                  // user_id
     serde_json::Value,                     // content
-    i64,                                   // version
+    i64,                                   // sync_revision
     chrono::DateTime<chrono::Utc>,         // created_at
     chrono::DateTime<chrono::Utc>,         // updated_at
     Option<chrono::DateTime<chrono::Utc>>, // deleted_at
@@ -21,7 +21,7 @@ pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
         id: row.try_get("id")?,
         user_id: row.try_get("user_id")?,
         content: row.try_get("content")?,
-        version: row.try_get("version")?,
+        sync_revision: row.try_get("sync_revision")?,
         content_hash: row.try_get("content_hash").ok(),
         created_at: row
             .try_get::<chrono::DateTime<chrono::Local>, _>("created_at")?
@@ -46,7 +46,7 @@ pub fn document_to_params(doc: &Document) -> DocumentParams {
         doc.id,
         doc.user_id,
         doc.content.clone(),
-        doc.version,
+        doc.sync_revision,
         doc.created_at,
         doc.updated_at,
         doc.deleted_at,

@@ -65,7 +65,7 @@ crate::integration_test!(
 
         // Content should be the same (last-write-wins based on vector clock)
         assert_eq!(final1[0].content, final2[0].content);
-        assert_eq!(final1[0].version, final2[0].version);
+        assert_eq!(final1[0].sync_revision, final2[0].sync_revision);
     },
     true
 );
@@ -344,8 +344,8 @@ crate::integration_test!(
 
         assert_eq!(docs1[0].content, docs2[0].content);
         assert_eq!(docs2[0].content, docs3[0].content);
-        assert_eq!(docs1[0].version, docs2[0].version);
-        assert_eq!(docs2[0].version, docs3[0].version);
+        assert_eq!(docs1[0].sync_revision, docs2[0].sync_revision);
+        assert_eq!(docs2[0].sync_revision, docs3[0].sync_revision);
     },
     true
 );

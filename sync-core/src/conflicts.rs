@@ -46,7 +46,7 @@ impl ConflictResolver {
 
         let mut merged_doc = local.clone();
         merged_doc.content = merged_content;
-        merged_doc.version = local.version.max(remote.version) + 1;
+        merged_doc.sync_revision = local.sync_revision.max(remote.sync_revision) + 1;
         merged_doc.content_hash = None; // Will be recalculated when saved
 
         Ok(merged_doc)

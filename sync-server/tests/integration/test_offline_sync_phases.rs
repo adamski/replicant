@@ -247,7 +247,7 @@ crate::integration_test!(
                 "phase": "2",
                 "created_offline": true
             }),
-            version: 1,
+            sync_revision: 1,
             content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

@@ -528,7 +528,7 @@ async fn test_receive_server_document_sync() {
     // 2. Server sends updated version
     let mut updated_doc = doc.clone();
     updated_doc.content = json!({ "version": 2 });
-    updated_doc.version = 2;
+    updated_doc.sync_revision = 2;
 
     setup
         .server
@@ -1244,7 +1244,7 @@ async fn test_server_sends_new_document_created() {
         id: Uuid::new_v4(),
         user_id,
         content: json!({ "from_server": true }),
-        version: 1,
+        sync_revision: 1,
         content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -1368,7 +1368,7 @@ async fn test_sync_document_generation_comparison() {
     // Server sends SyncDocument with higher generation (hits lines 800-843)
     let mut server_doc = doc.clone();
     server_doc.content = json!({ "version": 2 });
-    server_doc.version = 2;
+    server_doc.sync_revision = 2;
 
     setup
         .server
@@ -1402,13 +1402,13 @@ async fn test_sync_document_rejects_older_version() {
 
     // Manually set high version
     let mut high_gen_doc = doc.clone();
-    high_gen_doc.version = 5;
+    high_gen_doc.sync_revision = 5;
     setup.db.save_document(&high_gen_doc).await.unwrap();
 
     // Server sends older version (hits lines 833-836)
     let mut old_server_doc = doc.clone();
     old_server_doc.content = json!({ "gen": "old" });
-    old_server_doc.version = 2; // Lower version
+    old_server_doc.sync_revision = 2; // Lower version
 
     setup
         .server

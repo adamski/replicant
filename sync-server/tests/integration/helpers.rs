@@ -495,9 +495,9 @@ impl TestContext {
             .current_dir(&project_root)
             .env("DATABASE_URL", &self.db_url)
             .env("BIND_ADDRESS", &bind_address)
-            .env("RUST_LOG", "warn")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .env("RUST_LOG", "info,sync_client=debug,sync_server=debug")
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .spawn()?;
 
         let mut w = self.server_process.lock().await;

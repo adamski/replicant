@@ -48,6 +48,7 @@ impl Queries {
             document_id TEXT NOT NULL,
             operation_type TEXT NOT NULL,
             patch JSON,
+            old_content_hash TEXT,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             retry_count INTEGER DEFAULT 0,
             FOREIGN KEY (document_id) REFERENCES documents(id),

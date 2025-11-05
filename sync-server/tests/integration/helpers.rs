@@ -12,6 +12,18 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
+// Global semaphore to limit concurrent integration tests to avoid resource exhaustion
+static INTEGRATION_TEST_SEMAPHORE: tokio::sync::OnceCell<Arc<Semaphore>> =
+    tokio::sync::OnceCell::const_new();
+
+pub async fn get_integration_test_semaphore() -> &'static Arc<Semaphore> {
+    INTEGRATION_TEST_SEMAPHORE
+        .get_or_init(|| async {
+            Arc::new(Semaphore::new(8)) // Allow max 8 concurrent integration tests (8 * 4 connections = 32)
+        })
+        .await
+}
+
 // Global semaphore to limit concurrent client connections in tests
 static CLIENT_CONNECTION_SEMAPHORE: tokio::sync::OnceCell<Arc<Semaphore>> =
     tokio::sync::OnceCell::const_new();
@@ -68,8 +80,11 @@ impl TestContext {
     }
 
     pub async fn generate_test_credentials(&self, name: &str) -> Result<(String, String)> {
-        // Connect to test database
-        let pool = sqlx::postgres::PgPool::connect(&self.db_url)
+        // Connect to test database with minimal connection pool to avoid exhaustion
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1) // Only need 1 connection for this quick operation
+            .idle_timeout(std::time::Duration::from_secs(1))
+            .connect(&self.db_url)
             .await
             .context("Failed to connect to test database")?;
 
@@ -94,7 +109,10 @@ impl TestContext {
     pub async fn create_test_user(&self, email: &str) -> Result<Uuid> {
         // Create user directly in database (since REST endpoint was removed)
         // WebSocket auto-creation is the production flow, but tests need user_id upfront
-        let pool = sqlx::postgres::PgPool::connect(&self.db_url)
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1) // Only need 1 connection for this quick operation
+            .idle_timeout(std::time::Duration::from_secs(1))
+            .connect(&self.db_url)
             .await
             .context("Failed to connect to test database")?;
 
@@ -283,9 +301,8 @@ impl TestContext {
             id: Uuid::new_v4(),
             user_id,
             content: content.clone(),
-            revision_id: Document::initial_revision(&content),
             version: 1,
-            version_vector: sync_core::models::VersionVector::new(),
+            content_hash: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -410,7 +427,7 @@ impl TestContext {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    async fn recreate_database(&self) -> Result<()> {
+    pub async fn recreate_database(&self) -> Result<()> {
         tracing::debug!("Recreating database for fresh state");
 
         // Extract database name from URL
@@ -442,25 +459,19 @@ impl TestContext {
 
         pool.close().await;
 
-        // Run migrations on the new database
+        // Run migrations on the new database using Rust migration API
         tracing::debug!("Running migrations on fresh database");
 
-        // Find the project root directory (where Cargo.toml is)
-        let project_root = std::env::current_dir()?.join("../");
+        // Create a new database instance and run migrations
+        let db = sync_server::database::ServerDatabase::new(
+            &self.db_url,
+            "com.example.sync-task-list".to_string(),
+        )
+        .await?;
 
-        let migration_result = tokio::process::Command::new("sqlx")
-            .args(&["migrate", "run", "--source", "sync-server/migrations"])
-            .current_dir(&project_root)
-            .env("DATABASE_URL", &self.db_url)
-            .output()
-            .await?;
+        db.run_migrations().await?;
 
-        if !migration_result.status.success() {
-            let stderr = String::from_utf8_lossy(&migration_result.stderr);
-            let stdout = String::from_utf8_lossy(&migration_result.stdout);
-            anyhow::bail!("Migration failed: stdout: {}, stderr: {}", stdout, stderr);
-        }
-
+        tracing::debug!("Migrations completed successfully");
         Ok(())
     }
 
@@ -639,10 +650,10 @@ pub async fn assert_all_clients_converge<F, Fut>(
                 if let Ok(docs) = clients[*i].get_all_documents().await {
                     for doc in &docs {
                         eprintln!(
-                            "  - {} | {} | rev: {}",
+                            "  - {} | {} | version: {}",
                             doc.id,
                             doc.title_or_default(),
-                            doc.revision_id
+                            doc.version
                         );
                     }
                 }
@@ -682,6 +693,10 @@ macro_rules! integration_test {
                 eprintln!("Skipping integration test. Set RUN_INTEGRATION_TESTS=1 to run.");
                 return;
             }
+
+            // Acquire integration test semaphore to limit concurrent tests and prevent resource exhaustion
+            let semaphore = crate::integration::helpers::get_integration_test_semaphore().await;
+            let _permit = semaphore.acquire().await.unwrap();
 
             let mut ctx = crate::integration::helpers::TestContext::new();
             // Full teardown and setup for complete isolation

@@ -54,7 +54,7 @@ async fn test_pending_documents_can_be_retrieved() {
         // Save every other document as synced, rest as pending
         if i % 2 == 0 {
             db.save_document(&doc).await.unwrap();
-            db.mark_synced(&doc.id, &doc.revision_id).await.unwrap();
+            db.mark_synced(&doc.id).await.unwrap();
         } else {
             db.save_document(&doc).await.unwrap(); // defaults to pending
         }
@@ -103,7 +103,7 @@ async fn test_delete_marks_document_as_pending_then_synced() {
 
     // Create and sync a document
     db.save_document(&doc).await.unwrap();
-    db.mark_synced(&doc.id, &doc.revision_id).await.unwrap();
+    db.mark_synced(&doc.id).await.unwrap();
 
     // Verify it's synced
     let sync_status = get_sync_status(&db, doc.id).await;
@@ -120,7 +120,7 @@ async fn test_delete_marks_document_as_pending_then_synced() {
     );
 
     // Simulate server confirmation
-    db.mark_synced(&doc.id, "2-deleted").await.unwrap();
+    db.mark_synced(&doc.id).await.unwrap();
 
     // Verify it's now synced
     let sync_status = get_sync_status(&db, doc.id).await;

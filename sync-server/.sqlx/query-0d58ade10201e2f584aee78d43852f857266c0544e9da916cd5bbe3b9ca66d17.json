@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, user_id, content, revision_id, version, version_vector, created_at, updated_at, deleted_at\n            FROM documents\n            WHERE id = $1\n        ",
+  "query": "\n            SELECT id, user_id, content, version, content_hash,\n                   version_vector, created_at, updated_at, deleted_at\n            FROM documents\n            WHERE user_id = $1 AND deleted_at IS NULL\n            ORDER BY updated_at DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -20,13 +20,13 @@
       },
       {
         "ordinal": 3,
-        "name": "revision_id",
-        "type_info": "Text"
+        "name": "version",
+        "type_info": "Int8"
       },
       {
         "ordinal": 4,
-        "name": "version",
-        "type_info": "Int8"
+        "name": "content_hash",
+        "type_info": "Text"
       },
       {
         "ordinal": 5,
@@ -59,12 +59,12 @@
       false,
       false,
       false,
-      false,
+      true,
       true,
       false,
       false,
       true
     ]
   },
-  "hash": "4d01a2da3fda4e6a4b99dcadf9a56f010bf7d55744601f6a73740dc3858d05e6"
+  "hash": "0d58ade10201e2f584aee78d43852f857266c0544e9da916cd5bbe3b9ca66d17"
 }

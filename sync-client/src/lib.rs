@@ -21,7 +21,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use sqlx::Row;
-    use sync_core::models::{Document, VersionVector};
+    use sync_core::models::Document;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -37,20 +37,17 @@ mod tests {
                 server_url TEXT NOT NULL,
                 last_sync_at TIMESTAMP
             );
-            
+
             CREATE TABLE documents (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 content JSON NOT NULL,
-                revision_id TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                version_vector JSON,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 deleted_at TIMESTAMP,
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
-                last_synced_revision TEXT,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -82,9 +79,8 @@ mod tests {
             id: Uuid::new_v4(),
             user_id,
             content: content.clone(),
-            revision_id: Document::initial_revision(&content),
+            content_hash: None,
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -114,9 +110,8 @@ mod tests {
                 id: doc_id,
                 user_id: Uuid::new_v4(),
                 content: test_content.clone(),
-                revision_id: Document::initial_revision(&test_content),
                 version: 1,
-                version_vector: VersionVector::new(),
+                content_hash: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
@@ -129,7 +124,6 @@ mod tests {
         // Test delete message
         let delete_msg = ClientMessage::DeleteDocument {
             document_id: doc_id,
-            revision_id: "1-test".to_string(),
         };
 
         assert_eq!(extract_document_id(&delete_msg), Some(doc_id));
@@ -149,20 +143,17 @@ mod tests {
                 server_url TEXT NOT NULL,
                 last_sync_at TIMESTAMP
             );
-            
+
             CREATE TABLE documents (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 content JSON NOT NULL,
-                revision_id TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                version_vector JSON,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 deleted_at TIMESTAMP,
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
-                last_synced_revision TEXT,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -189,9 +180,8 @@ mod tests {
             id: Uuid::new_v4(),
             user_id,
             content: content.clone(),
-            revision_id: Document::initial_revision(&content),
+            content_hash: None,
             version: 1,
-            version_vector: VersionVector::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

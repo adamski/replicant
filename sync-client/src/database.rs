@@ -11,7 +11,6 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingDocumentInfo {
     pub id: Uuid,
-    pub last_synced_revision: Option<String>,
     pub is_deleted: bool,
 }
 
@@ -131,11 +130,7 @@ impl ClientDatabase {
     }
 
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
-        let row = sqlx::query(r#"
-            SELECT id, user_id, content, revision_id, version, version_vector, created_at, updated_at, deleted_at
-            FROM documents
-            WHERE id = $1
-        "#)
+        let row = sqlx::query(Queries::GET_DOCUMENT)
             .bind(id.to_string())
             .fetch_one(&self.pool)
             .await?;
@@ -157,10 +152,10 @@ impl ClientDatabase {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "synced".to_string());
         tracing::info!(
-            "DATABASE: 💾 Saving document {} with status: {}, revision: {}",
+            "DATABASE: 💾 Saving document {} with status: {}, version: {}",
             doc.id,
             status_str,
-            doc.revision_id
+            doc.version
         );
 
         let params = DbHelpers::document_to_params(doc, sync_status)?;
@@ -169,13 +164,11 @@ impl ClientDatabase {
             .bind(params.0) // id
             .bind(params.1) // user_id
             .bind(params.2) // content
-            .bind(params.3) // revision_id
-            .bind(params.4) // version
-            .bind(params.5) // version_vector
-            .bind(params.6) // created_at
-            .bind(params.7) // updated_at
-            .bind(params.8) // deleted_at
-            .bind(params.9) // sync_status
+            .bind(params.3) // version
+            .bind(params.4) // created_at
+            .bind(params.5) // updated_at
+            .bind(params.6) // deleted_at
+            .bind(params.7) // sync_status
             .execute(&self.pool)
             .await?;
 
@@ -195,19 +188,16 @@ impl ClientDatabase {
         let mut pending_docs = Vec::new();
         for row in rows {
             let id: String = row.try_get("id")?;
-            let last_synced_revision: Option<String> = row.try_get("last_synced_revision")?;
             let deleted_at: Option<String> = row.try_get("deleted_at")?;
 
             let doc_info = PendingDocumentInfo {
                 id: Uuid::parse_str(&id)?,
-                last_synced_revision: last_synced_revision.clone(),
                 is_deleted: deleted_at.is_some(),
             };
 
             tracing::info!(
-                "DATABASE: Pending doc: {} | Last synced rev: {:?} | Deleted: {}",
+                "DATABASE: Pending doc: {} | Deleted: {}",
                 doc_info.id,
-                last_synced_revision,
                 doc_info.is_deleted
             );
 
@@ -217,16 +207,14 @@ impl ClientDatabase {
         Ok(pending_docs)
     }
 
-    pub async fn mark_synced(&self, document_id: &Uuid, revision_id: &str) -> SyncResult<()> {
+    pub async fn mark_synced(&self, document_id: &Uuid) -> SyncResult<()> {
         tracing::info!(
-            "DATABASE: 🔄 Marking document {} as synced with revision {}",
-            document_id,
-            revision_id
+            "DATABASE: 🔄 Marking document {} as synced",
+            document_id
         );
 
         let result = sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
             .bind(SyncStatus::Synced.to_string())
-            .bind(revision_id)
             .bind(document_id.to_string())
             .execute(&self.pool)
             .await?;
@@ -236,26 +224,6 @@ impl ClientDatabase {
             document_id,
             result.rows_affected()
         );
-
-        // Verify the update worked
-        let verify_result = sqlx::query("SELECT last_synced_revision FROM documents WHERE id = ?")
-            .bind(document_id.to_string())
-            .fetch_one(&self.pool)
-            .await;
-
-        match verify_result {
-            Ok(row) => {
-                let stored_revision: Option<String> =
-                    row.try_get("last_synced_revision").unwrap_or(None);
-                tracing::info!(
-                    "DATABASE: 🔍 Verification: last_synced_revision = {:?}",
-                    stored_revision
-                );
-            }
-            Err(e) => {
-                tracing::error!("DATABASE: ❌ Failed to verify mark_synced: {}", e);
-            }
-        }
 
         Ok(())
     }
@@ -329,6 +297,53 @@ impl ClientDatabase {
                 tracing::error!("DATABASE: Failed to verify sync_queue insert: {}", e);
             }
         }
+
+        Ok(())
+    }
+
+    /// CRITICAL: Atomically save document and queue patch
+    /// This prevents data loss if app crashes between separate operations
+    pub async fn save_document_and_queue_patch(
+        &self,
+        doc: &Document,
+        patch: &json_patch::Patch,
+        operation_type: ChangeEventType,
+    ) -> SyncResult<()> {
+        // Start a transaction for atomicity
+        let mut tx = self.pool.begin().await?;
+
+        // Save document with pending status (in transaction)
+        let params = DbHelpers::document_to_params(doc, Some(SyncStatus::Pending))?;
+
+        sqlx::query(Queries::UPSERT_DOCUMENT)
+            .bind(params.0) // id
+            .bind(params.1) // user_id
+            .bind(params.2) // content
+            .bind(params.3) // version
+            .bind(params.4) // created_at
+            .bind(params.5) // updated_at
+            .bind(params.6) // deleted_at
+            .bind(params.7) // sync_status
+            .execute(&mut *tx)
+            .await?;
+
+        // Queue sync operation (in transaction)
+        let patch_json = serde_json::to_string(patch)?;
+
+        sqlx::query(Queries::INSERT_SYNC_QUEUE)
+            .bind(doc.id.to_string()) // document_id
+            .bind(operation_type.to_string()) // operation_type
+            .bind(patch_json) // patch
+            .execute(&mut *tx)
+            .await?;
+
+        // Commit atomically - both operations succeed or both fail
+        tx.commit().await?;
+
+        tracing::info!(
+            "DATABASE: Atomically saved document {} with pending status and queued patch",
+            doc.id
+        );
 
         Ok(())
     }

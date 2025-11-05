@@ -13,16 +13,15 @@ CREATE TABLE IF NOT EXISTS documents (
     content JSON NOT NULL,                        -- Document data
     revision_id TEXT NOT NULL,                    -- UUID for each revision
     version INTEGER NOT NULL DEFAULT 1,           -- Incremental version
-    version_vector JSON,                          -- For conflict resolution
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP,                         -- Soft delete
-    
+
     -- Sync metadata
     local_changes JSON,                           -- Pending changes
     sync_status TEXT DEFAULT 'synced',            -- 'synced', 'pending', 'conflict'
     last_synced_revision TEXT,                    -- Last known server revision
-    
+
     CHECK (sync_status IN ('synced', 'pending', 'conflict'))
 );
 

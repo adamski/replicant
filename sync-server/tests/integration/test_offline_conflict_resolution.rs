@@ -149,8 +149,8 @@ crate::integration_test!(
 
         tracing::info!("Client A final content: {:?}", final_a.content);
         tracing::info!("Client B final content: {:?}", final_b.content);
-        tracing::info!("Client A revision: {}", final_a.revision_id);
-        tracing::info!("Client B revision: {}", final_b.revision_id);
+        tracing::info!("Client A version: {}", final_a.version);
+        tracing::info!("Client B version: {}", final_b.version);
 
         // Verify eventual consistency - both clients should have the same final state
         assert_eq!(
@@ -159,8 +159,8 @@ crate::integration_test!(
         );
 
         assert_eq!(
-            final_a.revision_id, final_b.revision_id,
-            "Clients should have the same revision after conflict resolution"
+            final_a.version, final_b.version,
+            "Clients should have the same version after conflict resolution"
         );
 
         tracing::info!(

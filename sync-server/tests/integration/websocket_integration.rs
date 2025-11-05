@@ -2,7 +2,7 @@ use crate::integration::helpers::*;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use sync_core::models::{Document, VersionVector};
+use sync_core::models::Document;
 use sync_core::protocol::{ClientMessage, ServerMessage};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -185,9 +185,8 @@ crate::integration_test!(
             id: Uuid::new_v4(),
             user_id,
             content: content.clone(),
-            revision_id: Document::initial_revision(&content),
             version: 1,
-            version_vector: VersionVector::new(),
+            content_hash: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,

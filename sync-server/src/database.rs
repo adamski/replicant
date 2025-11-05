@@ -3,7 +3,7 @@ use json_patch::Patch;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use sync_core::models::Document;
 use sync_core::protocol::{ChangeEvent, ChangeEventType};
-use sync_core::SyncResult;
+use sync_core::{SyncError, SyncResult};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -11,7 +11,6 @@ pub struct ChangeEventParams<'a> {
     pub document_id: &'a Uuid,
     pub user_id: &'a Uuid,
     pub event_type: ChangeEventType,
-    pub revision_id: &'a str,
     pub forward_patch: Option<&'a serde_json::Value>,
     pub reverse_patch: Option<&'a serde_json::Value>,
     pub applied: bool,
@@ -25,8 +24,17 @@ pub struct ServerDatabase {
 impl ServerDatabase {
     #[instrument(skip(database_url))]
     pub async fn new(database_url: &str, app_namespace_id: String) -> SyncResult<Self> {
+        // Use smaller connection pool in test environments to avoid exhausting PostgreSQL connections
+        let max_connections = if std::env::var("RUN_INTEGRATION_TESTS").is_ok() {
+            3 // Tests need fewer connections per server instance
+        } else {
+            10 // Production default
+        };
+
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(max_connections)
+            .max_lifetime(std::time::Duration::from_secs(30))
+            .idle_timeout(std::time::Duration::from_secs(10))
             .connect(database_url)
             .await?;
 
@@ -93,30 +101,22 @@ impl ServerDatabase {
         let mut tx = self.pool.begin().await?;
         let params = document_to_params(doc);
 
-        // Debug: Log revision_id type
-        tracing::debug!(
-            "Creating document with revision_id: {} (type: String)",
-            params.3
-        );
-
         sqlx::query!(
             r#"
             INSERT INTO documents (
-                id, user_id, content, revision_id, version,
-                version_vector, created_at, updated_at, deleted_at, checksum, size_bytes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                id, user_id, content, version,
+                created_at, updated_at, deleted_at, content_hash, size_bytes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         "#,
             params.0,      // id
             params.1,      // user_id
             params.2 as _, // content_json
-            params.3,      // revision_id
-            params.4,      // version
-            params.5 as _, // version_vector_json
-            params.6,      // created_at
-            params.7,      // updated_at
-            params.8,      // deleted_at
-            params.9,      // checksum
-            params.10      // size_bytes
+            params.3,      // version
+            params.4,      // created_at
+            params.5,      // updated_at
+            params.6,      // deleted_at
+            params.7 as _, // content_hash
+            params.8       // size_bytes
         )
         .execute(&mut *tx)
         .await?;
@@ -131,7 +131,6 @@ impl ServerDatabase {
                 document_id: &doc.id,
                 user_id: &doc.user_id,
                 event_type: ChangeEventType::Create,
-                revision_id: &doc.revision_id,
                 forward_patch: Some(&doc_json),
                 reverse_patch: None,
                 applied: true,
@@ -146,7 +145,7 @@ impl ServerDatabase {
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query!(
             r#"
-            SELECT id, user_id, content, revision_id, version, version_vector, created_at, updated_at, deleted_at
+            SELECT id, user_id, content, version, content_hash, created_at, updated_at, deleted_at
             FROM documents
             WHERE id = $1
         "#,
@@ -159,10 +158,8 @@ impl ServerDatabase {
             id: row.id,
             user_id: row.user_id,
             content: row.content,
-            revision_id: row.revision_id,
             version: row.version,
-            version_vector: serde_json::from_value(row.version_vector.unwrap_or(serde_json::json!({})))
-                .unwrap_or_default(),
+            content_hash: row.content_hash,
             created_at: row.created_at,
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,
@@ -184,32 +181,64 @@ impl ServerDatabase {
         doc: &Document,
         patch: Option<&Patch>,
     ) -> SyncResult<()> {
-        // Get the original document state before update (for computing reverse patch)
-        let original_doc = self.get_document(&doc.id).await?;
+        // CRITICAL: Read the original document INSIDE the transaction with row lock
+        // This prevents race conditions in computing reverse patches
+        let original_doc = sqlx::query!(
+            r#"
+            SELECT id, user_id, content, version, content_hash, created_at, updated_at, deleted_at
+            FROM documents
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+            doc.id
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map(|row| Document {
+            id: row.id,
+            user_id: row.user_id,
+            content: row.content,
+            version: row.version,
+            content_hash: row.content_hash,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            deleted_at: row.deleted_at,
+        })?;
 
         let params = document_to_params(doc);
+        let expected_version = original_doc.version;
 
-        // Update the document
-        sqlx::query!(
+        // CRITICAL: Atomic version increment with optimistic locking
+        // The WHERE clause ensures we only update if version hasn't changed (optimistic lock)
+        let result = sqlx::query!(
             r#"
             UPDATE documents
-            SET content = $2, revision_id = $3, version = $4,
-                version_vector = $5, updated_at = $6, deleted_at = $7,
-                checksum = $8, size_bytes = $9
-            WHERE id = $1
-        "#,
-            params.0,      // id
-            params.2 as _, // content_json
-            params.3,      // revision_id
-            params.4,      // version
-            params.5 as _, // version_vector_json
-            params.7,      // updated_at
-            params.8,      // deleted_at
-            params.9,      // checksum
-            params.10      // size_bytes
+            SET content = $2,
+                version = version + 1,
+                updated_at = NOW(),
+                deleted_at = $3,
+                content_hash = $4,
+                size_bytes = $5
+            WHERE id = $1 AND version = $6
+            "#,
+            params.0,          // id
+            params.2 as _,     // content_json
+            params.6,          // deleted_at
+            params.7,          // content_hash
+            params.8,          // size_bytes
+            expected_version   // optimistic lock check
         )
         .execute(&mut **tx)
         .await?;
+
+        // Check if the update actually happened
+        if result.rows_affected() == 0 {
+            // Version mismatch - another transaction updated the document first
+            return Err(SyncError::VersionMismatch {
+                expected: expected_version,
+                actual: doc.version, // The version the client sent
+            });
+        }
 
         // Compute patches for the event log
         let forward_patch_json = patch.map(|p| serde_json::to_value(p).unwrap());
@@ -229,7 +258,6 @@ impl ServerDatabase {
                 document_id: &doc.id,
                 user_id: &doc.user_id,
                 event_type: ChangeEventType::Update,
-                revision_id: &doc.revision_id,
                 forward_patch: forward_patch_json.as_ref(),
                 reverse_patch: reverse_patch_json.as_ref(),
                 applied: true,
@@ -244,7 +272,6 @@ impl ServerDatabase {
         &self,
         document_id: &Uuid,
         user_id: &Uuid,
-        revision_id: &str,
     ) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
@@ -271,7 +298,6 @@ impl ServerDatabase {
                 document_id,
                 user_id,
                 event_type: ChangeEventType::Delete,
-                revision_id,
                 forward_patch: None,
                 reverse_patch: Some(&doc_json),
                 applied: true,
@@ -286,8 +312,8 @@ impl ServerDatabase {
     pub async fn get_user_documents(&self, user_id: &Uuid) -> SyncResult<Vec<Document>> {
         let rows = sqlx::query!(
             r#"
-            SELECT id, user_id, content, revision_id, version,
-                   version_vector, created_at, updated_at, deleted_at
+            SELECT id, user_id, content, version, content_hash,
+                   created_at, updated_at, deleted_at
             FROM documents
             WHERE user_id = $1 AND deleted_at IS NULL
             ORDER BY updated_at DESC
@@ -303,12 +329,8 @@ impl ServerDatabase {
                 id: row.id,
                 user_id: row.user_id,
                 content: row.content,
-                revision_id: row.revision_id,
                 version: row.version,
-                version_vector: serde_json::from_value(
-                    row.version_vector.unwrap_or(serde_json::json!({})),
-                )
-                .unwrap_or_default(),
+                content_hash: row.content_hash,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
                 deleted_at: row.deleted_at,
@@ -323,11 +345,10 @@ impl ServerDatabase {
         sqlx::query!(
             r#"
             INSERT INTO document_revisions (
-                document_id, revision_id, content, patch, version, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6)
+                document_id, content, patch, version, created_by
+            ) VALUES ($1, $2, $3, $4, $5)
         "#,
             doc.id,
-            doc.revision_id,
             content_json as _,
             patch_json as _,
             doc.version,
@@ -382,13 +403,12 @@ impl ServerDatabase {
         let event_type_str = params.event_type.to_string();
         sqlx::query!(
             r#"
-            INSERT INTO change_events (user_id, document_id, event_type, revision_id, forward_patch, reverse_patch, applied)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO change_events (user_id, document_id, event_type, forward_patch, reverse_patch, applied)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#,
             params.user_id,
             params.document_id,
             event_type_str,
-            params.revision_id,
             params.forward_patch as _,
             params.reverse_patch as _,
             params.applied
@@ -412,7 +432,7 @@ impl ServerDatabase {
 
         let rows = sqlx::query!(
             r#"
-            SELECT sequence, document_id, user_id, event_type, revision_id, forward_patch, reverse_patch, created_at
+            SELECT sequence, document_id, user_id, event_type, forward_patch, reverse_patch, created_at
             FROM change_events
             WHERE user_id = $1 AND sequence > $2
             ORDER BY sequence ASC
@@ -437,7 +457,6 @@ impl ServerDatabase {
                 document_id: row.document_id,
                 user_id: row.user_id,
                 event_type,
-                revision_id: row.revision_id,
                 forward_patch: row.forward_patch,
                 reverse_patch: row.reverse_patch,
                 created_at: row.created_at,
@@ -466,7 +485,7 @@ impl ServerDatabase {
     pub async fn get_unapplied_changes(&self, document_id: &Uuid) -> SyncResult<Vec<ChangeEvent>> {
         let rows = sqlx::query!(
             r#"
-            SELECT sequence, document_id, user_id, event_type, revision_id,
+            SELECT sequence, document_id, user_id, event_type,
                    forward_patch, reverse_patch, created_at
             FROM change_events
             WHERE document_id = $1 AND applied = false
@@ -489,7 +508,6 @@ impl ServerDatabase {
                 document_id: row.document_id,
                 user_id: row.user_id,
                 event_type,
-                revision_id: row.revision_id,
                 forward_patch: row.forward_patch,
                 reverse_patch: row.reverse_patch,
                 created_at: row.created_at,

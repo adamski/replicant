@@ -27,7 +27,6 @@ pub enum ClientMessage {
     },
     DeleteDocument {
         document_id: Uuid,
-        revision_id: String, // CouchDB-style
     },
 
     // Sync operations
@@ -70,25 +69,21 @@ pub enum ServerMessage {
     },
     DocumentDeleted {
         document_id: Uuid,
-        revision_id: String, // CouchDB-style
     },
 
     // Document operation confirmations
     DocumentCreatedResponse {
         document_id: Uuid,
-        revision_id: String,
         success: bool,
         error: Option<String>,
     },
     DocumentUpdatedResponse {
         document_id: Uuid,
-        revision_id: String,
         success: bool,
         error: Option<String>,
     },
     DocumentDeletedResponse {
         document_id: Uuid,
-        revision_id: String,
         success: bool,
         error: Option<String>,
     },
@@ -104,8 +99,6 @@ pub enum ServerMessage {
     // Conflict notification
     ConflictDetected {
         document_id: Uuid,
-        local_revision: String,  // CouchDB-style
-        server_revision: String, // CouchDB-style
         resolution_strategy: ConflictResolution,
     },
 
@@ -159,7 +152,6 @@ pub struct ChangeEvent {
     pub document_id: Uuid,
     pub user_id: Uuid,
     pub event_type: ChangeEventType,
-    pub revision_id: String, // CouchDB-style
     pub forward_patch: Option<serde_json::Value>,
     pub reverse_patch: Option<serde_json::Value>, // patch to undo this change
     pub created_at: chrono::DateTime<chrono::Utc>,

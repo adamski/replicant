@@ -213,7 +213,6 @@ async fn test_create_document_online() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -246,7 +245,6 @@ async fn test_update_document_online() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -282,7 +280,6 @@ async fn test_update_document_online() {
         .server
         .send_server_message(ServerMessage::DocumentUpdatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -310,7 +307,6 @@ async fn test_delete_document_online() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -333,7 +329,6 @@ async fn test_delete_document_online() {
         .server
         .send_server_message(ServerMessage::DocumentDeletedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -385,7 +380,6 @@ async fn test_offline_document_creation_and_sync() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -416,7 +410,6 @@ async fn test_client_reconnect_sync_document_online() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -447,7 +440,6 @@ async fn test_client_reconnect_sync_document_online() {
         .server
         .send_server_message(ServerMessage::DocumentDeletedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -482,7 +474,6 @@ async fn test_sync_protection_mode_blocks_server_updates() {
     let server_doc = sync_core::models::Document {
         id: doc.id,
         content: json!({ "value": 999 }), // Different content
-        revision_id: format!("2-{}", Uuid::new_v4()),
         ..doc.clone()
     };
 
@@ -498,7 +489,6 @@ async fn test_sync_protection_mode_blocks_server_updates() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -530,7 +520,6 @@ async fn test_receive_server_document_sync() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -540,7 +529,6 @@ async fn test_receive_server_document_sync() {
     // 2. Server sends updated version
     let mut updated_doc = doc.clone();
     updated_doc.content = json!({ "version": 2 });
-    updated_doc.revision_id = format!("2-revision");
     updated_doc.version = 2;
 
     setup
@@ -555,7 +543,6 @@ async fn test_receive_server_document_sync() {
     // 3. Verify local document was updated
     let local_doc = setup.db.get_document(&doc.id).await.unwrap();
     assert_eq!(local_doc.content["version"], json!(2));
-    assert_eq!(local_doc.revision_id, updated_doc.revision_id);
 }
 
 /// Test handling failed document creation response
@@ -577,7 +564,6 @@ async fn test_create_document_failure_response() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: false,
             error: Some("Validation failed".to_string()),
         })
@@ -639,7 +625,6 @@ async fn test_multiple_offline_documents_sync() {
             .server
             .send_server_message(ServerMessage::DocumentCreatedResponse {
                 document_id: doc.id,
-                revision_id: doc.revision_id.clone(),
                 success: true,
                 error: None,
             })
@@ -776,13 +761,10 @@ async fn test_offline_document_creation_with_reconnection_sync() {
 
     // 9. Confirm all uploads
     for doc_id in [doc1.id, doc2.id, doc3.id] {
-        // Find the revision for this doc
-        let local_doc = setup.db.get_document(&doc_id).await.unwrap();
         setup
             .server
             .send_server_message(ServerMessage::DocumentCreatedResponse {
                 document_id: doc_id,
-                revision_id: local_doc.revision_id.clone(),
                 success: true,
                 error: None,
             })
@@ -816,7 +798,6 @@ async fn test_offline_update_with_patch_recovery() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -867,12 +848,10 @@ async fn test_offline_update_with_patch_recovery() {
     }
 
     // 9. Confirm update
-    let updated_doc = setup.db.get_document(&doc.id).await.unwrap();
     setup
         .server
         .send_server_message(ServerMessage::DocumentUpdatedResponse {
             document_id: doc.id,
-            revision_id: updated_doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -916,7 +895,6 @@ async fn test_offline_delete_sync_on_reconnection() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -954,7 +932,6 @@ async fn test_offline_delete_sync_on_reconnection() {
         .server
         .send_server_message(ServerMessage::DocumentDeletedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -986,7 +963,6 @@ async fn test_mixed_offline_operations_sync() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc1.id,
-            revision_id: doc1.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -1047,7 +1023,6 @@ async fn test_mixed_offline_operations_sync() {
                         .server
                         .send_server_message(ServerMessage::DocumentCreatedResponse {
                             document_id: document.id,
-                            revision_id: document.revision_id,
                             success: true,
                             error: None,
                         })
@@ -1059,7 +1034,6 @@ async fn test_mixed_offline_operations_sync() {
                         .server
                         .send_server_message(ServerMessage::DocumentUpdatedResponse {
                             document_id: patch.document_id,
-                            revision_id: patch.revision_id,
                             success: true,
                             error: None,
                         })
@@ -1067,7 +1041,6 @@ async fn test_mixed_offline_operations_sync() {
                 }
                 ClientMessage::DeleteDocument {
                     document_id,
-                    revision_id,
                     ..
                 } => {
                     deletes += 1;
@@ -1075,7 +1048,6 @@ async fn test_mixed_offline_operations_sync() {
                         .server
                         .send_server_message(ServerMessage::DocumentDeletedResponse {
                             document_id,
-                            revision_id,
                             success: true,
                             error: None,
                         })
@@ -1145,7 +1117,6 @@ async fn test_partial_upload_failure() {
             .server
             .send_server_message(ServerMessage::DocumentCreatedResponse {
                 document_id: document.id,
-                revision_id: document.revision_id,
                 success: true,
                 error: None,
             })
@@ -1157,7 +1128,6 @@ async fn test_partial_upload_failure() {
             .server
             .send_server_message(ServerMessage::DocumentCreatedResponse {
                 document_id: document.id,
-                revision_id: document.revision_id,
                 success: true,
                 error: None,
             })
@@ -1194,7 +1164,6 @@ async fn test_upload_failure_response() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: false,
             error: Some("Server validation failed".to_string()),
         })
@@ -1226,7 +1195,6 @@ async fn test_server_sends_document_updated_patch() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -1241,15 +1209,10 @@ async fn test_server_sends_document_updated_patch() {
     let new_content = json!({ "value": 2 });
     let patch = create_patch(&old_content, &new_content).unwrap();
 
-    let mut updated_vc = doc.version_vector.clone();
-    updated_vc.increment("server_node");
-
     let document_patch = DocumentPatch {
         document_id: doc.id,
-        revision_id: format!("2-{}", Uuid::new_v4()),
         patch,
-        version_vector: updated_vc,
-        checksum: calculate_checksum(&new_content),
+        content_hash: calculate_checksum(&new_content),
     };
 
     setup
@@ -1281,10 +1244,9 @@ async fn test_server_sends_new_document_created() {
     let new_doc = sync_core::models::Document {
         id: Uuid::new_v4(),
         user_id,
-        revision_id: format!("1-{}", Uuid::new_v4()),
         content: json!({ "from_server": true }),
         version: 1,
-        version_vector: sync_core::models::VersionVector::new(),
+        content_hash: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -1324,7 +1286,6 @@ async fn test_server_sends_document_deleted() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -1336,7 +1297,6 @@ async fn test_server_sends_document_deleted() {
         .server
         .send_server_message(ServerMessage::DocumentDeleted {
             document_id: doc.id,
-            revision_id: format!("2-{}", Uuid::new_v4()),
         })
         .await;
 
@@ -1371,8 +1331,6 @@ async fn test_conflict_detection_event() {
         .server
         .send_server_message(ServerMessage::ConflictDetected {
             document_id: doc.id,
-            local_revision: doc.revision_id.clone(),
-            server_revision: format!("2-{}", Uuid::new_v4()),
             resolution_strategy: ConflictResolution::ClientWins,
         })
         .await;
@@ -1402,7 +1360,6 @@ async fn test_sync_document_generation_comparison() {
         .server
         .send_server_message(ServerMessage::DocumentCreatedResponse {
             document_id: doc.id,
-            revision_id: doc.revision_id.clone(),
             success: true,
             error: None,
         })
@@ -1412,7 +1369,6 @@ async fn test_sync_document_generation_comparison() {
     // Server sends SyncDocument with higher generation (hits lines 800-843)
     let mut server_doc = doc.clone();
     server_doc.content = json!({ "version": 2 });
-    server_doc.revision_id = format!("2-revision"); // Higher generation
     server_doc.version = 2;
 
     setup
@@ -1427,7 +1383,6 @@ async fn test_sync_document_generation_comparison() {
     // Verify local doc was updated to server version
     let local_doc = setup.db.get_document(&doc.id).await.unwrap();
     assert_eq!(local_doc.content["version"], json!(2));
-    assert_eq!(local_doc.revision_id, server_doc.revision_id);
 
     println!("✅ SYNC GENERATION TEST: Applied server SyncDocument with higher generation");
 }
@@ -1446,15 +1401,15 @@ async fn test_sync_document_rejects_older_version() {
         .await
         .unwrap();
 
-    // Manually set high generation revision
+    // Manually set high version
     let mut high_gen_doc = doc.clone();
-    high_gen_doc.revision_id = format!("5-revision");
+    high_gen_doc.version = 5;
     setup.db.save_document(&high_gen_doc).await.unwrap();
 
-    // Server sends older generation (hits lines 833-836)
+    // Server sends older version (hits lines 833-836)
     let mut old_server_doc = doc.clone();
     old_server_doc.content = json!({ "gen": "old" });
-    old_server_doc.revision_id = format!("2-revision"); // Lower generation
+    old_server_doc.version = 2; // Lower version
 
     setup
         .server

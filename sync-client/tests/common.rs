@@ -1,6 +1,6 @@
 use chrono::Utc;
 use sync_client::ClientDatabase;
-use sync_core::models::{Document, VersionVector};
+use sync_core::models::Document;
 use uuid::Uuid;
 
 /// Creates a new in-memory test sqlite database and runs migrations.
@@ -24,13 +24,8 @@ pub fn make_document(user_id: Uuid, title: &str, text: &str, version: i64) -> Do
         id: Uuid::new_v4(),
         user_id,
         content: content.clone(),
-        revision_id: if version == 1 {
-            Document::initial_revision(&content)
-        } else {
-            format!("{}-server", version)
-        },
         version,
-        version_vector: VersionVector::new(),
+        content_hash: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
         deleted_at: None,

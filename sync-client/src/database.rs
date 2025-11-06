@@ -169,6 +169,7 @@ impl ClientDatabase {
             .bind(params.5) // updated_at
             .bind(params.6) // deleted_at
             .bind(params.7) // sync_status
+            .bind(params.8) // title
             .execute(&self.pool)
             .await?;
 
@@ -325,6 +326,7 @@ impl ClientDatabase {
             .bind(params.5) // updated_at
             .bind(params.6) // deleted_at
             .bind(params.7) // sync_status
+            .bind(params.8) // title
             .execute(&mut *tx)
             .await?;
 

@@ -348,6 +348,7 @@ impl SyncEngine {
             content,
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

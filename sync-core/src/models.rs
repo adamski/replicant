@@ -10,6 +10,7 @@ pub struct Document {
     pub content: serde_json::Value,
     pub sync_revision: i64,
     pub content_hash: Option<String>, // SHA256 hash for integrity verification
+    pub title: Option<String>, // Derived from content['title'] for query performance
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -41,6 +42,7 @@ mod tests {
             content: serde_json::json!({"title": "My Document", "test": true}),
             sync_revision: 1,
             content_hash: None,
+            title: Some("My Document".to_string()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
@@ -56,6 +58,7 @@ mod tests {
             content: serde_json::json!({"test": true}),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,

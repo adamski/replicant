@@ -105,18 +105,19 @@ impl ServerDatabase {
             r#"
             INSERT INTO documents (
                 id, user_id, content, sync_revision,
-                created_at, updated_at, deleted_at, content_hash, size_bytes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                created_at, updated_at, deleted_at, content_hash, size_bytes, title
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         "#,
             params.0,      // id
             params.1,      // user_id
             params.2 as _, // content_json
-            params.3,      // version
+            params.3,      // sync_revision
             params.4,      // created_at
             params.5,      // updated_at
             params.6,      // deleted_at
             params.7 as _, // content_hash
-            params.8       // size_bytes
+            params.8,      // size_bytes
+            params.9 as _  // title
         )
         .execute(&mut *tx)
         .await?;
@@ -145,7 +146,7 @@ impl ServerDatabase {
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query!(
             r#"
-            SELECT id, user_id, content, sync_revision, content_hash, created_at, updated_at, deleted_at
+            SELECT id, user_id, content, sync_revision, content_hash, title, created_at, updated_at, deleted_at
             FROM documents
             WHERE id = $1
         "#,
@@ -160,6 +161,7 @@ impl ServerDatabase {
             content: row.content,
             sync_revision: row.sync_revision,
             content_hash: row.content_hash,
+            title: row.title,
             created_at: row.created_at,
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,
@@ -185,7 +187,7 @@ impl ServerDatabase {
         // This prevents race conditions in computing reverse patches
         let original_doc = sqlx::query!(
             r#"
-            SELECT id, user_id, content, sync_revision, content_hash, created_at, updated_at, deleted_at
+            SELECT id, user_id, content, sync_revision, content_hash, title, created_at, updated_at, deleted_at
             FROM documents
             WHERE id = $1
             FOR UPDATE
@@ -200,6 +202,7 @@ impl ServerDatabase {
             content: row.content,
             sync_revision: row.sync_revision,
             content_hash: row.content_hash,
+            title: row.title,
             created_at: row.created_at,
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,
@@ -218,14 +221,16 @@ impl ServerDatabase {
                 updated_at = NOW(),
                 deleted_at = $3,
                 content_hash = $4,
-                size_bytes = $5
-            WHERE id = $1 AND sync_revision = $6
+                size_bytes = $5,
+                title = $6
+            WHERE id = $1 AND sync_revision = $7
             "#,
             params.0,          // id
             params.2 as _,     // content_json
             params.6,          // deleted_at
             params.7,          // content_hash
             params.8,          // size_bytes
+            params.9 as _,     // title
             expected_sync_revision   // optimistic lock check
         )
         .execute(&mut **tx)
@@ -312,7 +317,7 @@ impl ServerDatabase {
     pub async fn get_user_documents(&self, user_id: &Uuid) -> SyncResult<Vec<Document>> {
         let rows = sqlx::query!(
             r#"
-            SELECT id, user_id, content, sync_revision, content_hash,
+            SELECT id, user_id, content, sync_revision, content_hash, title,
                    created_at, updated_at, deleted_at
             FROM documents
             WHERE user_id = $1 AND deleted_at IS NULL
@@ -331,6 +336,7 @@ impl ServerDatabase {
                 content: row.content,
                 sync_revision: row.sync_revision,
                 content_hash: row.content_hash,
+                title: row.title,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
                 deleted_at: row.deleted_at,

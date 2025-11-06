@@ -16,6 +16,7 @@ pub type DocumentParams = (
     String,         // updated_at
     Option<String>, // deleted_at
     String,         // sync_status
+    String,         // title
 );
 
 /// SQL queries for client database operations
@@ -77,7 +78,7 @@ impl Queries {
     // Document queries
     pub const GET_DOCUMENT: &'static str = r#"
         SELECT id, user_id, content, sync_revision,
-               created_at, updated_at, deleted_at
+               created_at, updated_at, deleted_at, title
         FROM documents
         WHERE id = ?1
     "#;
@@ -85,14 +86,15 @@ impl Queries {
     pub const UPSERT_DOCUMENT: &'static str = r#"
         INSERT INTO documents (
             id, user_id, content, sync_revision,
-            created_at, updated_at, deleted_at, sync_status
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            created_at, updated_at, deleted_at, sync_status, title
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         ON CONFLICT(id) DO UPDATE SET
             content = excluded.content,
             sync_revision = excluded.sync_revision,
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at,
-            sync_status = excluded.sync_status
+            sync_status = excluded.sync_status,
+            title = excluded.title
     "#;
 
     pub const LIST_USER_DOCUMENTS: &'static str = r#"
@@ -158,6 +160,7 @@ impl DbHelpers {
         let created_at: String = row.get("created_at");
         let updated_at: String = row.get("updated_at");
         let deleted_at: Option<String> = row.get("deleted_at");
+        let title: Option<String> = row.try_get("title").ok();
 
         Ok(Document {
             id: Uuid::parse_str(&id)?,
@@ -165,6 +168,7 @@ impl DbHelpers {
             content: serde_json::from_str(&content)?,
             sync_revision,
             content_hash: None, // Not stored in client database
+            title,
             created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
             updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
             deleted_at: deleted_at
@@ -179,6 +183,14 @@ impl DbHelpers {
         sync_status: Option<SyncStatus>,
     ) -> SyncResult<DocumentParams> {
         let status = sync_status.unwrap_or(SyncStatus::Pending).to_string();
+        let title = doc.title.clone().unwrap_or_else(|| {
+            // Fallback to extracting from content if not set
+            doc.content
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.chars().take(128).collect::<String>())
+                .unwrap_or_else(|| doc.created_at.format("%Y-%m-%d|%H:%M:%S%.3f").to_string())
+        });
 
         Ok((
             doc.id.to_string(),
@@ -189,6 +201,7 @@ impl DbHelpers {
             doc.updated_at.to_rfc3339(),
             doc.deleted_at.map(|dt| dt.to_rfc3339()),
             status,
+            title,
         ))
     }
 

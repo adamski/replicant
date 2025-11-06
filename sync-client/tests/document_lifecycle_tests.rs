@@ -11,6 +11,7 @@
 mod common;
 
 use common::*;
+use sync_core::models::Document;
 use uuid::Uuid;
 
 /// Verifies that newly created local documents start with "pending" sync status.
@@ -128,4 +129,51 @@ async fn test_delete_marks_document_as_pending_then_synced() {
         sync_status, "synced",
         "Deleted document should be marked as synced after confirmation"
     );
+}
+
+/// Verifies that the title field is properly extracted from document content
+/// when documents are saved to the client database.
+#[tokio::test]
+async fn test_title_extraction() {
+    let db = setup_test_db().await;
+    let user_id = Uuid::new_v4();
+
+    // Test 1: Document with title in content
+    let doc_with_title = make_document(user_id, "My Document", "Test content", 1);
+    db.save_document(&doc_with_title).await.unwrap();
+
+    let retrieved = db.get_document(&doc_with_title.id).await.unwrap();
+    assert_eq!(retrieved.title, Some("My Document".to_string()));
+
+    // Test 2: Document without title (should use datetime fallback)
+    let content_no_title = serde_json::json!({"text": "No title content"});
+    let doc_no_title = Document {
+        id: Uuid::new_v4(),
+        user_id,
+        content: content_no_title,
+        sync_revision: 1,
+        content_hash: None,
+        title: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        deleted_at: None,
+    };
+
+    db.save_document(&doc_no_title).await.unwrap();
+
+    let retrieved = db.get_document(&doc_no_title.id).await.unwrap();
+    assert!(retrieved.title.is_some());
+    let title = retrieved.title.unwrap();
+    // Should have datetime format: YYYY-MM-DD|HH:MM:SS.mmm
+    assert!(title.contains('|'), "Title should contain pipe separator");
+    assert!(title.contains('-'), "Title should contain date separator");
+
+    // Test 3: Very long title (should be truncated to 128 chars)
+    let long_title = "a".repeat(200);
+    let doc_long_title = make_document(user_id, &long_title, "Long title content", 1);
+    db.save_document(&doc_long_title).await.unwrap();
+
+    let retrieved = db.get_document(&doc_long_title.id).await.unwrap();
+    assert_eq!(retrieved.title.as_ref().unwrap().len(), 128);
+    assert_eq!(retrieved.title, Some("a".repeat(128)));
 }

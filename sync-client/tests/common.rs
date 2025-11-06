@@ -26,6 +26,7 @@ pub fn make_document(user_id: Uuid, title: &str, text: &str, sync_revision: i64)
         content: content.clone(),
         sync_revision,
         content_hash: None,
+        title: None, // Will be extracted when saved to database
         created_at: Utc::now(),
         updated_at: Utc::now(),
         deleted_at: None,

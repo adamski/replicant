@@ -1246,6 +1246,7 @@ async fn test_server_sends_new_document_created() {
         content: json!({ "from_server": true }),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,

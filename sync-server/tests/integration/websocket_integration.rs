@@ -187,6 +187,7 @@ crate::integration_test!(
             content: content.clone(),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,

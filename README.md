@@ -8,7 +8,6 @@ A client-server synchronization system built in Rust, featuring real-time WebSoc
 
 ### Real-Time Synchronization
 - **WebSocket-based** bidirectional sync
-- **Vector clock** conflict detection for distributed systems
 - **Basic conflict resolution** with server-wins fallback
 - **Offline-first** design with local storage
 - **Concurrent update handling** with conflict detection

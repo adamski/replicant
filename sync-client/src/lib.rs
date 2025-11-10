@@ -48,6 +48,7 @@ mod tests {
                 deleted_at TIMESTAMP,
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
+                title TEXT,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -156,6 +157,7 @@ mod tests {
                 deleted_at TIMESTAMP,
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
+                title TEXT,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,

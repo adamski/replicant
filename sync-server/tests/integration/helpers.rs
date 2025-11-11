@@ -508,7 +508,10 @@ impl TestContext {
             if let Some(err) = last_error {
                 return Err(err.into());
             } else {
-                return Err(anyhow::anyhow!("Failed to create database after {} retries", MAX_RETRIES));
+                return Err(anyhow::anyhow!(
+                    "Failed to create database after {} retries",
+                    MAX_RETRIES
+                ));
             }
         }
 

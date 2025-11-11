@@ -763,10 +763,10 @@ macro_rules! integration_test {
             }
 
             // Acquire integration test semaphore to limit concurrent tests and prevent resource exhaustion
-            let semaphore = crate::integration::helpers::get_integration_test_semaphore().await;
+            let semaphore = $crate::integration::helpers::get_integration_test_semaphore().await;
             let _permit = semaphore.acquire().await.unwrap();
 
-            let mut ctx = crate::integration::helpers::TestContext::new();
+            let mut ctx = $crate::integration::helpers::TestContext::new();
             // Full teardown and setup for complete isolation
 
             match $online {

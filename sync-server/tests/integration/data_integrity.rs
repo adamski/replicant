@@ -63,7 +63,6 @@ async fn test_concurrent_writes_to_same_document() {
     for i in 1..=5 {
         let db_clone = db.clone();
         let doc_id = doc.id;
-        let user_id = user_id;
 
         let handle = tokio::spawn(async move {
             let updated_doc = Document {

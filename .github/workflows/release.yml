@@ -13,6 +13,8 @@ jobs:
   build-binary:
     name: Build Binary Artifact
     runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: true
 
     steps:
     - uses: actions/checkout@v3
@@ -86,5 +88,7 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          SQLX_OFFLINE=true
         cache-from: type=gha
         cache-to: type=gha,mode=max

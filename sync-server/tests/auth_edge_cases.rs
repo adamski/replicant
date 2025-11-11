@@ -423,13 +423,11 @@ async fn test_inactive_credentials_rejected() {
         .unwrap();
 
     // Mark credentials as inactive
-    sqlx::query!(
-        "UPDATE api_credentials SET is_active = false WHERE api_key = $1",
-        creds.api_key
-    )
-    .execute(&db.pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE api_credentials SET is_active = false WHERE api_key = $1")
+        .bind(&creds.api_key)
+        .execute(&db.pool)
+        .await
+        .unwrap();
 
     let timestamp = chrono::Utc::now().timestamp();
     let email = "test@example.com";

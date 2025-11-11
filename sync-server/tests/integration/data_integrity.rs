@@ -153,7 +153,6 @@ async fn test_document_update_consistency() {
     println!("✅ Document update consistency test passed");
 }
 
-
 /// Tests that event log sequence numbers are always incrementing.
 #[tokio::test]
 async fn test_event_log_sequence_integrity() {

@@ -1266,7 +1266,10 @@ fn render_task_details(f: &mut Frame, area: Rect, app_state: &AppState) {
                 ]));
                 metadata_lines.push(Line::from(vec![
                     Span::styled("Version: ", Style::default().fg(Color::Gray)),
-                    Span::styled(task.sync_revision.to_string(), Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        task.sync_revision.to_string(),
+                        Style::default().fg(Color::Yellow),
+                    ),
                 ]));
 
                 let metadata_paragraph = Paragraph::new(metadata_lines).wrap(Wrap { trim: true });
@@ -1367,7 +1370,10 @@ fn render_task_details(f: &mut Frame, area: Rect, app_state: &AppState) {
         ]));
         metadata_lines.push(Line::from(vec![
             Span::styled("Version: ", Style::default().fg(Color::Gray)),
-            Span::styled(task.sync_revision.to_string(), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                task.sync_revision.to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
         ]));
 
         let metadata_paragraph = Paragraph::new(metadata_lines).wrap(Wrap { trim: true });

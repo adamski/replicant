@@ -10,7 +10,7 @@ pub struct Document {
     pub content: serde_json::Value,
     pub sync_revision: i64,
     pub content_hash: Option<String>, // SHA256 hash for integrity verification
-    pub title: Option<String>, // Derived from content['title'] for query performance
+    pub title: Option<String>,        // Derived from content['title'] for query performance
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -27,7 +27,6 @@ impl Document {
         self.title().unwrap_or("Untitled")
     }
 }
-
 
 #[cfg(test)]
 mod tests {

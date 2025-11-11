@@ -3,10 +3,10 @@
 //! This module implements array index adjustments and conflict detection for
 //! concurrent JSON Patch operations.
 
-use json_patch::{PatchOperation, AddOperation, RemoveOperation, ReplaceOperation};
 use crate::ot::path_utils::*;
 use crate::ot::types::PathRelation;
 use crate::SyncError;
+use json_patch::{AddOperation, PatchOperation, RemoveOperation, ReplaceOperation};
 
 // ============================================================================
 // Add vs Add Transformation
@@ -20,9 +20,10 @@ pub fn transform_add_add(
     remote: &AddOperation,
 ) -> Result<(Option<AddOperation>, Option<AddOperation>), SyncError> {
     // Check if both are array operations first (handles same index case)
-    if let (Some(local_idx), Some(remote_idx)) =
-        (extract_array_index(&local.path), extract_array_index(&remote.path))
-    {
+    if let (Some(local_idx), Some(remote_idx)) = (
+        extract_array_index(&local.path),
+        extract_array_index(&remote.path),
+    ) {
         // Verify they're in the same array
         if get_parent_path(&local.path) == get_parent_path(&remote.path) {
             // Both adding to same array - adjust indices
@@ -72,9 +73,10 @@ pub fn transform_remove_remove(
     remote: &RemoveOperation,
 ) -> Result<(Option<RemoveOperation>, Option<RemoveOperation>), SyncError> {
     // Check for array operations first (handles same index case)
-    if let (Some(local_idx), Some(remote_idx)) =
-        (extract_array_index(&local.path), extract_array_index(&remote.path))
-    {
+    if let (Some(local_idx), Some(remote_idx)) = (
+        extract_array_index(&local.path),
+        extract_array_index(&remote.path),
+    ) {
         if get_parent_path(&local.path) == get_parent_path(&remote.path) {
             // Same array - adjust indices
             if local_idx < remote_idx {
@@ -123,9 +125,10 @@ pub fn transform_add_remove(
     remove: &RemoveOperation,
 ) -> Result<(Option<AddOperation>, Option<RemoveOperation>), SyncError> {
     // Check if they're operating on same array
-    if let (Some(add_idx), Some(rem_idx)) =
-        (extract_array_index(&add.path), extract_array_index(&remove.path))
-    {
+    if let (Some(add_idx), Some(rem_idx)) = (
+        extract_array_index(&add.path),
+        extract_array_index(&remove.path),
+    ) {
         if get_parent_path(&add.path) == get_parent_path(&remove.path) {
             // Same array - adjust indices
             if add_idx <= rem_idx {
@@ -259,14 +262,16 @@ pub fn transform_operation_pair(
         }
 
         // Move/Copy - mark as conflict for MVP
-        (PatchOperation::Move(_), _) | (PatchOperation::Copy(_), _) |
-        (_, PatchOperation::Move(_)) | (_, PatchOperation::Copy(_)) => {
+        (PatchOperation::Move(_), _)
+        | (PatchOperation::Copy(_), _)
+        | (_, PatchOperation::Move(_))
+        | (_, PatchOperation::Copy(_)) => {
             // Complex operations - return as conflict
             Ok((Some(local.clone()), Some(remote.clone())))
         }
 
         // All other combinations - no conflict
-        _ => Ok((Some(local.clone()), Some(remote.clone())))
+        _ => Ok((Some(local.clone()), Some(remote.clone()))),
     }
 }
 

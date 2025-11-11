@@ -1,6 +1,6 @@
 use crate::errors::SyncError;
-use crate::SyncResult;
 use crate::ot::transform_operation_pair;
+use crate::SyncResult;
 use json_patch::{Patch, PatchOperation};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -85,9 +85,7 @@ pub fn transform_patches(
             // Simple strategy: remote wins
             Ok((Patch(vec![]), remote.clone()))
         }
-        TransformStrategy::Operational => {
-            transform_operations(&local.0, &remote.0)
-        }
+        TransformStrategy::Operational => transform_operations(&local.0, &remote.0),
     }
 }
 

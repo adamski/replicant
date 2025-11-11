@@ -1038,10 +1038,7 @@ async fn test_mixed_offline_operations_sync() {
                         })
                         .await;
                 }
-                ClientMessage::DeleteDocument {
-                    document_id,
-                    ..
-                } => {
+                ClientMessage::DeleteDocument { document_id, .. } => {
                     deletes += 1;
                     setup
                         .server

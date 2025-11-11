@@ -318,10 +318,13 @@ impl SyncEngine {
                 &self.db,
                 self.client_id,
                 &self.event_dispatcher,
-            ).await {
+            )
+            .await
+            {
                 tracing::error!(
                     "CLIENT {}: Error processing deferred messages: {}",
-                    self.client_id, e
+                    self.client_id,
+                    e
                 );
             }
 
@@ -418,8 +421,8 @@ impl SyncEngine {
 
         // CRITICAL: Atomically save document and queue patch
         // This prevents data loss if app crashes between operations
-        use sync_core::protocol::ChangeEventType;
         use sync_core::patches::calculate_checksum;
+        use sync_core::protocol::ChangeEventType;
 
         // Calculate hash of old content for optimistic locking
         let old_content_hash = calculate_checksum(&old_content);
@@ -430,7 +433,12 @@ impl SyncEngine {
             doc.id
         );
         self.db
-            .save_document_and_queue_patch(&doc, &patch, ChangeEventType::Update, Some(old_content_hash))
+            .save_document_and_queue_patch(
+                &doc,
+                &patch,
+                ChangeEventType::Update,
+                Some(old_content_hash),
+            )
             .await?;
         tracing::info!(
             "CLIENT {}: ✅ Successfully saved document and queued patch atomically",
@@ -536,9 +544,7 @@ impl SyncEngine {
         let ws_client = self.ws_client.lock().await;
         if let Some(client) = ws_client.as_ref() {
             if let Err(e) = client
-                .send(ClientMessage::DeleteDocument {
-                    document_id: id,
-                })
+                .send(ClientMessage::DeleteDocument { document_id: id })
                 .await
             {
                 tracing::warn!(
@@ -729,7 +735,8 @@ impl SyncEngine {
                                 use sync_core::models::DocumentPatch;
                                 use sync_core::patches::calculate_checksum;
 
-                                let content_hash = old_hash_opt.unwrap_or_else(|| calculate_checksum(&doc.content));
+                                let content_hash = old_hash_opt
+                                    .unwrap_or_else(|| calculate_checksum(&doc.content));
 
                                 let document_patch = DocumentPatch {
                                     document_id: pending_info.id,
@@ -781,7 +788,9 @@ impl SyncEngine {
                                         })
                                         .await?;
                                 } else {
-                                    return Err(ClientError::WebSocket("Not connected".to_string()))?;
+                                    return Err(ClientError::WebSocket(
+                                        "Not connected".to_string(),
+                                    ))?;
                                 }
 
                                 UploadType::Create
@@ -912,11 +921,14 @@ impl SyncEngine {
                     if queue.len() >= MAX_DEFERRED_MESSAGES {
                         tracing::warn!(
                             "CLIENT {}: Deferred queue full ({} messages), dropping oldest",
-                            client_id, queue.len()
+                            client_id,
+                            queue.len()
                         );
                         queue.remove(0);
                     }
-                    queue.push(ServerMessage::SyncDocument { document: document.clone() });
+                    queue.push(ServerMessage::SyncDocument {
+                        document: document.clone(),
+                    });
                     return Ok(());
                 }
 
@@ -937,11 +949,14 @@ impl SyncEngine {
                         if queue.len() >= MAX_DEFERRED_MESSAGES {
                             tracing::warn!(
                                 "CLIENT {}: Deferred queue full ({} messages), dropping oldest",
-                                client_id, queue.len()
+                                client_id,
+                                queue.len()
                             );
                             queue.remove(0);
                         }
-                        queue.push(ServerMessage::SyncDocument { document: document.clone() });
+                        queue.push(ServerMessage::SyncDocument {
+                            document: document.clone(),
+                        });
                         return Ok(());
                     }
                 }
@@ -973,17 +988,18 @@ impl SyncEngine {
 
         tracing::info!(
             "CLIENT {}: Processing {} deferred sync messages",
-            client_id, count
+            client_id,
+            count
         );
 
         // Process all deferred messages in order
         for msg in messages.drain(..) {
-            if let Err(e) = Self::handle_server_message(
-                msg, db, client_id, event_dispatcher
-            ).await {
+            if let Err(e) = Self::handle_server_message(msg, db, client_id, event_dispatcher).await
+            {
                 tracing::error!(
                     "CLIENT {}: Error processing deferred message: {}",
-                    client_id, e
+                    client_id,
+                    e
                 );
                 // Continue processing remaining messages even if one fails
             }
@@ -1084,9 +1100,7 @@ impl SyncEngine {
                     }
                 }
             }
-            ServerMessage::DocumentDeleted {
-                document_id,
-            } => {
+            ServerMessage::DocumentDeleted { document_id } => {
                 // Document deleted from server - we need to delete it locally
                 tracing::info!(
                     "CLIENT {}: Received DocumentDeleted for doc {}",
@@ -1171,8 +1185,7 @@ impl SyncEngine {
                                 .await?;
 
                             // Emit event for updated document
-                            event_dispatcher
-                                .emit_document_updated(&document.id, &document.content);
+                            event_dispatcher.emit_document_updated(&document.id, &document.content);
                         } else {
                             tracing::info!(
                                 "CLIENT {}: Skipping older sync (local version {} >= sync version {})",
@@ -1423,7 +1436,8 @@ impl SyncEngine {
                 use sync_core::patches::calculate_checksum;
 
                 // Use the stored old content hash, or calculate from current content as fallback
-                let content_hash = old_hash_opt.unwrap_or_else(|| calculate_checksum(&document.content));
+                let content_hash =
+                    old_hash_opt.unwrap_or_else(|| calculate_checksum(&document.content));
 
                 (
                     UploadType::Update,
@@ -1839,7 +1853,8 @@ impl SyncEngine {
                                 use sync_core::models::DocumentPatch;
                                 use sync_core::patches::calculate_checksum;
 
-                                let content_hash = old_hash_opt.unwrap_or_else(|| calculate_checksum(&doc.content));
+                                let content_hash = old_hash_opt
+                                    .unwrap_or_else(|| calculate_checksum(&doc.content));
 
                                 let patch_result = DocumentPatch {
                                     document_id: pending_info.id,

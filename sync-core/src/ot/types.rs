@@ -45,9 +45,15 @@ mod tests {
 
     #[test]
     fn test_path_segment_equality() {
-        assert_eq!(PathSegment::Object("foo".to_string()), PathSegment::Object("foo".to_string()));
+        assert_eq!(
+            PathSegment::Object("foo".to_string()),
+            PathSegment::Object("foo".to_string())
+        );
         assert_eq!(PathSegment::Array(5), PathSegment::Array(5));
-        assert_ne!(PathSegment::Object("foo".to_string()), PathSegment::Object("bar".to_string()));
+        assert_ne!(
+            PathSegment::Object("foo".to_string()),
+            PathSegment::Object("bar".to_string())
+        );
         assert_ne!(PathSegment::Array(1), PathSegment::Array(2));
     }
 }

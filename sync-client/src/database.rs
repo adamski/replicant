@@ -209,10 +209,7 @@ impl ClientDatabase {
     }
 
     pub async fn mark_synced(&self, document_id: &Uuid) -> SyncResult<()> {
-        tracing::info!(
-            "DATABASE: 🔄 Marking document {} as synced",
-            document_id
-        );
+        tracing::info!("DATABASE: 🔄 Marking document {} as synced", document_id);
 
         let result = sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
             .bind(SyncStatus::Synced.to_string())

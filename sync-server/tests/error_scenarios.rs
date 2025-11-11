@@ -295,9 +295,7 @@ async fn test_delete_non_existent_document() {
     let user_id = db.create_user("delete-test@example.com").await.unwrap();
     let non_existent_doc_id = Uuid::new_v4();
 
-    let result = db
-        .delete_document(&non_existent_doc_id, &user_id)
-        .await;
+    let result = db.delete_document(&non_existent_doc_id, &user_id).await;
 
     // Delete should not panic even if document doesn't exist
     println!("Delete result: {:?}", result.is_ok());

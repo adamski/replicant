@@ -40,19 +40,23 @@ pub fn parse_document(row: &PgRow) -> SyncResult<Document> {
 /// Prepare document values for database insertion
 pub fn document_to_params(doc: &Document) -> DocumentParams {
     let content_str = doc.content.to_string();
-    let content_hash = doc.content_hash.clone()
+    let content_hash = doc
+        .content_hash
+        .clone()
         .unwrap_or_else(|| sync_core::patches::calculate_checksum(&doc.content));
     let size_bytes = content_str.len() as i32;
 
     // Extract title from content if not already set
-    let title = doc.title.clone().or_else(|| {
-        doc.content
-            .get("title")
-            .and_then(|v| v.as_str())
-            .map(|s| s.chars().take(128).collect::<String>())
-    }).or_else(|| {
-        Some(doc.created_at.format("%Y-%m-%d|%H:%M:%S%.3f").to_string())
-    });
+    let title = doc
+        .title
+        .clone()
+        .or_else(|| {
+            doc.content
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.chars().take(128).collect::<String>())
+        })
+        .or_else(|| Some(doc.created_at.format("%Y-%m-%d|%H:%M:%S%.3f").to_string()));
 
     (
         doc.id,

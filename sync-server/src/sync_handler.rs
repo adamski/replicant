@@ -78,7 +78,10 @@ impl SyncHandler {
                     );
                     self.send_error(
                         ErrorCode::InvalidPatch,
-                        &format!("New documents must have version=1, got version={}", document.sync_revision),
+                        &format!(
+                            "New documents must have version=1, got version={}",
+                            document.sync_revision
+                        ),
                     )
                     .await?;
                     return Ok(());
@@ -343,7 +346,8 @@ impl SyncHandler {
                             );
 
                             // Fetch the current server state
-                            if let Ok(current_doc) = self.db.get_document(&patch.document_id).await {
+                            if let Ok(current_doc) = self.db.get_document(&patch.document_id).await
+                            {
                                 tracing::info!("Sending current server state (sync_revision: {}) back to client with conflict",
                                               current_doc.sync_revision);
 
@@ -379,9 +383,7 @@ impl SyncHandler {
                 }
             }
 
-            ClientMessage::DeleteDocument {
-                document_id,
-            } => {
+            ClientMessage::DeleteDocument { document_id } => {
                 let doc = self.db.get_document(&document_id).await?;
 
                 if doc.user_id != user_id {
@@ -394,11 +396,7 @@ impl SyncHandler {
                 }
 
                 // Soft delete
-                match self
-                    .db
-                    .delete_document(&document_id, &user_id)
-                    .await
-                {
+                match self.db.delete_document(&document_id, &user_id).await {
                     Ok(_) => {
                         // Send confirmation to the sender
                         self.tx
@@ -413,9 +411,7 @@ impl SyncHandler {
                         self.broadcast_to_user_except(
                             user_id,
                             self.client_id,
-                            ServerMessage::DocumentDeleted {
-                                document_id,
-                            },
+                            ServerMessage::DocumentDeleted { document_id },
                         )
                         .await?;
                     }

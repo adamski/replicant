@@ -225,13 +225,13 @@ impl ServerDatabase {
                 title = $6
             WHERE id = $1 AND sync_revision = $7
             "#,
-            params.0,          // id
-            params.2 as _,     // content_json
-            params.6,          // deleted_at
-            params.7,          // content_hash
-            params.8,          // size_bytes
-            params.9 as _,     // title
-            expected_sync_revision   // optimistic lock check
+            params.0,               // id
+            params.2 as _,          // content_json
+            params.6,               // deleted_at
+            params.7,               // content_hash
+            params.8,               // size_bytes
+            params.9 as _,          // title
+            expected_sync_revision  // optimistic lock check
         )
         .execute(&mut **tx)
         .await?;
@@ -273,11 +273,7 @@ impl ServerDatabase {
         Ok(())
     }
 
-    pub async fn delete_document(
-        &self,
-        document_id: &Uuid,
-        user_id: &Uuid,
-    ) -> SyncResult<()> {
+    pub async fn delete_document(&self, document_id: &Uuid, user_id: &Uuid) -> SyncResult<()> {
         // Start a transaction to ensure atomicity
         let mut tx = self.pool.begin().await?;
 

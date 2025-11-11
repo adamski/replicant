@@ -1,6 +1,6 @@
 //! Path manipulation utilities for JSON Pointer paths (RFC 6901)
 
-use crate::ot::types::{PathRelation, PathSegment, ParsedPath};
+use crate::ot::types::{ParsedPath, PathRelation, PathSegment};
 use crate::SyncError;
 
 /// Parse JSON Pointer into segments
@@ -17,9 +17,10 @@ pub fn parse_path(path: &str) -> Result<ParsedPath, SyncError> {
     }
 
     if !path.starts_with('/') {
-        return Err(SyncError::InvalidOperation(
-            format!("Path must start with /: {}", path)
-        ));
+        return Err(SyncError::InvalidOperation(format!(
+            "Path must start with /: {}",
+            path
+        )));
     }
 
     // Root path
@@ -35,9 +36,7 @@ pub fn parse_path(path: &str) -> Result<ParsedPath, SyncError> {
     // Split on / and process each segment
     for segment in path[1..].split('/') {
         // Unescape ~0 -> ~ and ~1 -> / (must be in this order!)
-        let unescaped = segment
-            .replace("~1", "/")
-            .replace("~0", "~");
+        let unescaped = segment.replace("~1", "/").replace("~0", "~");
 
         // Try to parse as array index
         if let Ok(index) = unescaped.parse::<usize>() {
@@ -88,12 +87,16 @@ pub fn extract_array_index(path: &str) -> Option<usize> {
 pub fn adjust_array_index(
     path: &str,
     target_index: usize,
-    delta: isize
+    delta: isize,
 ) -> Result<String, SyncError> {
     let parsed = parse_path(path)?;
 
     // Find last array index that matches target
-    let last_array_idx = parsed.segments.iter().enumerate().rev()
+    let last_array_idx = parsed
+        .segments
+        .iter()
+        .enumerate()
+        .rev()
         .find_map(|(i, seg)| match seg {
             PathSegment::Array(idx) if *idx == target_index => Some(i),
             _ => None,
@@ -109,10 +112,10 @@ pub fn adjust_array_index(
     let new_index = old_index + delta;
 
     if new_index < 0 {
-        return Err(SyncError::InvalidOperation(
-            format!("Index adjustment would be negative: {} + {} = {}",
-                old_index, delta, new_index)
-        ));
+        return Err(SyncError::InvalidOperation(format!(
+            "Index adjustment would be negative: {} + {} = {}",
+            old_index, delta, new_index
+        )));
     }
 
     // Rebuild path with adjusted index
@@ -134,9 +137,7 @@ fn reconstruct_path(segments: &[PathSegment]) -> String {
         match segment {
             PathSegment::Object(key) => {
                 // Re-escape special characters (~ must be escaped before /)
-                let escaped = key
-                    .replace('~', "~0")
-                    .replace('/', "~1");
+                let escaped = key.replace('~', "~0").replace('/', "~1");
                 path.push_str(&escaped);
             }
             PathSegment::Array(idx) => {
@@ -307,26 +308,14 @@ mod tests {
 
     #[test]
     fn test_adjust_array_index_increment() {
-        assert_eq!(
-            adjust_array_index("/items/5", 5, 1).unwrap(),
-            "/items/6"
-        );
-        assert_eq!(
-            adjust_array_index("/items/0", 0, 3).unwrap(),
-            "/items/3"
-        );
+        assert_eq!(adjust_array_index("/items/5", 5, 1).unwrap(), "/items/6");
+        assert_eq!(adjust_array_index("/items/0", 0, 3).unwrap(), "/items/3");
     }
 
     #[test]
     fn test_adjust_array_index_decrement() {
-        assert_eq!(
-            adjust_array_index("/items/5", 5, -2).unwrap(),
-            "/items/3"
-        );
-        assert_eq!(
-            adjust_array_index("/items/10", 10, -1).unwrap(),
-            "/items/9"
-        );
+        assert_eq!(adjust_array_index("/items/5", 5, -2).unwrap(), "/items/3");
+        assert_eq!(adjust_array_index("/items/10", 10, -1).unwrap(), "/items/9");
     }
 
     #[test]
@@ -338,10 +327,7 @@ mod tests {
     #[test]
     fn test_adjust_array_index_no_match() {
         // Index doesn't match target, no change
-        assert_eq!(
-            adjust_array_index("/items/3", 5, 1).unwrap(),
-            "/items/3"
-        );
+        assert_eq!(adjust_array_index("/items/3", 5, 1).unwrap(), "/items/3");
     }
 
     #[test]
@@ -354,10 +340,7 @@ mod tests {
 
     #[test]
     fn test_adjust_array_index_non_array_path() {
-        assert_eq!(
-            adjust_array_index("/title", 0, 1).unwrap(),
-            "/title"
-        );
+        assert_eq!(adjust_array_index("/title", 0, 1).unwrap(), "/title");
     }
 
     // === Compare Paths Tests ===
@@ -374,7 +357,10 @@ mod tests {
         assert_eq!(compare_paths("/a", "/a/b"), PathRelation::Parent);
         assert_eq!(compare_paths("/a/b", "/a"), PathRelation::Child);
         assert_eq!(compare_paths("/items", "/items/0"), PathRelation::Parent);
-        assert_eq!(compare_paths("/users/0/posts/1", "/users/0"), PathRelation::Child);
+        assert_eq!(
+            compare_paths("/users/0/posts/1", "/users/0"),
+            PathRelation::Child
+        );
     }
 
     #[test]
@@ -403,7 +389,10 @@ mod tests {
         assert_eq!(compare_paths("/a", "/b"), PathRelation::Sibling);
 
         // These are truly unrelated (different parents)
-        assert_eq!(compare_paths("/users/1", "/posts/1"), PathRelation::Unrelated);
+        assert_eq!(
+            compare_paths("/users/1", "/posts/1"),
+            PathRelation::Unrelated
+        );
         assert_eq!(compare_paths("/x/y", "/a/b/c"), PathRelation::Unrelated);
     }
 

@@ -600,10 +600,7 @@ mod database_tests {
 
         // Verify all are unapplied conflicts
         for (idx, conflict) in conflicts.iter().enumerate() {
-            println!(
-                "  Conflict {}: seq={}",
-                idx, conflict.sequence
-            );
+            println!("  Conflict {}: seq={}", idx, conflict.sequence);
             assert!(
                 conflict.forward_patch.is_some(),
                 "All conflicts should have content"
@@ -628,10 +625,7 @@ mod database_tests {
             "test-title-extraction-{}@example.com",
             &Uuid::new_v4().to_string()[..8]
         );
-        let user_id = db
-            .create_user(&email)
-            .await
-            .expect("Failed to create user");
+        let user_id = db.create_user(&email).await.expect("Failed to create user");
 
         // Test 1: Document with title in content
         let doc_with_title = Document {

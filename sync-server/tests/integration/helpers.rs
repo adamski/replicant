@@ -53,7 +53,12 @@ impl TestContext {
         let unique_db_name = format!(
             "sync_test_{}_{}",
             chrono::Utc::now().timestamp_micros(),
-            Uuid::new_v4().to_string().replace("-", "").chars().take(8).collect::<String>()
+            Uuid::new_v4()
+                .to_string()
+                .replace("-", "")
+                .chars()
+                .take(8)
+                .collect::<String>()
         );
 
         let db_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
@@ -64,13 +69,15 @@ impl TestContext {
         // Use a random port between 9000-19000 for this test to avoid conflicts
         // Widened range from 1000 to 10000 ports to reduce collision probability
         // when running many tests in parallel
-        let port = 9000 + (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_micros() % 10000) as u16;
+        let port = 9000
+            + (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+                % 10000) as u16;
 
-        let server_url = std::env::var("SYNC_SERVER_URL")
-            .unwrap_or_else(|_| format!("ws://localhost:{}", port));
+        let server_url =
+            std::env::var("SYNC_SERVER_URL").unwrap_or_else(|_| format!("ws://localhost:{}", port));
 
         Self {
             server_url,
@@ -491,7 +498,11 @@ impl TestContext {
 
         // Start the server in background
         // Note: Using null() for stdout/stderr to ensure proper process cleanup
-        tracing::debug!("Starting server on {} with database {}", bind_address, self.db_url);
+        tracing::debug!(
+            "Starting server on {} with database {}",
+            bind_address,
+            self.db_url
+        );
         let server = tokio::process::Command::new(SERVER_BIN)
             .current_dir(&project_root)
             .env("DATABASE_URL", &self.db_url)
@@ -533,7 +544,10 @@ impl Drop for TestContext {
                         }
                         Err(_) => {
                             // Force kill if it didn't shut down
-                            tracing::warn!("Server process {} didn't terminate, force killing", pid);
+                            tracing::warn!(
+                                "Server process {} didn't terminate, force killing",
+                                pid
+                            );
                             let _ = unsafe { kill(pid as i32, libc::SIGKILL) };
                             let _ = child.wait().await;
                         }
@@ -544,7 +558,10 @@ impl Drop for TestContext {
             // Drop the unique test database
             if let Some(db_name) = db_url.split('/').last() {
                 if db_name.starts_with("sync_test_") {
-                    let base_url = db_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&db_url);
+                    let base_url = db_url
+                        .rsplit_once('/')
+                        .map(|(base, _)| base)
+                        .unwrap_or(&db_url);
                     let postgres_url = format!("{}/postgres", base_url);
 
                     if let Ok(pool) = sqlx::postgres::PgPool::connect(&postgres_url).await {

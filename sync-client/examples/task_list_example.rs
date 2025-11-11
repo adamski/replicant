@@ -1703,8 +1703,8 @@ async fn load_tasks(
 
     let rows = sqlx::query(
         r#"
-        SELECT id, content, sync_status, created_at, updated_at, version
-        FROM documents 
+        SELECT id, content, sync_status, created_at, updated_at, sync_revision
+        FROM documents
         WHERE user_id = ?1 AND deleted_at IS NULL
         ORDER BY created_at DESC
         "#,
@@ -1722,7 +1722,7 @@ async fn load_tasks(
         let sync_status = row.try_get::<Option<String>, _>("sync_status")?;
         let created_at = row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at")?;
         let updated_at = row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at")?;
-        let version = row.try_get::<i64, _>("version")?;
+        let sync_revision = row.try_get::<i64, _>("sync_revision")?;
 
         let content: Value = serde_json::from_str(&content_str).unwrap_or_default();
 
@@ -1891,9 +1891,10 @@ async fn create_sample_task(
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            content,
+            content: content.clone(),
             sync_revision: 1,
             content_hash: None,
+            title: content.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

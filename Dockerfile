@@ -3,6 +3,10 @@ FROM rust:1.82 as builder
 
 WORKDIR /app
 
+# Set SQLx to use offline mode (requires .sqlx directory)
+ARG SQLX_OFFLINE=true
+ENV SQLX_OFFLINE=$SQLX_OFFLINE
+
 # Create empty project structure
 RUN USER=root cargo new --bin sync-server
 RUN USER=root cargo new --lib sync-core
@@ -23,6 +27,7 @@ COPY sync-core/src ./sync-core/src
 COPY sync-server/src ./sync-server/src
 COPY sync-client/src ./sync-client/src
 COPY sync-server/migrations ./sync-server/migrations
+COPY sync-server/.sqlx ./sync-server/.sqlx
 
 # Build application
 RUN touch sync-core/src/lib.rs sync-server/src/main.rs sync-client/src/lib.rs

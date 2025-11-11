@@ -49,16 +49,16 @@ pub struct TestContext {
 
 impl TestContext {
     pub fn new() -> Self {
-        // Generate unique database name for this test using timestamp and random UUID
+        // Generate unique database name for this test using timestamp, thread ID, and full UUID
+        // Using full UUID (32 chars) + thread ID to eliminate collision probability in parallel CI
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .replace("ThreadId(", "")
+            .replace(")", "");
         let unique_db_name = format!(
-            "sync_test_{}_{}",
+            "sync_test_{}_{}_{}",
             chrono::Utc::now().timestamp_micros(),
-            Uuid::new_v4()
-                .to_string()
-                .replace("-", "")
-                .chars()
-                .take(8)
-                .collect::<String>()
+            thread_id,
+            Uuid::new_v4().to_string().replace("-", "")
         );
 
         let db_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
@@ -454,16 +454,63 @@ impl TestContext {
         let postgres_url = format!("{}/postgres", base_url);
         let pool = sqlx::postgres::PgPool::connect(&postgres_url).await?;
 
-        // Drop database (disconnect all clients first)
-        sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
-            .execute(&pool)
-            .await
-            .ok(); // Ignore errors
+        // Retry logic for database creation (handles rare race conditions in parallel tests)
+        const MAX_RETRIES: u32 = 5;
+        let mut retry_count = 0;
+        let mut last_error = None;
 
-        // Create database
-        sqlx::query(&format!("CREATE DATABASE {}", db_name))
-            .execute(&pool)
-            .await?;
+        while retry_count < MAX_RETRIES {
+            // Drop database (disconnect all clients first)
+            sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
+                .execute(&pool)
+                .await
+                .ok(); // Ignore errors
+
+            // Try to create database
+            match sqlx::query(&format!("CREATE DATABASE {}", db_name))
+                .execute(&pool)
+                .await
+            {
+                Ok(_) => {
+                    // Success! Break out of retry loop
+                    break;
+                }
+                Err(e) => {
+                    // Check if it's a duplicate database error
+                    let err_msg = e.to_string();
+                    if err_msg.contains("duplicate key") || err_msg.contains("already exists") {
+                        retry_count += 1;
+                        last_error = Some(e);
+
+                        if retry_count < MAX_RETRIES {
+                            // Exponential backoff: 10ms, 20ms, 40ms, 80ms, 160ms
+                            let delay_ms = 10u64 * (2u64.pow(retry_count - 1));
+                            tracing::warn!(
+                                "Database creation collision detected (attempt {}/{}), retrying in {}ms",
+                                retry_count,
+                                MAX_RETRIES,
+                                delay_ms
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        }
+                    } else {
+                        // Different error, propagate immediately
+                        pool.close().await;
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+
+        // If we exhausted retries, return the last error
+        if retry_count >= MAX_RETRIES {
+            pool.close().await;
+            if let Some(err) = last_error {
+                return Err(err.into());
+            } else {
+                return Err(anyhow::anyhow!("Failed to create database after {} retries", MAX_RETRIES));
+            }
+        }
 
         pool.close().await;
 

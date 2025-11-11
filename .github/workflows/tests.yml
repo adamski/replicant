@@ -100,16 +100,6 @@ jobs:
         RUN_INTEGRATION_TESTS: 1
       run: cargo test integration --no-fail-fast -- --nocapture
 
-  docker-integration-tests:
-    name: Docker Integration Tests
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Run Docker integration tests
-      run: ./run_integration_tests.sh
-
   lint:
     name: Lint
     runs-on: ubuntu-latest

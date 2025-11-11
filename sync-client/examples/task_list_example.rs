@@ -1766,12 +1766,13 @@ async fn load_tasks(
         tasks.push(task);
     }
 
-    let mut app_state = state.lock().unwrap();
-    app_state.tasks = tasks;
+    {
+        let mut app_state = state.lock().unwrap();
+        app_state.tasks = tasks;
+    }
 
     // Update sync status
-    drop(app_state);
-    update_sync_status(&db, state).await;
+    update_sync_status(db, state).await;
 
     Ok(())
 }
@@ -1832,7 +1833,8 @@ async fn toggle_task_completion(
         }
     }
 
-    if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+    let engine = sync_engine.lock().unwrap().clone();
+    if let Some(engine) = engine {
         let _ = engine.update_document(task_id, content).await;
     } else {
         // Offline update
@@ -1884,7 +1886,8 @@ async fn create_sample_task(
         "created_at": chrono::Utc::now().to_rfc3339(),
     });
 
-    if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+    let engine = sync_engine.lock().unwrap().clone();
+    if let Some(engine) = engine {
         let _ = engine.create_document(content).await;
     } else {
         // Offline create
@@ -1925,7 +1928,8 @@ async fn delete_task(
     task_id: Uuid,
     state: SharedState,
 ) {
-    if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+    let engine = sync_engine.lock().unwrap().clone();
+    if let Some(engine) = engine {
         // Use sync engine if available
         let _ = engine.delete_document(task_id).await;
 
@@ -1976,7 +1980,8 @@ async fn save_task_edit(
     }
 
     // Update the document
-    if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+    let engine = sync_engine.lock().unwrap().clone();
+    if let Some(engine) = engine {
         let _ = engine.update_document(edit.task_id, content).await;
     } else {
         // Offline update

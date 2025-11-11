@@ -101,7 +101,6 @@ jobs:
     - name: Run integration tests
       env:
         DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
-        TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
         RUN_INTEGRATION_TESTS: 1
       run: cargo test integration --no-fail-fast -- --nocapture
 

@@ -61,10 +61,21 @@ impl TestContext {
             Uuid::new_v4().to_string().replace("-", "")
         );
 
-        let db_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+        // Construct database URL using connection info from DATABASE_URL
+        // but always use a unique database name for this test
+        let db_url = if let Ok(base_url) = std::env::var("DATABASE_URL") {
+            // Extract base URL (everything before the database name) and append unique name
+            if let Some((base, _)) = base_url.rsplit_once('/') {
+                format!("{}/{}", base, unique_db_name)
+            } else {
+                // Fallback if URL parsing fails
+                base_url
+            }
+        } else {
+            // No DATABASE_URL set, use local default
             let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
             format!("postgres://{}@localhost:5432/{}", user, unique_db_name)
-        });
+        };
 
         // Use a random port between 9000-19000 for this test to avoid conflicts
         // Widened range from 1000 to 10000 ports to reduce collision probability

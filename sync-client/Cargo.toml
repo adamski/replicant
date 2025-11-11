@@ -7,7 +7,7 @@ edition = "2021"
 sync-core = { path = "../sync-core" }
 tokio = { workspace = true }
 tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
-sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "json", "uuid", "chrono", "tls-rustls"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "json", "uuid", "chrono", "tls-rustls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

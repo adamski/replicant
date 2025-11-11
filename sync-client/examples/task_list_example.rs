@@ -1894,7 +1894,10 @@ async fn create_sample_task(
             content: content.clone(),
             sync_revision: 1,
             content_hash: None,
-            title: content.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            title: content
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

@@ -15,7 +15,7 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 futures-util = "0.3"
-backoff = { version = "0.4", features = ["tokio"] }
+backon = "1.2"
 json-patch = "1.2"
 hmac = "0.12"
 sha2 = "0.10"

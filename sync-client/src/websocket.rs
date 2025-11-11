@@ -1,5 +1,5 @@
 use crate::events::EventDispatcher;
-use backoff::{future::retry, ExponentialBackoff};
+use backon::{ExponentialBuilder, Retryable};
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -136,16 +136,9 @@ impl WebSocketClient {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     > {
-        let backoff = ExponentialBackoff {
-            initial_interval: std::time::Duration::from_millis(100),
-            max_interval: std::time::Duration::from_millis(2000),
-            max_elapsed_time: Some(std::time::Duration::from_secs(10)),
-            randomization_factor: 0.1, // Add 10% jitter
-            ..Default::default()
-        };
-
         let server_url = server_url.to_string();
         let dispatcher = event_dispatcher.clone();
+
         let operation = || async {
             // Emit connection attempt event
             if let Some(ref dispatcher) = dispatcher {
@@ -165,12 +158,19 @@ impl WebSocketClient {
                     if let Some(ref dispatcher) = dispatcher {
                         dispatcher.emit_sync_error(&format!("Connection failed: {}", e));
                     }
-                    Err(backoff::Error::transient(e))
+                    Err(e)
                 }
             }
         };
 
-        retry(backoff, operation)
+        operation
+            .retry(
+                ExponentialBuilder::default()
+                    .with_min_delay(std::time::Duration::from_millis(100))
+                    .with_max_delay(std::time::Duration::from_millis(2000))
+                    .with_max_times(3) // Approximately 10s total: 100ms + 200ms + 400ms + ... retries
+                    .with_jitter()
+            )
             .await
             .map_err(|e| ClientError::WebSocket(e.to_string()).into())
     }

@@ -52,7 +52,9 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    
+    env:
+      SQLX_OFFLINE: true
+
     services:
       postgres:
         image: postgres:16

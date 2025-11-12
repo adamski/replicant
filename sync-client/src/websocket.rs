@@ -169,7 +169,7 @@ impl WebSocketClient {
                     .with_min_delay(std::time::Duration::from_millis(100))
                     .with_max_delay(std::time::Duration::from_millis(2000))
                     .with_max_times(3) // Approximately 10s total: 100ms + 200ms + 400ms + ... retries
-                    .with_jitter()
+                    .with_jitter(),
             )
             .await
             .map_err(|e| ClientError::WebSocket(e.to_string()).into())

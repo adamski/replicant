@@ -81,6 +81,7 @@ pub enum ServerMessage {
         document_id: Uuid,
         success: bool,
         error: Option<String>,
+        sync_revision: Option<i64>,
     },
     DocumentDeletedResponse {
         document_id: Uuid,

@@ -226,6 +226,32 @@ impl ClientDatabase {
         Ok(())
     }
 
+    pub async fn update_sync_revision(
+        &self,
+        document_id: &Uuid,
+        sync_revision: i64,
+    ) -> SyncResult<()> {
+        tracing::info!(
+            "DATABASE: 🔄 Updating document {} sync_revision to {}",
+            document_id,
+            sync_revision
+        );
+
+        let result = sqlx::query("UPDATE documents SET sync_revision = ? WHERE id = ?")
+            .bind(sync_revision)
+            .bind(document_id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        tracing::info!(
+            "DATABASE: ✅ Updated {} sync_revision, rows affected: {}",
+            document_id,
+            result.rows_affected()
+        );
+
+        Ok(())
+    }
+
     pub async fn delete_document(&self, document_id: &Uuid) -> SyncResult<()> {
         sqlx::query("UPDATE documents SET deleted_at = ?, sync_status = ? WHERE id = ?")
             .bind(chrono::Utc::now())

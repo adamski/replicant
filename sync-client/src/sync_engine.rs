@@ -1251,6 +1251,7 @@ impl SyncEngine {
                 document_id,
                 success,
                 error,
+                sync_revision,
             } => {
                 if success {
                     tracing::info!(
@@ -1258,6 +1259,16 @@ impl SyncEngine {
                         client_id,
                         document_id
                     );
+                    // Update local sync_revision if provided by server
+                    if let Some(new_revision) = sync_revision {
+                        tracing::info!(
+                            "CLIENT {}: Updating local sync_revision to {} for doc {}",
+                            client_id,
+                            new_revision,
+                            document_id
+                        );
+                        db.update_sync_revision(&document_id, new_revision).await?;
+                    }
                     db.mark_synced(&document_id).await?;
                     // Clean up sync_queue
                     db.remove_from_sync_queue(&document_id).await?;

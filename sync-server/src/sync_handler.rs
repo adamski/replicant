@@ -322,6 +322,7 @@ impl SyncHandler {
                                 document_id: updated_doc.id,
                                 success: true,
                                 error: None,
+                                sync_revision: Some(updated_doc.sync_revision),
                             })
                             .await?;
 
@@ -377,6 +378,7 @@ impl SyncHandler {
                                 document_id: patch.document_id,
                                 success: false,
                                 error: Some(e.to_string()),
+                                sync_revision: None,
                             })
                             .await?;
                     }

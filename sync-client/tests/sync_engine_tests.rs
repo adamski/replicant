@@ -281,6 +281,7 @@ async fn test_update_document_online() {
             document_id: doc.id,
             success: true,
             error: None,
+            sync_revision: Some(2),
         })
         .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -853,6 +854,7 @@ async fn test_offline_update_with_patch_recovery() {
             document_id: doc.id,
             success: true,
             error: None,
+            sync_revision: Some(2),
         })
         .await;
 
@@ -1035,6 +1037,7 @@ async fn test_mixed_offline_operations_sync() {
                             document_id: patch.document_id,
                             success: true,
                             error: None,
+                            sync_revision: Some(2),
                         })
                         .await;
                 }

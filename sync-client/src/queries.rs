@@ -156,7 +156,9 @@ impl DbHelpers {
         let id: String = row.get("id");
         let user_id: String = row.get("user_id");
         let content: String = row.get("content");
-        let sync_revision: i64 = row.get("sync_revision");
+        let sync_revision: i64 = row
+            .try_get::<i64, _>("sync_revision")
+            .or_else(|_| row.try_get::<i32, _>("sync_revision").map(|v| v as i64))?;
         let created_at: String = row.get("created_at");
         let updated_at: String = row.get("updated_at");
         let deleted_at: Option<String> = row.get("deleted_at");

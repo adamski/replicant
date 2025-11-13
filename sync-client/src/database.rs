@@ -169,6 +169,7 @@ impl ClientDatabase {
             .bind(params.5) // updated_at
             .bind(params.6) // deleted_at
             .bind(params.7) // sync_status
+            .bind(params.8) // title
             .execute(&self.pool)
             .await?;
 
@@ -208,10 +209,7 @@ impl ClientDatabase {
     }
 
     pub async fn mark_synced(&self, document_id: &Uuid) -> SyncResult<()> {
-        tracing::info!(
-            "DATABASE: 🔄 Marking document {} as synced",
-            document_id
-        );
+        tracing::info!("DATABASE: 🔄 Marking document {} as synced", document_id);
 
         let result = sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
             .bind(SyncStatus::Synced.to_string())
@@ -221,6 +219,32 @@ impl ClientDatabase {
 
         tracing::info!(
             "DATABASE: ✅ Marked {} as synced, rows affected: {}",
+            document_id,
+            result.rows_affected()
+        );
+
+        Ok(())
+    }
+
+    pub async fn update_sync_revision(
+        &self,
+        document_id: &Uuid,
+        sync_revision: i64,
+    ) -> SyncResult<()> {
+        tracing::info!(
+            "DATABASE: 🔄 Updating document {} sync_revision to {}",
+            document_id,
+            sync_revision
+        );
+
+        let result = sqlx::query("UPDATE documents SET sync_revision = ? WHERE id = ?")
+            .bind(sync_revision)
+            .bind(document_id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        tracing::info!(
+            "DATABASE: ✅ Updated {} sync_revision, rows affected: {}",
             document_id,
             result.rows_affected()
         );
@@ -325,6 +349,7 @@ impl ClientDatabase {
             .bind(params.5) // updated_at
             .bind(params.6) // deleted_at
             .bind(params.7) // sync_status
+            .bind(params.8) // title
             .execute(&mut *tx)
             .await?;
 

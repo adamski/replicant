@@ -99,6 +99,7 @@ mod database_tests {
             }),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -155,6 +156,7 @@ mod database_tests {
             content: json!({"title": "Event Test Document", "text": "Testing events", "version": 1}),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -332,6 +334,7 @@ mod database_tests {
             content: json!({"value": "server-content", "source": "server"}),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -349,6 +352,7 @@ mod database_tests {
             content: json!({"value": "client-content", "source": "client"}),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -445,6 +449,7 @@ mod database_tests {
             content: json!({"value": 1, "name": "initial"}),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -539,6 +544,7 @@ mod database_tests {
             content: json!({"version": 0}),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -594,10 +600,7 @@ mod database_tests {
 
         // Verify all are unapplied conflicts
         for (idx, conflict) in conflicts.iter().enumerate() {
-            println!(
-                "  Conflict {}: seq={}",
-                idx, conflict.sequence
-            );
+            println!("  Conflict {}: seq={}", idx, conflict.sequence);
             assert!(
                 conflict.forward_patch.is_some(),
                 "All conflicts should have content"
@@ -605,5 +608,138 @@ mod database_tests {
         }
 
         println!("✅ Query unapplied changes test passed");
+    }
+
+    #[tokio::test]
+    async fn test_title_extraction() {
+        let db = match setup_test_db().await {
+            Ok(db) => db,
+            Err(e) => {
+                println!("⏭️ Skipping test_title_extraction: {}", e);
+                return;
+            }
+        };
+
+        // Create a test user with unique email
+        let email = format!(
+            "test-title-extraction-{}@example.com",
+            &Uuid::new_v4().to_string()[..8]
+        );
+        let user_id = db.create_user(&email).await.expect("Failed to create user");
+
+        // Test 1: Document with title in content
+        let doc_with_title = Document {
+            id: Uuid::new_v4(),
+            user_id,
+            content: json!({
+                "title": "My Document",
+                "text": "Hello, World!"
+            }),
+            sync_revision: 1,
+            content_hash: None,
+            title: None, // Not set, should be extracted
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        db.create_document(&doc_with_title)
+            .await
+            .expect("Failed to create document with title");
+
+        let retrieved = db
+            .get_document(&doc_with_title.id)
+            .await
+            .expect("Failed to retrieve document");
+
+        assert_eq!(retrieved.title, Some("My Document".to_string()));
+
+        // Test 2: Document without title (should use datetime fallback)
+        let doc_without_title = Document {
+            id: Uuid::new_v4(),
+            user_id,
+            content: json!({
+                "text": "Hello, World!"
+            }),
+            sync_revision: 1,
+            content_hash: None,
+            title: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        db.create_document(&doc_without_title)
+            .await
+            .expect("Failed to create document without title");
+
+        let retrieved = db
+            .get_document(&doc_without_title.id)
+            .await
+            .expect("Failed to retrieve document");
+
+        // Should have datetime format: YYYY-MM-DD|HH:MM:SS.mmm
+        assert!(retrieved.title.is_some());
+        let title = retrieved.title.unwrap();
+        assert!(title.contains('|'), "Title should contain pipe separator");
+        assert!(title.contains('-'), "Title should contain date separator");
+
+        // Test 3: Very long title (should be truncated to 128 chars)
+        let long_title = "a".repeat(200);
+        let doc_long_title = Document {
+            id: Uuid::new_v4(),
+            user_id,
+            content: json!({
+                "title": long_title,
+                "text": "Hello, World!"
+            }),
+            sync_revision: 1,
+            content_hash: None,
+            title: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        db.create_document(&doc_long_title)
+            .await
+            .expect("Failed to create document with long title");
+
+        let retrieved = db
+            .get_document(&doc_long_title.id)
+            .await
+            .expect("Failed to retrieve document");
+
+        assert_eq!(retrieved.title.as_ref().unwrap().len(), 128);
+        assert_eq!(retrieved.title, Some("a".repeat(128)));
+
+        // Test 4: Update document with new title
+        let updated_doc = Document {
+            id: doc_with_title.id,
+            user_id,
+            content: json!({
+                "title": "Updated Title",
+                "text": "Updated content"
+            }),
+            sync_revision: 2,
+            content_hash: None,
+            title: None,
+            created_at: doc_with_title.created_at,
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        db.update_document(&updated_doc, None)
+            .await
+            .expect("Failed to update document");
+
+        let retrieved = db
+            .get_document(&doc_with_title.id)
+            .await
+            .expect("Failed to retrieve updated document");
+
+        assert_eq!(retrieved.title, Some("Updated Title".to_string()));
+
+        println!("✅ Title extraction test passed");
     }
 }

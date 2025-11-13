@@ -49,6 +49,7 @@ async fn test_concurrent_writes_to_same_document() {
         content: json!({"value": 0}),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -62,7 +63,6 @@ async fn test_concurrent_writes_to_same_document() {
     for i in 1..=5 {
         let db_clone = db.clone();
         let doc_id = doc.id;
-        let user_id = user_id;
 
         let handle = tokio::spawn(async move {
             let updated_doc = Document {
@@ -71,6 +71,7 @@ async fn test_concurrent_writes_to_same_document() {
                 content: json!({"value": i}),
                 sync_revision: i + 1,
                 content_hash: None,
+                title: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
@@ -126,6 +127,7 @@ async fn test_document_update_consistency() {
         content: original_content.clone(),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -150,7 +152,6 @@ async fn test_document_update_consistency() {
     println!("✅ Document update consistency test passed");
 }
 
-
 /// Tests that event log sequence numbers are always incrementing.
 #[tokio::test]
 async fn test_event_log_sequence_integrity() {
@@ -173,6 +174,7 @@ async fn test_event_log_sequence_integrity() {
             content: json!({"index": i}),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -222,6 +224,7 @@ async fn test_version_vector_comparison_edge_cases() {
         content: json!({"value": 1}),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -262,6 +265,7 @@ async fn test_duplicate_document_id_handling() {
         content: json!({"version": 1}),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -276,6 +280,7 @@ async fn test_duplicate_document_id_handling() {
         content: json!({"version": 2}),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -310,6 +315,7 @@ async fn test_no_orphaned_documents_after_user_deletion() {
             content: json!({"index": i}),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

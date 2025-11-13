@@ -215,6 +215,7 @@ pub unsafe extern "C" fn sync_engine_create_document(
             content: content.clone(),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,

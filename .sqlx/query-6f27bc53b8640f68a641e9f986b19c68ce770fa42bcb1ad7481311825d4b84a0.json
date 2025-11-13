@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, user_id, content, sync_revision, content_hash,\n                   created_at, updated_at, deleted_at\n            FROM documents\n            WHERE user_id = $1 AND deleted_at IS NULL\n            ORDER BY updated_at DESC\n        ",
+  "query": "\n            SELECT id, user_id, content, sync_revision, content_hash, title, created_at, updated_at, deleted_at\n            FROM documents\n            WHERE id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -30,16 +30,21 @@
       },
       {
         "ordinal": 5,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
@@ -55,10 +60,11 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       true
     ]
   },
-  "hash": "02dc497bc8d5772971d451a1c75debba90f83b0766c8f5a74806d3f91ddf23ce"
+  "hash": "6f27bc53b8640f68a641e9f986b19c68ce770fa42bcb1ad7481311825d4b84a0"
 }

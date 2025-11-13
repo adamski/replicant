@@ -6,9 +6,9 @@
 //! - User B's changes
 //! - Final merged result
 
-use sync_core::patches::{transform_patches, TransformStrategy, apply_patch};
-use json_patch::{Patch, PatchOperation, AddOperation, RemoveOperation, ReplaceOperation};
+use json_patch::{AddOperation, Patch, PatchOperation, RemoveOperation, ReplaceOperation};
 use serde_json::json;
+use sync_core::patches::{apply_patch, transform_patches, TransformStrategy};
 
 #[test]
 fn test_task_list_concurrent_additions() {
@@ -24,27 +24,20 @@ fn test_task_list_concurrent_additions() {
     });
 
     // User A (offline): Adds urgent task at position 0
-    let user_a_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/tasks/0".into(),
-            value: json!({"id": 4, "text": "URGENT: Call client", "done": false}),
-        })
-    ]);
+    let user_a_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/tasks/0".into(),
+        value: json!({"id": 4, "text": "URGENT: Call client", "done": false}),
+    })]);
 
     // User B (offline): Adds task at position 2
-    let user_b_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/tasks/2".into(),
-            value: json!({"id": 5, "text": "Review PRs", "done": false}),
-        })
-    ]);
+    let user_b_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/tasks/2".into(),
+        value: json!({"id": 5, "text": "Review PRs", "done": false}),
+    })]);
 
     // When they sync, transform the patches
-    let (a_transformed, b_transformed) = transform_patches(
-        &user_a_patch,
-        &user_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+    let (a_transformed, b_transformed) =
+        transform_patches(&user_a_patch, &user_b_patch, TransformStrategy::Operational).unwrap();
 
     // Apply both patches to get final result
     let mut result = original.clone();
@@ -64,10 +57,16 @@ fn test_task_list_concurrent_additions() {
 
     assert_eq!(result, expected);
     println!("\n=== TASK LIST CONCURRENT ADDITIONS ===");
-    println!("Original: {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original: {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nUser A adds at index 0");
     println!("User B adds at index 2");
-    println!("\nFinal result: {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "\nFinal result: {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 }
 
 #[test]
@@ -86,26 +85,19 @@ fn test_task_list_add_and_remove() {
     });
 
     // User A: Adds new task at position 1
-    let user_a_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/tasks/1".into(),
-            value: json!({"id": 6, "text": "New Task", "done": false}),
-        })
-    ]);
+    let user_a_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/tasks/1".into(),
+        value: json!({"id": 6, "text": "New Task", "done": false}),
+    })]);
 
     // User B: Removes task at position 3
-    let user_b_patch = Patch(vec![
-        PatchOperation::Remove(RemoveOperation {
-            path: "/tasks/3".into(),
-        })
-    ]);
+    let user_b_patch = Patch(vec![PatchOperation::Remove(RemoveOperation {
+        path: "/tasks/3".into(),
+    })]);
 
     // Transform patches
-    let (a_transformed, b_transformed) = transform_patches(
-        &user_a_patch,
-        &user_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+    let (a_transformed, b_transformed) =
+        transform_patches(&user_a_patch, &user_b_patch, TransformStrategy::Operational).unwrap();
 
     // Apply both patches
     let mut result = original.clone();
@@ -126,10 +118,16 @@ fn test_task_list_add_and_remove() {
 
     assert_eq!(result, expected);
     println!("\n=== TASK LIST ADD AND REMOVE ===");
-    println!("Original (5 tasks): {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original (5 tasks): {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nUser A adds at index 1");
     println!("User B removes at index 3");
-    println!("\nFinal result (5 tasks): {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "\nFinal result (5 tasks): {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 }
 
 #[test]
@@ -147,27 +145,24 @@ fn test_shopping_list_concurrent_edits() {
     });
 
     // Shopper A: Adds "Coffee" at position 2
-    let shopper_a_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/items/2".into(),
-            value: json!("Coffee"),
-        })
-    ]);
+    let shopper_a_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/items/2".into(),
+        value: json!("Coffee"),
+    })]);
 
     // Shopper B: Adds "Cheese" at position 4
-    let shopper_b_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/items/4".into(),
-            value: json!("Cheese"),
-        })
-    ]);
+    let shopper_b_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/items/4".into(),
+        value: json!("Cheese"),
+    })]);
 
     // Transform
     let (a_transformed, b_transformed) = transform_patches(
         &shopper_a_patch,
         &shopper_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+        TransformStrategy::Operational,
+    )
+    .unwrap();
 
     // Apply both
     let mut result = original.clone();
@@ -187,10 +182,16 @@ fn test_shopping_list_concurrent_edits() {
 
     assert_eq!(result, expected);
     println!("\n=== SHOPPING LIST CONCURRENT EDITS ===");
-    println!("Original: {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original: {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nShopper A adds 'Coffee' at index 2");
     println!("Shopper B adds 'Cheese' at index 4");
-    println!("\nFinal result: {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "\nFinal result: {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 }
 
 #[test]
@@ -207,27 +208,20 @@ fn test_document_settings_concurrent_updates() {
     });
 
     // User A: Changes theme
-    let user_a_patch = Patch(vec![
-        PatchOperation::Replace(ReplaceOperation {
-            path: "/settings/theme".into(),
-            value: json!("dark"),
-        })
-    ]);
+    let user_a_patch = Patch(vec![PatchOperation::Replace(ReplaceOperation {
+        path: "/settings/theme".into(),
+        value: json!("dark"),
+    })]);
 
     // User B: Changes font size
-    let user_b_patch = Patch(vec![
-        PatchOperation::Replace(ReplaceOperation {
-            path: "/settings/fontSize".into(),
-            value: json!(16),
-        })
-    ]);
+    let user_b_patch = Patch(vec![PatchOperation::Replace(ReplaceOperation {
+        path: "/settings/fontSize".into(),
+        value: json!(16),
+    })]);
 
     // Transform (no conflict - different paths)
-    let (a_transformed, b_transformed) = transform_patches(
-        &user_a_patch,
-        &user_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+    let (a_transformed, b_transformed) =
+        transform_patches(&user_a_patch, &user_b_patch, TransformStrategy::Operational).unwrap();
 
     // Apply both
     let mut result = original.clone();
@@ -244,10 +238,16 @@ fn test_document_settings_concurrent_updates() {
 
     assert_eq!(result, expected);
     println!("\n=== DOCUMENT SETTINGS CONCURRENT UPDATES ===");
-    println!("Original: {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original: {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nUser A changes theme to 'dark'");
     println!("User B changes fontSize to 16");
-    println!("\nFinal result (both changes applied): {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "\nFinal result (both changes applied): {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 }
 
 #[test]
@@ -263,34 +263,36 @@ fn test_conflicting_edits_same_field() {
     });
 
     // User A: Changes title
-    let user_a_patch = Patch(vec![
-        PatchOperation::Replace(ReplaceOperation {
-            path: "/document/title".into(),
-            value: json!("User A's Title"),
-        })
-    ]);
+    let user_a_patch = Patch(vec![PatchOperation::Replace(ReplaceOperation {
+        path: "/document/title".into(),
+        value: json!("User A's Title"),
+    })]);
 
     // User B: Also changes title
-    let user_b_patch = Patch(vec![
-        PatchOperation::Replace(ReplaceOperation {
-            path: "/document/title".into(),
-            value: json!("User B's Title"),
-        })
-    ]);
+    let user_b_patch = Patch(vec![PatchOperation::Replace(ReplaceOperation {
+        path: "/document/title".into(),
+        value: json!("User B's Title"),
+    })]);
 
     // Transform - both operations returned (CONFLICT)
-    let (a_transformed, b_transformed) = transform_patches(
-        &user_a_patch,
-        &user_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+    let (a_transformed, b_transformed) =
+        transform_patches(&user_a_patch, &user_b_patch, TransformStrategy::Operational).unwrap();
 
     // Check that both patches were returned (indicates conflict)
-    assert!(!a_transformed.0.is_empty(), "User A's patch should be returned");
-    assert!(!b_transformed.0.is_empty(), "User B's patch should be returned");
+    assert!(
+        !a_transformed.0.is_empty(),
+        "User A's patch should be returned"
+    );
+    assert!(
+        !b_transformed.0.is_empty(),
+        "User B's patch should be returned"
+    );
 
     println!("\n=== CONFLICTING EDITS (Same Field) ===");
-    println!("Original: {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original: {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nUser A changes title to 'User A's Title'");
     println!("User B changes title to 'User B's Title'");
     println!("\n⚠️  CONFLICT DETECTED!");
@@ -301,7 +303,10 @@ fn test_conflicting_edits_same_field() {
     let mut result_b_wins = original.clone();
     apply_patch(&mut result_b_wins, &b_transformed).unwrap();
 
-    println!("\nIf User B wins (newer): {}", serde_json::to_string_pretty(&result_b_wins).unwrap());
+    println!(
+        "\nIf User B wins (newer): {}",
+        serde_json::to_string_pretty(&result_b_wins).unwrap()
+    );
 }
 
 #[test]
@@ -320,25 +325,18 @@ fn test_array_multiple_removals() {
     });
 
     // User A: Removes "Bob" (index 1)
-    let user_a_patch = Patch(vec![
-        PatchOperation::Remove(RemoveOperation {
-            path: "/participants/1".into(),
-        })
-    ]);
+    let user_a_patch = Patch(vec![PatchOperation::Remove(RemoveOperation {
+        path: "/participants/1".into(),
+    })]);
 
     // User B: Removes "David" (index 3)
-    let user_b_patch = Patch(vec![
-        PatchOperation::Remove(RemoveOperation {
-            path: "/participants/3".into(),
-        })
-    ]);
+    let user_b_patch = Patch(vec![PatchOperation::Remove(RemoveOperation {
+        path: "/participants/3".into(),
+    })]);
 
     // Transform
-    let (a_transformed, b_transformed) = transform_patches(
-        &user_a_patch,
-        &user_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+    let (a_transformed, b_transformed) =
+        transform_patches(&user_a_patch, &user_b_patch, TransformStrategy::Operational).unwrap();
 
     // Apply both
     let mut result = original.clone();
@@ -357,10 +355,16 @@ fn test_array_multiple_removals() {
 
     assert_eq!(result, expected);
     println!("\n=== ARRAY MULTIPLE REMOVALS ===");
-    println!("Original: {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original: {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nUser A removes 'Bob' at index 1");
     println!("User B removes 'David' at index 3");
-    println!("\nFinal result: {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "\nFinal result: {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 }
 
 #[test]
@@ -382,27 +386,20 @@ fn test_nested_object_updates() {
     });
 
     // User A: Updates profile name
-    let user_a_patch = Patch(vec![
-        PatchOperation::Replace(ReplaceOperation {
-            path: "/user/profile/name".into(),
-            value: json!("Alice Smith"),
-        })
-    ]);
+    let user_a_patch = Patch(vec![PatchOperation::Replace(ReplaceOperation {
+        path: "/user/profile/name".into(),
+        value: json!("Alice Smith"),
+    })]);
 
     // User B: Updates settings theme
-    let user_b_patch = Patch(vec![
-        PatchOperation::Replace(ReplaceOperation {
-            path: "/user/settings/theme".into(),
-            value: json!("dark"),
-        })
-    ]);
+    let user_b_patch = Patch(vec![PatchOperation::Replace(ReplaceOperation {
+        path: "/user/settings/theme".into(),
+        value: json!("dark"),
+    })]);
 
     // Transform (no conflict - different branches)
-    let (a_transformed, b_transformed) = transform_patches(
-        &user_a_patch,
-        &user_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+    let (a_transformed, b_transformed) =
+        transform_patches(&user_a_patch, &user_b_patch, TransformStrategy::Operational).unwrap();
 
     // Apply both
     let mut result = original.clone();
@@ -424,10 +421,16 @@ fn test_nested_object_updates() {
 
     assert_eq!(result, expected);
     println!("\n=== NESTED OBJECT UPDATES ===");
-    println!("Original: {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original: {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nUser A updates /user/profile/name");
     println!("User B updates /user/settings/theme");
-    println!("\nFinal result (both changes): {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "\nFinal result (both changes): {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 }
 
 #[test]
@@ -435,34 +438,23 @@ fn test_root_level_array() {
     // SCENARIO: Document root is an array
 
     // Original document (root is array)
-    let original = json!([
-        "Item 1",
-        "Item 2",
-        "Item 3"
-    ]);
+    let original = json!(["Item 1", "Item 2", "Item 3"]);
 
     // User A: Adds at index 0
-    let user_a_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/0".into(),
-            value: json!("First Item"),
-        })
-    ]);
+    let user_a_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/0".into(),
+        value: json!("First Item"),
+    })]);
 
     // User B: Adds at index 2
-    let user_b_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/2".into(),
-            value: json!("Middle Item"),
-        })
-    ]);
+    let user_b_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/2".into(),
+        value: json!("Middle Item"),
+    })]);
 
     // Transform (root-level array paths are siblings!)
-    let (a_transformed, b_transformed) = transform_patches(
-        &user_a_patch,
-        &user_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+    let (a_transformed, b_transformed) =
+        transform_patches(&user_a_patch, &user_b_patch, TransformStrategy::Operational).unwrap();
 
     // Apply both
     let mut result = original.clone();
@@ -470,19 +462,25 @@ fn test_root_level_array() {
     apply_patch(&mut result, &b_transformed).unwrap();
 
     let expected = json!([
-        "First Item",   // A's addition at 0
+        "First Item", // A's addition at 0
         "Item 1",
         "Item 2",
-        "Middle Item",  // B's addition at 3 (adjusted from 2)
+        "Middle Item", // B's addition at 3 (adjusted from 2)
         "Item 3"
     ]);
 
     assert_eq!(result, expected);
     println!("\n=== ROOT LEVEL ARRAY ===");
-    println!("Original: {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original: {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nUser A adds at index 0 (root path /0)");
     println!("User B adds at index 2 (root path /2)");
-    println!("\nFinal result: {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "\nFinal result: {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 }
 
 #[test]
@@ -499,27 +497,20 @@ fn test_same_index_additions() {
     });
 
     // User A: Adds at index 1
-    let user_a_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/queue/1".into(),
-            value: json!("User A's Job"),
-        })
-    ]);
+    let user_a_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/queue/1".into(),
+        value: json!("User A's Job"),
+    })]);
 
     // User B: Also adds at index 1
-    let user_b_patch = Patch(vec![
-        PatchOperation::Add(AddOperation {
-            path: "/queue/1".into(),
-            value: json!("User B's Job"),
-        })
-    ]);
+    let user_b_patch = Patch(vec![PatchOperation::Add(AddOperation {
+        path: "/queue/1".into(),
+        value: json!("User B's Job"),
+    })]);
 
     // Transform (both succeed with adjusted indices)
-    let (a_transformed, b_transformed) = transform_patches(
-        &user_a_patch,
-        &user_b_patch,
-        TransformStrategy::Operational
-    ).unwrap();
+    let (a_transformed, b_transformed) =
+        transform_patches(&user_a_patch, &user_b_patch, TransformStrategy::Operational).unwrap();
 
     // Apply both
     let mut result = original.clone();
@@ -538,8 +529,14 @@ fn test_same_index_additions() {
 
     assert_eq!(result, expected);
     println!("\n=== SAME INDEX ADDITIONS ===");
-    println!("Original: {}", serde_json::to_string_pretty(&original).unwrap());
+    println!(
+        "Original: {}",
+        serde_json::to_string_pretty(&original).unwrap()
+    );
     println!("\nUser A adds at index 1");
     println!("User B also adds at index 1");
-    println!("\nFinal result (both added, B adjusted to 2): {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "\nFinal result (both added, B adjusted to 2): {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 }

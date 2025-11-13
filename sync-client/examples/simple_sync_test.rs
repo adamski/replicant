@@ -128,10 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             debug!("Creating document with content: {:?}", content);
             let document = engine.create_document(content).await?;
-            info!(
-                "Successfully created document: {}",
-                document.id
-            );
+            info!("Successfully created document: {}", document.id);
             println!("Created document: {}", document.id);
 
             // Allow time for immediate sync to complete before disconnecting
@@ -358,10 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .get("title")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("No title");
-                                    println!(
-                                        "RESPONSE:DOC:{}:{}",
-                                        doc.id, title
-                                    );
+                                    println!("RESPONSE:DOC:{}:{}", doc.id, title);
                                 }
                                 println!("RESPONSE:LIST_END");
                             }

@@ -1266,7 +1266,10 @@ fn render_task_details(f: &mut Frame, area: Rect, app_state: &AppState) {
                 ]));
                 metadata_lines.push(Line::from(vec![
                     Span::styled("Version: ", Style::default().fg(Color::Gray)),
-                    Span::styled(task.sync_revision.to_string(), Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        task.sync_revision.to_string(),
+                        Style::default().fg(Color::Yellow),
+                    ),
                 ]));
 
                 let metadata_paragraph = Paragraph::new(metadata_lines).wrap(Wrap { trim: true });
@@ -1367,7 +1370,10 @@ fn render_task_details(f: &mut Frame, area: Rect, app_state: &AppState) {
         ]));
         metadata_lines.push(Line::from(vec![
             Span::styled("Version: ", Style::default().fg(Color::Gray)),
-            Span::styled(task.sync_revision.to_string(), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                task.sync_revision.to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
         ]));
 
         let metadata_paragraph = Paragraph::new(metadata_lines).wrap(Wrap { trim: true });
@@ -1697,8 +1703,8 @@ async fn load_tasks(
 
     let rows = sqlx::query(
         r#"
-        SELECT id, content, sync_status, created_at, updated_at, version
-        FROM documents 
+        SELECT id, content, sync_status, created_at, updated_at, sync_revision
+        FROM documents
         WHERE user_id = ?1 AND deleted_at IS NULL
         ORDER BY created_at DESC
         "#,
@@ -1716,7 +1722,7 @@ async fn load_tasks(
         let sync_status = row.try_get::<Option<String>, _>("sync_status")?;
         let created_at = row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at")?;
         let updated_at = row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at")?;
-        let version = row.try_get::<i64, _>("version")?;
+        let sync_revision = row.try_get::<i64, _>("sync_revision")?;
 
         let content: Value = serde_json::from_str(&content_str).unwrap_or_default();
 
@@ -1760,12 +1766,13 @@ async fn load_tasks(
         tasks.push(task);
     }
 
-    let mut app_state = state.lock().unwrap();
-    app_state.tasks = tasks;
+    {
+        let mut app_state = state.lock().unwrap();
+        app_state.tasks = tasks;
+    }
 
     // Update sync status
-    drop(app_state);
-    update_sync_status(&db, state).await;
+    update_sync_status(db, state).await;
 
     Ok(())
 }
@@ -1826,7 +1833,8 @@ async fn toggle_task_completion(
         }
     }
 
-    if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+    let engine = sync_engine.lock().unwrap().clone();
+    if let Some(engine) = engine {
         let _ = engine.update_document(task_id, content).await;
     } else {
         // Offline update
@@ -1878,16 +1886,21 @@ async fn create_sample_task(
         "created_at": chrono::Utc::now().to_rfc3339(),
     });
 
-    if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+    let engine = sync_engine.lock().unwrap().clone();
+    if let Some(engine) = engine {
         let _ = engine.create_document(content).await;
     } else {
         // Offline create
         let doc = Document {
             id: Uuid::new_v4(),
             user_id,
-            content,
+            content: content.clone(),
             sync_revision: 1,
             content_hash: None,
+            title: content
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -1915,7 +1928,8 @@ async fn delete_task(
     task_id: Uuid,
     state: SharedState,
 ) {
-    if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+    let engine = sync_engine.lock().unwrap().clone();
+    if let Some(engine) = engine {
         // Use sync engine if available
         let _ = engine.delete_document(task_id).await;
 
@@ -1966,7 +1980,8 @@ async fn save_task_edit(
     }
 
     // Update the document
-    if let Some(engine) = sync_engine.lock().unwrap().as_ref() {
+    let engine = sync_engine.lock().unwrap().clone();
+    if let Some(engine) = engine {
         let _ = engine.update_document(edit.task_id, content).await;
     } else {
         // Offline update

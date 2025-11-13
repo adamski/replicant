@@ -281,6 +281,7 @@ async fn test_update_document_online() {
             document_id: doc.id,
             success: true,
             error: None,
+            sync_revision: Some(2),
         })
         .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -853,6 +854,7 @@ async fn test_offline_update_with_patch_recovery() {
             document_id: doc.id,
             success: true,
             error: None,
+            sync_revision: Some(2),
         })
         .await;
 
@@ -1035,13 +1037,11 @@ async fn test_mixed_offline_operations_sync() {
                             document_id: patch.document_id,
                             success: true,
                             error: None,
+                            sync_revision: Some(2),
                         })
                         .await;
                 }
-                ClientMessage::DeleteDocument {
-                    document_id,
-                    ..
-                } => {
+                ClientMessage::DeleteDocument { document_id, .. } => {
                     deletes += 1;
                     setup
                         .server
@@ -1072,7 +1072,6 @@ async fn test_mixed_offline_operations_sync() {
 }
 
 /// Tests upload timeout and retry mechanism
-
 /// Tests partial upload failure recovery
 #[tokio::test]
 async fn test_partial_upload_failure() {
@@ -1246,6 +1245,7 @@ async fn test_server_sends_new_document_created() {
         content: json!({ "from_server": true }),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,

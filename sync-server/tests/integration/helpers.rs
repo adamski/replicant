@@ -49,28 +49,46 @@ pub struct TestContext {
 
 impl TestContext {
     pub fn new() -> Self {
-        // Generate unique database name for this test using timestamp and random UUID
+        // Generate unique database name for this test using timestamp, thread ID, and full UUID
+        // Using full UUID (32 chars) + thread ID to eliminate collision probability in parallel CI
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .replace("ThreadId(", "")
+            .replace(")", "");
         let unique_db_name = format!(
-            "sync_test_{}_{}",
+            "sync_test_{}_{}_{}",
             chrono::Utc::now().timestamp_micros(),
-            Uuid::new_v4().to_string().replace("-", "").chars().take(8).collect::<String>()
+            thread_id,
+            Uuid::new_v4().to_string().replace("-", "")
         );
 
-        let db_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+        // Construct database URL using connection info from DATABASE_URL
+        // but always use a unique database name for this test
+        let db_url = if let Ok(base_url) = std::env::var("DATABASE_URL") {
+            // Extract base URL (everything before the database name) and append unique name
+            if let Some((base, _)) = base_url.rsplit_once('/') {
+                format!("{}/{}", base, unique_db_name)
+            } else {
+                // Fallback if URL parsing fails
+                base_url
+            }
+        } else {
+            // No DATABASE_URL set, use local default
             let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
             format!("postgres://{}@localhost:5432/{}", user, unique_db_name)
-        });
+        };
 
         // Use a random port between 9000-19000 for this test to avoid conflicts
         // Widened range from 1000 to 10000 ports to reduce collision probability
         // when running many tests in parallel
-        let port = 9000 + (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_micros() % 10000) as u16;
+        let port = 9000
+            + (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+                % 10000) as u16;
 
-        let server_url = std::env::var("SYNC_SERVER_URL")
-            .unwrap_or_else(|_| format!("ws://localhost:{}", port));
+        let server_url =
+            std::env::var("SYNC_SERVER_URL").unwrap_or_else(|_| format!("ws://localhost:{}", port));
 
         Self {
             server_url,
@@ -303,6 +321,7 @@ impl TestContext {
             content: content.clone(),
             sync_revision: 1,
             content_hash: None,
+            title: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
@@ -446,16 +465,66 @@ impl TestContext {
         let postgres_url = format!("{}/postgres", base_url);
         let pool = sqlx::postgres::PgPool::connect(&postgres_url).await?;
 
-        // Drop database (disconnect all clients first)
-        sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
-            .execute(&pool)
-            .await
-            .ok(); // Ignore errors
+        // Retry logic for database creation (handles rare race conditions in parallel tests)
+        const MAX_RETRIES: u32 = 5;
+        let mut retry_count = 0;
+        let mut last_error = None;
 
-        // Create database
-        sqlx::query(&format!("CREATE DATABASE {}", db_name))
-            .execute(&pool)
-            .await?;
+        while retry_count < MAX_RETRIES {
+            // Drop database (disconnect all clients first)
+            sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
+                .execute(&pool)
+                .await
+                .ok(); // Ignore errors
+
+            // Try to create database
+            match sqlx::query(&format!("CREATE DATABASE {}", db_name))
+                .execute(&pool)
+                .await
+            {
+                Ok(_) => {
+                    // Success! Break out of retry loop
+                    break;
+                }
+                Err(e) => {
+                    // Check if it's a duplicate database error
+                    let err_msg = e.to_string();
+                    if err_msg.contains("duplicate key") || err_msg.contains("already exists") {
+                        retry_count += 1;
+                        last_error = Some(e);
+
+                        if retry_count < MAX_RETRIES {
+                            // Exponential backoff: 10ms, 20ms, 40ms, 80ms, 160ms
+                            let delay_ms = 10u64 * (2u64.pow(retry_count - 1));
+                            tracing::warn!(
+                                "Database creation collision detected (attempt {}/{}), retrying in {}ms",
+                                retry_count,
+                                MAX_RETRIES,
+                                delay_ms
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        }
+                    } else {
+                        // Different error, propagate immediately
+                        pool.close().await;
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+
+        // If we exhausted retries, return the last error
+        if retry_count >= MAX_RETRIES {
+            pool.close().await;
+            if let Some(err) = last_error {
+                return Err(err.into());
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Failed to create database after {} retries",
+                    MAX_RETRIES
+                ));
+            }
+        }
 
         pool.close().await;
 
@@ -490,7 +559,11 @@ impl TestContext {
 
         // Start the server in background
         // Note: Using null() for stdout/stderr to ensure proper process cleanup
-        tracing::debug!("Starting server on {} with database {}", bind_address, self.db_url);
+        tracing::debug!(
+            "Starting server on {} with database {}",
+            bind_address,
+            self.db_url
+        );
         let server = tokio::process::Command::new(SERVER_BIN)
             .current_dir(&project_root)
             .env("DATABASE_URL", &self.db_url)
@@ -532,7 +605,10 @@ impl Drop for TestContext {
                         }
                         Err(_) => {
                             // Force kill if it didn't shut down
-                            tracing::warn!("Server process {} didn't terminate, force killing", pid);
+                            tracing::warn!(
+                                "Server process {} didn't terminate, force killing",
+                                pid
+                            );
                             let _ = unsafe { kill(pid as i32, libc::SIGKILL) };
                             let _ = child.wait().await;
                         }
@@ -543,7 +619,10 @@ impl Drop for TestContext {
             // Drop the unique test database
             if let Some(db_name) = db_url.split('/').last() {
                 if db_name.starts_with("sync_test_") {
-                    let base_url = db_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&db_url);
+                    let base_url = db_url
+                        .rsplit_once('/')
+                        .map(|(base, _)| base)
+                        .unwrap_or(&db_url);
                     let postgres_url = format!("{}/postgres", base_url);
 
                     if let Ok(pool) = sqlx::postgres::PgPool::connect(&postgres_url).await {
@@ -695,10 +774,10 @@ macro_rules! integration_test {
             }
 
             // Acquire integration test semaphore to limit concurrent tests and prevent resource exhaustion
-            let semaphore = crate::integration::helpers::get_integration_test_semaphore().await;
+            let semaphore = $crate::integration::helpers::get_integration_test_semaphore().await;
             let _permit = semaphore.acquire().await.unwrap();
 
-            let mut ctx = crate::integration::helpers::TestContext::new();
+            let mut ctx = $crate::integration::helpers::TestContext::new();
             // Full teardown and setup for complete isolation
 
             match $online {

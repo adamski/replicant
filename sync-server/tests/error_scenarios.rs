@@ -68,6 +68,7 @@ async fn test_transaction_rollback_on_partial_failure() {
         content: json!({"test": "data"}),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -193,6 +194,7 @@ async fn test_foreign_key_constraint_enforcement() {
         content: json!({"test": "data"}),
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -263,6 +265,7 @@ async fn test_update_non_existent_document() {
         content: json!({"test": "updated"}),
         sync_revision: 2,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -292,9 +295,7 @@ async fn test_delete_non_existent_document() {
     let user_id = db.create_user("delete-test@example.com").await.unwrap();
     let non_existent_doc_id = Uuid::new_v4();
 
-    let result = db
-        .delete_document(&non_existent_doc_id, &user_id)
-        .await;
+    let result = db.delete_document(&non_existent_doc_id, &user_id).await;
 
     // Delete should not panic even if document doesn't exist
     println!("Delete result: {:?}", result.is_ok());
@@ -328,6 +329,7 @@ async fn test_large_document_handling() {
         content: large_content,
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
@@ -379,6 +381,7 @@ async fn test_deeply_nested_json() {
         content: nested,
         sync_revision: 1,
         content_hash: None,
+        title: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,

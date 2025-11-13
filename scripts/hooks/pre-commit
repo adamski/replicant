@@ -1,0 +1,18 @@
+#!/bin/bash
+# Pre-commit hook to run cargo fmt
+
+echo "Running cargo fmt..."
+cargo fmt --all
+
+# Check if any files were modified by cargo fmt
+if ! git diff --exit-code --quiet; then
+    echo "❌ Code was reformatted by cargo fmt."
+    echo "Please review the changes and commit again."
+    echo ""
+    echo "Changed files:"
+    git diff --name-only
+    exit 1
+fi
+
+echo "✅ Code formatting check passed"
+exit 0

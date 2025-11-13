@@ -1,0 +1,16 @@
+# Cargo audit configuration
+# See: https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+# Ignore advisories for vulnerabilities that don't affect this project
+
+# RUSTSEC-2023-0071: RSA timing sidechannel attack in sqlx-mysql
+# We don't use MySQL features of SQLx (only PostgreSQL and SQLite)
+# This is a transitive dependency from sqlx-mysql that we don't utilize
+ignore = [
+    "RUSTSEC-2023-0071",
+]
+
+# Allow informational warnings for unmaintained/unsound crates
+# These are build-time dependencies (cbindgen) or actively maintained despite advisories (paste)
+informational_warnings = ["unmaintained", "unsound"]

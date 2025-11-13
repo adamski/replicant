@@ -48,6 +48,7 @@ mod tests {
                 deleted_at TIMESTAMP,
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
+                title TEXT,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -80,6 +81,7 @@ mod tests {
             user_id,
             content: content.clone(),
             content_hash: None,
+            title: None,
             sync_revision: 1,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -112,6 +114,7 @@ mod tests {
                 content: test_content.clone(),
                 sync_revision: 1,
                 content_hash: None,
+                title: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
@@ -154,6 +157,7 @@ mod tests {
                 deleted_at TIMESTAMP,
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
+                title TEXT,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -181,6 +185,7 @@ mod tests {
             user_id,
             content: content.clone(),
             content_hash: None,
+            title: None,
             sync_revision: 1,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

@@ -13,15 +13,14 @@ documentation = true
 [export]
 include = [
     "SyncEngine",
-    "SyncResult", 
+    "SyncResult",
     "Document",
-    "sync_engine_create",
-    "sync_engine_destroy",
-    "sync_engine_create_document",
-    "sync_engine_update_document", 
-    "sync_engine_delete_document",
-    "sync_string_free",
-    "sync_get_version"
+    "EventType",
+    "DocumentEventCallback",
+    "SyncEventCallback",
+    "ErrorEventCallback",
+    "ConnectionEventCallback",
+    "ConflictEventCallback",
 ]
 
 [enum]

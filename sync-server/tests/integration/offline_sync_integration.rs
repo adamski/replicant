@@ -74,81 +74,50 @@ async fn create_client_with_event_tracking(
     // Register event callbacks using the Rust callback API
     let dispatcher = engine.event_dispatcher();
 
-    dispatcher.register_rust_callback(
-        Box::new(
-            move |event_type,
-                  document_id,
-                  title,
-                  _content,
-                  error,
-                  numeric_data,
-                  _boolean_data,
-                  _context| {
-                use sync_client::events::EventType;
-                let mut events = event_log_clone.lock().unwrap();
+    dispatcher.register_rust_callback(move |event| {
+        use sync_client::events::SyncEvent;
+        let mut events = event_log_clone.lock().unwrap();
 
-                match event_type {
-                    EventType::DocumentCreated => {
-                        if let (Some(doc_id_str), Some(title_str)) = (document_id, title) {
-                            if let Ok(doc_id) = Uuid::parse_str(doc_id_str) {
-                                events.created.push((doc_id, title_str.to_string()));
-                                tracing::info!(
-                                    "Event: Document created - {} ({})",
-                                    title_str,
-                                    doc_id
-                                );
-                            }
-                        }
-                    }
-                    EventType::DocumentUpdated => {
-                        if let (Some(doc_id_str), Some(title_str)) = (document_id, title) {
-                            if let Ok(doc_id) = Uuid::parse_str(doc_id_str) {
-                                events.updated.push((doc_id, title_str.to_string()));
-                                tracing::info!(
-                                    "Event: Document updated - {} ({})",
-                                    title_str,
-                                    doc_id
-                                );
-                            }
-                        }
-                    }
-                    EventType::DocumentDeleted => {
-                        if let Some(doc_id_str) = document_id {
-                            if let Ok(doc_id) = Uuid::parse_str(doc_id_str) {
-                                events.deleted.push(doc_id);
-                                tracing::info!("Event: Document deleted - {}", doc_id);
-                            }
-                        }
-                    }
-                    EventType::SyncStarted => {
-                        events.sync_started += 1;
-                        tracing::info!("Event: Sync started");
-                    }
-                    EventType::SyncCompleted => {
-                        events.sync_completed += 1;
-                        tracing::info!("Event: Sync completed - {} docs", numeric_data);
-                    }
-                    EventType::ConflictDetected => {
-                        if let Some(doc_id_str) = document_id {
-                            if let Ok(doc_id) = Uuid::parse_str(doc_id_str) {
-                                events.conflicts.push(doc_id);
-                                tracing::info!("Event: Conflict detected - {}", doc_id);
-                            }
-                        }
-                    }
-                    EventType::SyncError => {
-                        if let Some(error_str) = error {
-                            events.errors.push(error_str.to_string());
-                            tracing::info!("Event: Sync error - {}", error_str);
-                        }
-                    }
-                    _ => {}
+        match event {
+            SyncEvent::DocumentCreated { id, title, .. } => {
+                if let Ok(doc_id) = Uuid::parse_str(&id) {
+                    events.created.push((doc_id, title.clone()));
+                    tracing::info!("Event: Document created - {} ({})", title, doc_id);
                 }
-            },
-        ),
-        std::ptr::null_mut(),
-        None,
-    )?;
+            }
+            SyncEvent::DocumentUpdated { id, title, .. } => {
+                if let Ok(doc_id) = Uuid::parse_str(&id) {
+                    events.updated.push((doc_id, title.clone()));
+                    tracing::info!("Event: Document updated - {} ({})", title, doc_id);
+                }
+            }
+            SyncEvent::DocumentDeleted { id } => {
+                if let Ok(doc_id) = Uuid::parse_str(&id) {
+                    events.deleted.push(doc_id);
+                    tracing::info!("Event: Document deleted - {}", doc_id);
+                }
+            }
+            SyncEvent::SyncStarted => {
+                events.sync_started += 1;
+                tracing::info!("Event: Sync started");
+            }
+            SyncEvent::SyncCompleted { document_count } => {
+                events.sync_completed += 1;
+                tracing::info!("Event: Sync completed - {} docs", document_count);
+            }
+            SyncEvent::ConflictDetected { document_id, .. } => {
+                if let Ok(doc_id) = Uuid::parse_str(&document_id) {
+                    events.conflicts.push(doc_id);
+                    tracing::info!("Event: Conflict detected - {}", doc_id);
+                }
+            }
+            SyncEvent::SyncError { message } => {
+                events.errors.push(message.clone());
+                tracing::info!("Event: Sync error - {}", message);
+            }
+            _ => {}
+        }
+    })?;
 
     // Process initial events multiple times
     for _ in 0..5 {

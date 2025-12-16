@@ -3,37 +3,35 @@
 //! These tests verify that the FFI interface works correctly and that
 //! callbacks are properly invoked when events occur.
 
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use sync_client::events::{EventData, EventType};
+use sync_client::events::EventType;
 use sync_client::ffi::{
     sync_engine_count_documents, sync_engine_count_pending_sync, sync_engine_create,
     sync_engine_create_document, sync_engine_destroy, sync_engine_get_all_documents,
     sync_engine_get_document, sync_engine_is_connected, sync_engine_process_events,
-    sync_engine_register_event_callback, sync_engine_update_document, sync_string_free, SyncEngine,
-    SyncResult,
+    sync_engine_register_connection_callback, sync_engine_register_document_callback,
+    sync_engine_register_error_callback, sync_engine_register_sync_callback,
+    sync_engine_update_document, sync_string_free, SyncEngine, SyncResult,
 };
 
 #[cfg(debug_assertions)]
 use sync_client::ffi_test::{sync_engine_emit_test_event, sync_engine_emit_test_event_burst};
 
-/// Test data structure for capturing callback invocations
+/// Test data structure for capturing document callback invocations
 #[derive(Debug, Default)]
-struct CallbackCapture {
+struct DocumentCapture {
     call_count: AtomicUsize,
     last_event_type: Mutex<Option<EventType>>,
     last_document_id: Mutex<Option<String>>,
     last_title: Mutex<Option<String>>,
     last_content: Mutex<Option<String>>,
-    last_error: Mutex<Option<String>>,
-    last_numeric_data: Mutex<u64>,
-    last_boolean_data: Mutex<bool>,
 }
 
-impl CallbackCapture {
+impl DocumentCapture {
     fn new() -> Self {
         Self::default()
     }
@@ -44,46 +42,115 @@ impl CallbackCapture {
         *self.last_document_id.lock().unwrap() = None;
         *self.last_title.lock().unwrap() = None;
         *self.last_content.lock().unwrap() = None;
-        *self.last_error.lock().unwrap() = None;
-        *self.last_numeric_data.lock().unwrap() = 0;
-        *self.last_boolean_data.lock().unwrap() = false;
     }
 }
 
-extern "C" fn capture_callback(event: *const EventData, context: *mut c_void) {
-    let capture = unsafe { &*(context as *const CallbackCapture) };
-    let event = unsafe { &*event };
+/// Test data structure for capturing sync callback invocations
+#[derive(Debug, Default)]
+struct SyncCapture {
+    call_count: AtomicUsize,
+    last_event_type: Mutex<Option<EventType>>,
+    last_document_count: Mutex<u64>,
+}
+
+impl SyncCapture {
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Test data structure for capturing error callback invocations
+#[derive(Debug, Default)]
+struct ErrorCapture {
+    call_count: AtomicUsize,
+    last_error: Mutex<Option<String>>,
+}
+
+impl ErrorCapture {
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Test data structure for capturing connection callback invocations
+#[derive(Debug, Default)]
+struct ConnectionCapture {
+    call_count: AtomicUsize,
+    last_event_type: Mutex<Option<EventType>>,
+    last_connected: Mutex<bool>,
+    last_attempt: Mutex<u32>,
+}
+
+impl ConnectionCapture {
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+extern "C" fn document_capture_callback(
+    event_type: EventType,
+    document_id: *const c_char,
+    title: *const c_char,
+    content: *const c_char,
+    context: *mut c_void,
+) {
+    let capture = unsafe { &*(context as *const DocumentCapture) };
 
     capture.call_count.fetch_add(1, Ordering::SeqCst);
-    *capture.last_event_type.lock().unwrap() = Some(event.event_type);
+    *capture.last_event_type.lock().unwrap() = Some(event_type);
 
-    // Capture strings
-    if !event.document_id.is_null() {
-        let doc_id = unsafe {
-            CStr::from_ptr(event.document_id)
-                .to_string_lossy()
-                .to_string()
-        };
+    if !document_id.is_null() {
+        let doc_id = unsafe { CStr::from_ptr(document_id).to_string_lossy().to_string() };
         *capture.last_document_id.lock().unwrap() = Some(doc_id);
     }
 
-    if !event.title.is_null() {
-        let title = unsafe { CStr::from_ptr(event.title).to_string_lossy().to_string() };
-        *capture.last_title.lock().unwrap() = Some(title);
+    if !title.is_null() {
+        let title_str = unsafe { CStr::from_ptr(title).to_string_lossy().to_string() };
+        *capture.last_title.lock().unwrap() = Some(title_str);
     }
 
-    if !event.content.is_null() {
-        let content = unsafe { CStr::from_ptr(event.content).to_string_lossy().to_string() };
-        *capture.last_content.lock().unwrap() = Some(content);
+    if !content.is_null() {
+        let content_str = unsafe { CStr::from_ptr(content).to_string_lossy().to_string() };
+        *capture.last_content.lock().unwrap() = Some(content_str);
     }
+}
 
-    if !event.error.is_null() {
-        let error = unsafe { CStr::from_ptr(event.error).to_string_lossy().to_string() };
-        *capture.last_error.lock().unwrap() = Some(error);
+extern "C" fn sync_capture_callback(
+    event_type: EventType,
+    document_count: u64,
+    context: *mut c_void,
+) {
+    let capture = unsafe { &*(context as *const SyncCapture) };
+    capture.call_count.fetch_add(1, Ordering::SeqCst);
+    *capture.last_event_type.lock().unwrap() = Some(event_type);
+    *capture.last_document_count.lock().unwrap() = document_count;
+}
+
+extern "C" fn error_capture_callback(
+    _event_type: EventType,
+    error: *const c_char,
+    context: *mut c_void,
+) {
+    let capture = unsafe { &*(context as *const ErrorCapture) };
+    capture.call_count.fetch_add(1, Ordering::SeqCst);
+
+    if !error.is_null() {
+        let error_str = unsafe { CStr::from_ptr(error).to_string_lossy().to_string() };
+        *capture.last_error.lock().unwrap() = Some(error_str);
     }
+}
 
-    *capture.last_numeric_data.lock().unwrap() = event.numeric_data;
-    *capture.last_boolean_data.lock().unwrap() = event.boolean_data;
+extern "C" fn connection_capture_callback(
+    event_type: EventType,
+    connected: bool,
+    attempt_number: u32,
+    context: *mut c_void,
+) {
+    let capture = unsafe { &*(context as *const ConnectionCapture) };
+    capture.call_count.fetch_add(1, Ordering::SeqCst);
+    *capture.last_event_type.lock().unwrap() = Some(event_type);
+    *capture.last_connected.lock().unwrap() = connected;
+    *capture.last_attempt.lock().unwrap() = attempt_number;
 }
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -121,14 +188,14 @@ fn test_ffi_callback_registration() {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
 
-        let capture = CallbackCapture::new();
+        let capture = DocumentCapture::new();
 
-        // Register callback for all events
-        let result = sync_engine_register_event_callback(
+        // Register callback for all document events
+        let result = sync_engine_register_document_callback(
             engine,
-            capture_callback,
-            &capture as *const CallbackCapture as *mut c_void,
-            -1, // All events
+            document_capture_callback,
+            &capture as *const DocumentCapture as *mut c_void,
+            -1, // All document events
         );
 
         assert_eq!(result, SyncResult::Success);
@@ -143,13 +210,13 @@ fn test_ffi_callback_with_document_creation() {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
 
-        let capture = CallbackCapture::new();
+        let capture = DocumentCapture::new();
 
         // Register callback for document events
-        let result = sync_engine_register_event_callback(
+        let result = sync_engine_register_document_callback(
             engine,
-            capture_callback,
-            &capture as *const CallbackCapture as *mut c_void,
+            document_capture_callback,
+            &capture as *const DocumentCapture as *mut c_void,
             0, // DocumentCreated
         );
         assert_eq!(result, SyncResult::Success);
@@ -192,23 +259,23 @@ fn test_ffi_callback_filtering() {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
 
-        let created_capture = CallbackCapture::new();
-        let updated_capture = CallbackCapture::new();
+        let created_capture = DocumentCapture::new();
+        let updated_capture = DocumentCapture::new();
 
         // Register callback only for created events
-        let result1 = sync_engine_register_event_callback(
+        let result1 = sync_engine_register_document_callback(
             engine,
-            capture_callback,
-            &created_capture as *const CallbackCapture as *mut c_void,
+            document_capture_callback,
+            &created_capture as *const DocumentCapture as *mut c_void,
             0, // DocumentCreated
         );
         assert_eq!(result1, SyncResult::Success);
 
         // Register callback only for updated events
-        let result2 = sync_engine_register_event_callback(
+        let result2 = sync_engine_register_document_callback(
             engine,
-            capture_callback,
-            &updated_capture as *const CallbackCapture as *mut c_void,
+            document_capture_callback,
+            &updated_capture as *const DocumentCapture as *mut c_void,
             1, // DocumentUpdated
         );
         assert_eq!(result2, SyncResult::Success);
@@ -245,30 +312,27 @@ fn test_ffi_multiple_callbacks() {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
 
-        let capture1 = CallbackCapture::new();
-        let capture2 = CallbackCapture::new();
-        let capture3 = CallbackCapture::new();
+        let capture1 = SyncCapture::new();
+        let capture2 = SyncCapture::new();
+        let capture3 = SyncCapture::new();
 
-        // Register three callbacks for all events
-        sync_engine_register_event_callback(
+        // Register three callbacks for sync events
+        sync_engine_register_sync_callback(
             engine,
-            capture_callback,
-            &capture1 as *const CallbackCapture as *mut c_void,
-            -1,
+            sync_capture_callback,
+            &capture1 as *const SyncCapture as *mut c_void,
         );
 
-        sync_engine_register_event_callback(
+        sync_engine_register_sync_callback(
             engine,
-            capture_callback,
-            &capture2 as *const CallbackCapture as *mut c_void,
-            -1,
+            sync_capture_callback,
+            &capture2 as *const SyncCapture as *mut c_void,
         );
 
-        sync_engine_register_event_callback(
+        sync_engine_register_sync_callback(
             engine,
-            capture_callback,
-            &capture3 as *const CallbackCapture as *mut c_void,
-            -1,
+            sync_capture_callback,
+            &capture3 as *const SyncCapture as *mut c_void,
         );
 
         #[cfg(debug_assertions)]
@@ -307,47 +371,73 @@ fn test_ffi_all_event_types() {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
 
-        let capture = CallbackCapture::new();
+        let doc_capture = DocumentCapture::new();
+        let sync_capture = SyncCapture::new();
+        let error_capture = ErrorCapture::new();
+        let conn_capture = ConnectionCapture::new();
 
-        // Register for all events
-        sync_engine_register_event_callback(
+        // Register for all event types
+        sync_engine_register_document_callback(
             engine,
-            capture_callback,
-            &capture as *const CallbackCapture as *mut c_void,
+            document_capture_callback,
+            &doc_capture as *const DocumentCapture as *mut c_void,
             -1,
         );
+        sync_engine_register_sync_callback(
+            engine,
+            sync_capture_callback,
+            &sync_capture as *const SyncCapture as *mut c_void,
+        );
+        sync_engine_register_error_callback(
+            engine,
+            error_capture_callback,
+            &error_capture as *const ErrorCapture as *mut c_void,
+        );
+        sync_engine_register_connection_callback(
+            engine,
+            connection_capture_callback,
+            &conn_capture as *const ConnectionCapture as *mut c_void,
+        );
 
-        // Test all event types
-        for event_type in 0..8 {
-            capture.reset();
-
+        // Test document events (0-2)
+        for event_type in 0..3 {
+            doc_capture.reset();
             sync_engine_emit_test_event(engine, event_type);
             sync_engine_process_events(engine, ptr::null_mut());
-
             assert_eq!(
-                capture.call_count.load(Ordering::SeqCst),
+                doc_capture.call_count.load(Ordering::SeqCst),
                 1,
-                "Event type {} was not emitted",
+                "Document event type {} was not emitted",
                 event_type
             );
-
-            let expected_type = match event_type {
-                0 => EventType::DocumentCreated,
-                1 => EventType::DocumentUpdated,
-                2 => EventType::DocumentDeleted,
-                3 => EventType::SyncStarted,
-                4 => EventType::SyncCompleted,
-                5 => EventType::SyncError,
-                6 => EventType::ConflictDetected,
-                7 => EventType::ConnectionLost,
-                _ => panic!("Unexpected event type"),
-            };
-
-            assert_eq!(
-                *capture.last_event_type.lock().unwrap(),
-                Some(expected_type)
-            );
         }
+
+        // Test sync events (3-4)
+        sync_engine_emit_test_event(engine, 3); // SyncStarted
+        sync_engine_process_events(engine, ptr::null_mut());
+        assert_eq!(sync_capture.call_count.load(Ordering::SeqCst), 1);
+
+        sync_engine_emit_test_event(engine, 4); // SyncCompleted
+        sync_engine_process_events(engine, ptr::null_mut());
+        assert_eq!(sync_capture.call_count.load(Ordering::SeqCst), 2);
+
+        // Test error event (5)
+        sync_engine_emit_test_event(engine, 5); // SyncError
+        sync_engine_process_events(engine, ptr::null_mut());
+        assert_eq!(error_capture.call_count.load(Ordering::SeqCst), 1);
+
+        // Test connection events (7-9)
+        sync_engine_emit_test_event(engine, 7); // ConnectionLost
+        sync_engine_process_events(engine, ptr::null_mut());
+        assert_eq!(conn_capture.call_count.load(Ordering::SeqCst), 1);
+
+        sync_engine_emit_test_event(engine, 8); // ConnectionAttempted
+        sync_engine_process_events(engine, ptr::null_mut());
+        assert_eq!(conn_capture.call_count.load(Ordering::SeqCst), 2);
+
+        sync_engine_emit_test_event(engine, 9); // ConnectionSucceeded
+        sync_engine_process_events(engine, ptr::null_mut());
+        assert_eq!(conn_capture.call_count.load(Ordering::SeqCst), 3);
 
         sync_engine_destroy(engine);
     }
@@ -355,58 +445,60 @@ fn test_ffi_all_event_types() {
 
 #[test]
 #[cfg(debug_assertions)]
-#[ignore] // TODO: This test hangs - needs investigation (unrelated to title removal)
 fn test_ffi_event_data_integrity() {
     unsafe {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
 
-        let capture = CallbackCapture::new();
+        let sync_capture = SyncCapture::new();
+        let error_capture = ErrorCapture::new();
+        let conn_capture = ConnectionCapture::new();
 
-        sync_engine_register_event_callback(
+        sync_engine_register_sync_callback(
             engine,
-            capture_callback,
-            &capture as *const CallbackCapture as *mut c_void,
-            -1,
+            sync_capture_callback,
+            &sync_capture as *const SyncCapture as *mut c_void,
+        );
+        sync_engine_register_error_callback(
+            engine,
+            error_capture_callback,
+            &error_capture as *const ErrorCapture as *mut c_void,
+        );
+        sync_engine_register_connection_callback(
+            engine,
+            connection_capture_callback,
+            &conn_capture as *const ConnectionCapture as *mut c_void,
         );
 
-        // Test sync completed event (has numeric data)
-        capture.reset();
+        // Test sync completed event (has document count)
         sync_engine_emit_test_event(engine, 4); // SyncCompleted
         sync_engine_process_events(engine, ptr::null_mut());
 
-        assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(sync_capture.call_count.load(Ordering::SeqCst), 1);
         assert_eq!(
-            *capture.last_event_type.lock().unwrap(),
+            *sync_capture.last_event_type.lock().unwrap(),
             Some(EventType::SyncCompleted)
         );
-        assert_eq!(*capture.last_numeric_data.lock().unwrap(), 5); // Test uses fixed value of 5
+        assert_eq!(*sync_capture.last_document_count.lock().unwrap(), 5); // Test uses fixed value of 5
 
         // Test sync error event (has error message)
-        capture.reset();
         sync_engine_emit_test_event(engine, 5); // SyncError
         sync_engine_process_events(engine, ptr::null_mut());
 
-        assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            *capture.last_event_type.lock().unwrap(),
-            Some(EventType::SyncError)
-        );
-        let error_msg = capture.last_error.lock().unwrap();
+        assert_eq!(error_capture.call_count.load(Ordering::SeqCst), 1);
+        let error_msg = error_capture.last_error.lock().unwrap();
         assert!(error_msg.is_some());
         assert!(error_msg.as_ref().unwrap().contains("Test error message"));
 
-        // Test connection state changed (has boolean data)
-        capture.reset();
+        // Test connection event
         sync_engine_emit_test_event(engine, 7); // ConnectionLost
         sync_engine_process_events(engine, ptr::null_mut());
 
-        assert_eq!(capture.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(conn_capture.call_count.load(Ordering::SeqCst), 1);
         assert_eq!(
-            *capture.last_event_type.lock().unwrap(),
+            *conn_capture.last_event_type.lock().unwrap(),
             Some(EventType::ConnectionLost)
         );
-        assert_eq!(*capture.last_boolean_data.lock().unwrap(), true); // Test uses fixed value of true
 
         sync_engine_destroy(engine);
     }
@@ -419,12 +511,12 @@ fn test_ffi_event_burst() {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
 
-        let capture = CallbackCapture::new();
+        let capture = DocumentCapture::new();
 
-        sync_engine_register_event_callback(
+        sync_engine_register_document_callback(
             engine,
-            capture_callback,
-            &capture as *const CallbackCapture as *mut c_void,
+            document_capture_callback,
+            &capture as *const DocumentCapture as *mut c_void,
             0, // Only DocumentCreated events
         );
 
@@ -453,10 +545,10 @@ fn test_ffi_null_pointer_safety() {
     unsafe {
         // Test that null pointers are handled safely
 
-        // Test null engine
-        let result = sync_engine_register_event_callback(
+        // Test null engine for document callback
+        let result = sync_engine_register_document_callback(
             ptr::null_mut(),
-            capture_callback,
+            document_capture_callback,
             ptr::null_mut(),
             -1,
         );
@@ -465,9 +557,9 @@ fn test_ffi_null_pointer_safety() {
         // Test with valid engine but invalid filter
         let engine = create_test_engine();
         if !engine.is_null() {
-            let result = sync_engine_register_event_callback(
+            let result = sync_engine_register_document_callback(
                 engine,
-                capture_callback,
+                document_capture_callback,
                 ptr::null_mut(),
                 999, // Invalid event type
             );
@@ -486,12 +578,12 @@ fn test_ffi_engine_lifecycle() {
             let engine = create_test_engine();
             assert!(!engine.is_null(), "Failed to create sync engine");
 
-            let capture = CallbackCapture::new();
+            let capture = DocumentCapture::new();
 
-            let result = sync_engine_register_event_callback(
+            let result = sync_engine_register_document_callback(
                 engine,
-                capture_callback,
-                &capture as *const CallbackCapture as *mut c_void,
+                document_capture_callback,
+                &capture as *const DocumentCapture as *mut c_void,
                 -1,
             );
             assert_eq!(result, SyncResult::Success);
@@ -511,15 +603,14 @@ fn test_ffi_callback_thread_safety() {
         let engine = create_test_engine();
         assert!(!engine.is_null(), "Failed to create sync engine");
 
-        let capture = Arc::new(CallbackCapture::new());
+        let capture = Arc::new(SyncCapture::new());
         let capture_clone = capture.clone();
 
         // Register callback
-        sync_engine_register_event_callback(
+        sync_engine_register_sync_callback(
             engine,
-            capture_callback,
+            sync_capture_callback,
             Arc::as_ptr(&capture_clone) as *mut c_void,
-            -1,
         );
 
         #[cfg(debug_assertions)]

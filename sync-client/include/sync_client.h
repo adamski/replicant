@@ -79,58 +79,70 @@ typedef enum SyncResult {
 typedef struct SyncEngine SyncEngine;
 
 /**
- * Event data structure passed to C/C++ callbacks
- *
- * Contains all relevant information about the event. Not all fields are populated
- * for all event types - check the event_type to determine which fields are valid.
- */
-typedef struct EventData {
-  /**
-   * Type of event that occurred
-   */
-  enum EventType event_type;
-  /**
-   * Document UUID (may be null for non-document events)
-   */
-  const char *document_id;
-  /**
-   * Document title (may be null)
-   */
-  const char *title;
-  /**
-   * Document content as JSON string (may be null)
-   */
-  const char *content;
-  /**
-   * Error message (only for error events, may be null)
-   */
-  const char *error;
-  /**
-   * Numeric data (e.g., sync count for SYNC_COMPLETED)
-   */
-  uint64_t numeric_data;
-  /**
-   * Boolean data (e.g., connection state for CONNECTION_STATE_CHANGED)
-   */
-  bool boolean_data;
-} EventData;
-
-/**
- * C-compatible callback function type for event notifications
+ * Document event callback for DocumentCreated, DocumentUpdated, DocumentDeleted
  *
  * # Parameters
- *
- * * `event` - Pointer to event data (valid only during callback execution)
- * * `context` - User-defined context pointer passed during registration
- *
- * # Safety
- *
- * The event pointer is only valid during the callback execution.
- * Do not store or access it after the callback returns.
- * String pointers in the event data are temporary and will be freed
- * after the callback returns. Copy them if you need to retain the data.
+ * * `event_type` - The specific document event type
+ * * `document_id` - UUID of the document (always non-null)
+ * * `title` - Document title (null for Deleted events)
+ * * `content` - Full document JSON (null for Deleted events)
+ * * `context` - User-defined context pointer
  */
-typedef void (*EventCallback)(const struct EventData *event, void *context);
+typedef void (*DocumentEventCallback)(enum EventType event_type,
+                                      const char *document_id,
+                                      const char *title,
+                                      const char *content,
+                                      void *context);
+
+/**
+ * Sync event callback for SyncStarted, SyncCompleted
+ *
+ * # Parameters
+ * * `event_type` - SyncStarted or SyncCompleted
+ * * `document_count` - Number of documents synced (0 for SyncStarted)
+ * * `context` - User-defined context pointer
+ */
+typedef void (*SyncEventCallback)(enum EventType event_type, uint64_t document_count, void *context);
+
+/**
+ * Error event callback for SyncError
+ *
+ * # Parameters
+ * * `event_type` - Always SyncError
+ * * `error` - Error message (always non-null)
+ * * `context` - User-defined context pointer
+ */
+typedef void (*ErrorEventCallback)(enum EventType event_type, const char *error, void *context);
+
+/**
+ * Connection event callback for ConnectionLost, ConnectionAttempted, ConnectionSucceeded
+ *
+ * # Parameters
+ * * `event_type` - The connection event type
+ * * `connected` - true if connected (valid for Lost/Succeeded), false otherwise
+ * * `attempt_number` - Reconnection attempt number (valid for ConnectionAttempted)
+ * * `context` - User-defined context pointer
+ */
+typedef void (*ConnectionEventCallback)(enum EventType event_type,
+                                        bool connected,
+                                        uint32_t attempt_number,
+                                        void *context);
+
+/**
+ * Conflict event callback for ConflictDetected
+ *
+ * # Parameters
+ * * `event_type` - Always ConflictDetected
+ * * `document_id` - UUID of the conflicted document (always non-null)
+ * * `winning_content` - Content of the winning version (always non-null)
+ * * `losing_content` - Content of the losing version (may be null)
+ * * `context` - User-defined context pointer
+ */
+typedef void (*ConflictEventCallback)(enum EventType event_type,
+                                      const char *document_id,
+                                      const char *winning_content,
+                                      const char *losing_content,
+                                      void *context);
 
 /**
  * Document structure for C API
@@ -139,7 +151,7 @@ typedef struct Document {
   char *id;
   char *title;
   char *content;
-  int64_t version;
+  int64_t sync_revision;
 } Document;
 
 #ifdef __cplusplus
@@ -152,19 +164,27 @@ extern "C" {
  * # Arguments
  * * `database_url` - SQLite database URL (e.g., "sqlite:client.db?mode=rwc")
  * * `server_url` - WebSocket server URL (e.g., "ws://localhost:8080/ws")
- * * `auth_token` - Authentication token
- * * `user_identifier` - User identifier (email or username)
+ * * `email` - User email address
+ * * `api_key` - Application API key (rpa_ prefix)
+ * * `api_secret` - Application API secret (rps_ prefix)
  *
  * # Returns
  * * Pointer to SyncEngine on success, null on failure
+ *
+ * # Safety
+ * Caller must ensure all pointers are valid, non-null C strings
  */
 struct SyncEngine *sync_engine_create(const char *database_url,
                                       const char *server_url,
-                                      const char *auth_token,
-                                      const char *user_identifier);
+                                      const char *email,
+                                      const char *api_key,
+                                      const char *api_secret);
 
 /**
  * Destroy a sync engine instance and free memory
+ *
+ * # Safety
+ * Caller must ensure engine pointer was created by sync_engine_create and hasn't been freed
  */
 void sync_engine_destroy(struct SyncEngine *engine);
 
@@ -178,6 +198,9 @@ void sync_engine_destroy(struct SyncEngine *engine);
  *
  * # Returns
  * * CSyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid, content_json is a valid C string, and out_document_id has space for 37 bytes
  */
 enum SyncResult sync_engine_create_document(struct SyncEngine *engine,
                                             const char *content_json,
@@ -193,6 +216,9 @@ enum SyncResult sync_engine_create_document(struct SyncEngine *engine,
  *
  * # Returns
  * * CSyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid and both document_id and content_json are valid C strings
  */
 enum SyncResult sync_engine_update_document(struct SyncEngine *engine,
                                             const char *document_id,
@@ -207,11 +233,17 @@ enum SyncResult sync_engine_update_document(struct SyncEngine *engine,
  *
  * # Returns
  * * CSyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid and document_id is a valid C string
  */
 enum SyncResult sync_engine_delete_document(struct SyncEngine *engine, const char *document_id);
 
 /**
  * Free a C string allocated by this library
+ *
+ * # Safety
+ * Caller must ensure the string was allocated by this library and hasn't been freed
  */
 void sync_string_free(char *s);
 
@@ -221,21 +253,96 @@ void sync_string_free(char *s);
 char *sync_get_version(void);
 
 /**
- * Register an event callback with optional event type filter
+ * Register a callback for document events (Created, Updated, Deleted)
  *
  * # Arguments
  * * `engine` - Sync engine instance
- * * `callback` - C callback function to invoke for events
+ * * `callback` - C callback function to invoke for document events
  * * `context` - User-defined context pointer passed to callback
- * * `event_filter` - Optional event type filter (-1 for all events)
+ * * `event_filter` - Optional filter: 0=Created, 1=Updated, 2=Deleted, -1=all document events
  *
  * # Returns
- * * CSyncResult indicating success or failure
+ * * SyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
  */
-enum SyncResult sync_engine_register_event_callback(struct SyncEngine *engine,
-                                                    EventCallback callback,
-                                                    void *context,
-                                                    int32_t event_filter);
+enum SyncResult sync_engine_register_document_callback(struct SyncEngine *engine,
+                                                       DocumentEventCallback callback,
+                                                       void *context,
+                                                       int32_t event_filter);
+
+/**
+ * Register a callback for sync events (Started, Completed)
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `callback` - C callback function to invoke for sync events
+ * * `context` - User-defined context pointer passed to callback
+ *
+ * # Returns
+ * * SyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+ */
+enum SyncResult sync_engine_register_sync_callback(struct SyncEngine *engine,
+                                                   SyncEventCallback callback,
+                                                   void *context);
+
+/**
+ * Register a callback for error events (SyncError)
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `callback` - C callback function to invoke for error events
+ * * `context` - User-defined context pointer passed to callback
+ *
+ * # Returns
+ * * SyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+ */
+enum SyncResult sync_engine_register_error_callback(struct SyncEngine *engine,
+                                                    ErrorEventCallback callback,
+                                                    void *context);
+
+/**
+ * Register a callback for connection events (Lost, Attempted, Succeeded)
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `callback` - C callback function to invoke for connection events
+ * * `context` - User-defined context pointer passed to callback
+ *
+ * # Returns
+ * * SyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+ */
+enum SyncResult sync_engine_register_connection_callback(struct SyncEngine *engine,
+                                                         ConnectionEventCallback callback,
+                                                         void *context);
+
+/**
+ * Register a callback for conflict events (ConflictDetected)
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `callback` - C callback function to invoke for conflict events
+ * * `context` - User-defined context pointer passed to callback
+ *
+ * # Returns
+ * * SyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+ */
+enum SyncResult sync_engine_register_conflict_callback(struct SyncEngine *engine,
+                                                       ConflictEventCallback callback,
+                                                       void *context);
 
 /**
  * Process all queued events on the current thread
@@ -250,9 +357,91 @@ enum SyncResult sync_engine_register_event_callback(struct SyncEngine *engine,
  * # Important
  * This function MUST be called on the same thread where callbacks were registered.
  * Events are queued from any thread but only processed on the callback thread.
+ *
+ * # Safety
+ * Caller must ensure engine is valid and out_processed_count points to valid memory (if not null)
  */
 enum SyncResult sync_engine_process_events(struct SyncEngine *engine,
                                            uint32_t *out_processed_count);
+
+/**
+ * Get a document by ID
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `document_id` - Document ID as UUID string
+ * * `out_content` - Output pointer for document JSON content (caller must free with sync_string_free)
+ *
+ * # Returns
+ * * SyncResult::Success if document found and content returned
+ * * SyncResult::ErrorInvalidInput if document not found or invalid ID
+ *
+ * # Safety
+ * Caller must ensure engine is valid, document_id is a valid C string, and out_content is a valid pointer
+ */
+enum SyncResult sync_engine_get_document(struct SyncEngine *engine,
+                                         const char *document_id,
+                                         char **out_content);
+
+/**
+ * Get all documents as a JSON array
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `out_documents` - Output pointer for JSON array of documents (caller must free with sync_string_free)
+ *
+ * # Returns
+ * * SyncResult::Success with JSON array (empty array [] if no documents)
+ *
+ * # Safety
+ * Caller must ensure engine is valid and out_documents is a valid pointer
+ */
+enum SyncResult sync_engine_get_all_documents(struct SyncEngine *engine,
+                                              char **out_documents);
+
+/**
+ * Get the count of local documents
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `out_count` - Output pointer for document count
+ *
+ * # Returns
+ * * SyncResult::Success with count written to out_count
+ *
+ * # Safety
+ * Caller must ensure engine is valid and out_count is a valid pointer
+ */
+enum SyncResult sync_engine_count_documents(struct SyncEngine *engine, uint64_t *out_count);
+
+/**
+ * Check if the sync engine is connected to the server
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ *
+ * # Returns
+ * * true if connected, false if disconnected or engine is null
+ *
+ * # Safety
+ * Caller must ensure engine was created by sync_engine_create
+ */
+bool sync_engine_is_connected(struct SyncEngine *engine);
+
+/**
+ * Get the count of documents pending sync to server
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `out_count` - Output pointer for pending document count
+ *
+ * # Returns
+ * * SyncResult::Success with count written to out_count
+ *
+ * # Safety
+ * Caller must ensure engine is valid and out_count is a valid pointer
+ */
+enum SyncResult sync_engine_count_pending_sync(struct SyncEngine *engine, uint64_t *out_count);
 
 /**
  * Trigger a test event (for development/testing purposes)
@@ -275,6 +464,9 @@ enum SyncResult sync_engine_process_events(struct SyncEngine *engine,
  * * 7 - ConnectionLost
  * * 8 - ConnectionAttempted
  * * 9 - ConnectionSucceeded
+ *
+ * # Safety
+ * Caller must ensure engine is a valid pointer
  */
 enum SyncResult sync_engine_emit_test_event(struct SyncEngine *engine, int32_t event_type);
 
@@ -287,6 +479,9 @@ enum SyncResult sync_engine_emit_test_event(struct SyncEngine *engine, int32_t e
  *
  * # Returns
  * * SyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is a valid pointer
  */
 enum SyncResult sync_engine_emit_test_event_burst(struct SyncEngine *engine, int32_t count);
 

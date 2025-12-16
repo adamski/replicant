@@ -20,6 +20,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use sync_client::events::SyncEvent;
 use sync_client::{ClientDatabase, SyncEngine};
 use sync_core::models::Document;
 use uuid::Uuid;
@@ -561,6 +562,93 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await
     {
         Ok(engine) => {
+            // Register Rust-native callback for event handling
+            let state_for_callback = state.clone();
+            if let Err(e) = engine
+                .event_dispatcher()
+                .register_rust_callback(move |event| {
+                    let mut app_state = state_for_callback.lock().unwrap();
+                    match event {
+                        SyncEvent::DocumentCreated { title, .. } => {
+                            app_state.add_activity(
+                                format!("Task created: {}", title),
+                                ActivityType::Created,
+                            );
+                            app_state.needs_refresh = true;
+                        }
+                        SyncEvent::DocumentUpdated { title, .. } => {
+                            app_state.add_activity(
+                                format!("Task updated: {}", title),
+                                ActivityType::Updated,
+                            );
+                            app_state.needs_refresh = true;
+                        }
+                        SyncEvent::DocumentDeleted { id } => {
+                            app_state.add_activity(
+                                format!("Task deleted: {}...", &id[..8.min(id.len())]),
+                                ActivityType::Deleted,
+                            );
+                            app_state.needs_refresh = true;
+                        }
+                        SyncEvent::SyncStarted => {
+                            app_state.add_activity(
+                                "Sync started".to_string(),
+                                ActivityType::SyncStarted,
+                            );
+                        }
+                        SyncEvent::SyncCompleted { document_count } => {
+                            app_state.add_activity(
+                                format!("Sync completed ({} docs)", document_count),
+                                ActivityType::SyncCompleted,
+                            );
+                            app_state.last_sync = Some(Instant::now());
+                            app_state.needs_refresh = true;
+                        }
+                        SyncEvent::SyncError { message } => {
+                            app_state.add_activity(
+                                format!("Sync error: {}", message),
+                                ActivityType::Error,
+                            );
+                        }
+                        SyncEvent::ConnectionLost { server_url } => {
+                            app_state.add_activity(
+                                format!("Lost connection to {}", server_url),
+                                ActivityType::Disconnected,
+                            );
+                            app_state.sync_status.connected = false;
+                            app_state.sync_status.connection_state = "Disconnected".to_string();
+                            app_state.needs_refresh = true;
+                        }
+                        SyncEvent::ConnectionAttempted { server_url } => {
+                            app_state.add_activity(
+                                format!("Connecting to {}", server_url),
+                                ActivityType::SyncStarted,
+                            );
+                            app_state.sync_status.connection_state = "Connecting...".to_string();
+                        }
+                        SyncEvent::ConnectionSucceeded { server_url } => {
+                            app_state.add_activity(
+                                format!("Connected to {}", server_url),
+                                ActivityType::Connected,
+                            );
+                            app_state.sync_status.connected = true;
+                            app_state.sync_status.connection_state = "Connected".to_string();
+                        }
+                        SyncEvent::ConflictDetected { document_id, .. } => {
+                            app_state.add_activity(
+                                format!(
+                                    "Conflict detected: {}...",
+                                    &document_id[..8.min(document_id.len())]
+                                ),
+                                ActivityType::Error,
+                            );
+                        }
+                    }
+                })
+            {
+                debug_log(&format!("Failed to register callback: {:?}", e));
+            }
+
             {
                 let mut app_state = state.lock().unwrap();
                 app_state.add_activity(

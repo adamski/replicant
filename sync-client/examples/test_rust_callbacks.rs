@@ -1,9 +1,26 @@
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use sync_client::events::SyncEvent;
 use sync_client::{ClientDatabase, SyncEngine};
 use tokio::time::sleep;
 use uuid::Uuid;
+
+/// Shared state for tracking received events
+struct EventTracker {
+    events: Vec<String>,
+}
+
+impl EventTracker {
+    fn new() -> Self {
+        Self { events: Vec::new() }
+    }
+
+    fn add(&mut self, event: String) {
+        println!("  📥 Callback received: {}", event);
+        self.events.push(event);
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,6 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("👤 User ID: {}", user_id);
 
+    // Shared state for event tracking (thread-safe)
+    let tracker = Arc::new(Mutex::new(EventTracker::new()));
+
     // Try to connect to server (will fail, but we want to test offline mode)
     let sync_engine = match SyncEngine::new(
         &db_url,
@@ -45,9 +65,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         Ok(engine) => {
             println!("📡 Sync engine created successfully");
-            // Note: Type-specific callbacks (DocumentEventCallback, SyncEventCallback, etc.)
-            // are designed for C/C++ FFI. For Rust-native event handling, use process_events()
-            // to poll for events or check engine.is_connected() for connection status.
+
+            // Register Rust-native callback using the new SyncEvent enum
+            let tracker_clone = tracker.clone();
+            engine
+                .event_dispatcher()
+                .register_rust_callback(move |event| {
+                    let event_desc = match &event {
+                        SyncEvent::DocumentCreated { id, title, .. } => {
+                            format!("📄 Document created: {} ({})", title, &id[..8])
+                        }
+                        SyncEvent::DocumentUpdated { id, title, .. } => {
+                            format!("✏️ Document updated: {} ({})", title, &id[..8])
+                        }
+                        SyncEvent::DocumentDeleted { id } => {
+                            format!("🗑️ Document deleted: {}", &id[..8])
+                        }
+                        SyncEvent::SyncStarted => "🔄 Sync started".to_string(),
+                        SyncEvent::SyncCompleted { document_count } => {
+                            format!("✅ Sync completed: {} docs", document_count)
+                        }
+                        SyncEvent::SyncError { message } => {
+                            format!("🚨 Sync error: {}", message)
+                        }
+                        SyncEvent::ConnectionLost { server_url } => {
+                            format!("❌ Disconnected from {}", server_url)
+                        }
+                        SyncEvent::ConnectionAttempted { server_url } => {
+                            format!("🔄 Connecting to {}...", server_url)
+                        }
+                        SyncEvent::ConnectionSucceeded { server_url } => {
+                            format!("🔗 Connected to {}", server_url)
+                        }
+                        SyncEvent::ConflictDetected { document_id, .. } => {
+                            format!("⚠️ Conflict detected: {}", &document_id[..8])
+                        }
+                    };
+
+                    if let Ok(mut t) = tracker_clone.lock() {
+                        t.add(event_desc);
+                    }
+                })?;
+
+            println!("✓ Rust callback registered");
             Some(Arc::new(engine))
         }
         Err(e) => {
@@ -104,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sleep(Duration::from_millis(10)).await;
     }
 
-    // Test event emission (events are queued but not processed without callbacks)
+    // Test event emission with callback processing
     println!("\n🧪 Testing event emission...");
     if let Some(engine) = &sync_engine {
         let events = engine.event_dispatcher();
@@ -119,14 +179,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         events.emit_sync_completed(42);
         events.emit_connection_succeeded("ws://test-server");
 
-        // Process queued events (no callbacks registered, so just clears the queue)
+        // Process queued events - this invokes our Rust callback
         let processed = events.process_events()?;
-        println!(
-            "  🔄 Processed {} events (no callbacks registered)",
-            processed
-        );
+        println!("  🔄 Processed {} events", processed);
 
-        // Check connection status via polling API
+        // Check connection status
         println!(
             "  🔗 Connection status: {}",
             if engine.is_connected() {
@@ -140,9 +197,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait a bit more
     sleep(Duration::from_millis(100)).await;
 
-    println!("\n✅ Sync engine test completed!");
-    println!("   Note: Type-specific callbacks (DocumentEventCallback, SyncEventCallback, etc.)");
-    println!("   are designed for C/C++ FFI integration.");
+    // Show summary of received events
+    println!("\n📊 Event Summary:");
+    if let Ok(t) = tracker.lock() {
+        println!("   Total events received: {}", t.events.len());
+        for (i, event) in t.events.iter().enumerate() {
+            println!("   {}. {}", i + 1, event);
+        }
+    }
+
+    println!("\n✅ Rust callback test completed!");
     Ok(())
 }
 

@@ -64,6 +64,145 @@ pub enum EventType {
 }
 
 // =============================================================================
+// Rust-Native Event Types
+// =============================================================================
+
+/// Rust-native event enum with typed variants
+///
+/// This provides an idiomatic Rust interface for event handling, with each variant
+/// containing only the relevant data for that event type.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use sync_client::events::{EventDispatcher, SyncEvent};
+///
+/// let dispatcher = EventDispatcher::new();
+///
+/// dispatcher.register_rust_callback(|event| {
+///     match event {
+///         SyncEvent::DocumentCreated { id, title, .. } => {
+///             println!("Created: {} - {}", id, title);
+///         }
+///         SyncEvent::SyncCompleted { document_count } => {
+///             println!("Synced {} documents", document_count);
+///         }
+///         _ => {}
+///     }
+/// }).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub enum SyncEvent {
+    /// A new document was created
+    DocumentCreated {
+        id: String,
+        title: String,
+        content: serde_json::Value,
+    },
+    /// An existing document was updated
+    DocumentUpdated {
+        id: String,
+        title: String,
+        content: serde_json::Value,
+    },
+    /// A document was deleted
+    DocumentDeleted { id: String },
+    /// Synchronization started
+    SyncStarted,
+    /// Synchronization completed
+    SyncCompleted { document_count: u64 },
+    /// A sync error occurred
+    SyncError { message: String },
+    /// A conflict was detected
+    ConflictDetected {
+        document_id: String,
+        winning_content: Option<String>,
+        losing_content: Option<String>,
+    },
+    /// Connection to server was lost
+    ConnectionLost { server_url: String },
+    /// A connection attempt was made
+    ConnectionAttempted { server_url: String },
+    /// Successfully connected to server
+    ConnectionSucceeded { server_url: String },
+}
+
+impl SyncEvent {
+    /// Get the event type for this event
+    pub fn event_type(&self) -> EventType {
+        match self {
+            SyncEvent::DocumentCreated { .. } => EventType::DocumentCreated,
+            SyncEvent::DocumentUpdated { .. } => EventType::DocumentUpdated,
+            SyncEvent::DocumentDeleted { .. } => EventType::DocumentDeleted,
+            SyncEvent::SyncStarted => EventType::SyncStarted,
+            SyncEvent::SyncCompleted { .. } => EventType::SyncCompleted,
+            SyncEvent::SyncError { .. } => EventType::SyncError,
+            SyncEvent::ConflictDetected { .. } => EventType::ConflictDetected,
+            SyncEvent::ConnectionLost { .. } => EventType::ConnectionLost,
+            SyncEvent::ConnectionAttempted { .. } => EventType::ConnectionAttempted,
+            SyncEvent::ConnectionSucceeded { .. } => EventType::ConnectionSucceeded,
+        }
+    }
+
+    /// Convert from internal QueuedEvent to SyncEvent
+    fn from_queued(event: &QueuedEvent) -> Self {
+        match event.event_type {
+            EventType::DocumentCreated => SyncEvent::DocumentCreated {
+                id: event.document_id.clone().unwrap_or_default(),
+                title: event
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "Untitled".to_string()),
+                content: event
+                    .content
+                    .as_ref()
+                    .and_then(|c| serde_json::from_str(c).ok())
+                    .unwrap_or(serde_json::Value::Null),
+            },
+            EventType::DocumentUpdated => SyncEvent::DocumentUpdated {
+                id: event.document_id.clone().unwrap_or_default(),
+                title: event
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "Untitled".to_string()),
+                content: event
+                    .content
+                    .as_ref()
+                    .and_then(|c| serde_json::from_str(c).ok())
+                    .unwrap_or(serde_json::Value::Null),
+            },
+            EventType::DocumentDeleted => SyncEvent::DocumentDeleted {
+                id: event.document_id.clone().unwrap_or_default(),
+            },
+            EventType::SyncStarted => SyncEvent::SyncStarted,
+            EventType::SyncCompleted => SyncEvent::SyncCompleted {
+                document_count: event.numeric_data,
+            },
+            EventType::SyncError => SyncEvent::SyncError {
+                message: event
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Unknown error".to_string()),
+            },
+            EventType::ConflictDetected => SyncEvent::ConflictDetected {
+                document_id: event.document_id.clone().unwrap_or_default(),
+                winning_content: event.content.clone(),
+                losing_content: event.error.clone(),
+            },
+            EventType::ConnectionLost => SyncEvent::ConnectionLost {
+                server_url: event.title.clone().unwrap_or_default(),
+            },
+            EventType::ConnectionAttempted => SyncEvent::ConnectionAttempted {
+                server_url: event.title.clone().unwrap_or_default(),
+            },
+            EventType::ConnectionSucceeded => SyncEvent::ConnectionSucceeded {
+                server_url: event.title.clone().unwrap_or_default(),
+            },
+        }
+    }
+}
+
+// =============================================================================
 // Type-Specific Callback Types (C FFI)
 // =============================================================================
 
@@ -173,6 +312,15 @@ unsafe impl Sync for ConnectionCallbackEntry {}
 unsafe impl Send for ConflictCallbackEntry {}
 unsafe impl Sync for ConflictCallbackEntry {}
 
+// =============================================================================
+// Rust Callback Entry (Internal)
+// =============================================================================
+
+struct RustCallbackEntry {
+    callback: Box<dyn Fn(SyncEvent) + Send>,
+    event_filter: Option<EventType>,
+}
+
 #[derive(Debug, Clone)]
 pub struct QueuedEvent {
     event_type: EventType,
@@ -223,12 +371,14 @@ pub struct QueuedEvent {
 /// # }
 /// ```
 pub struct EventDispatcher {
-    // Type-specific callback storage
+    // Type-specific C FFI callback storage
     document_callbacks: Mutex<Vec<DocumentCallbackEntry>>,
     sync_callbacks: Mutex<Vec<SyncCallbackEntry>>,
     error_callbacks: Mutex<Vec<ErrorCallbackEntry>>,
     connection_callbacks: Mutex<Vec<ConnectionCallbackEntry>>,
     conflict_callbacks: Mutex<Vec<ConflictCallbackEntry>>,
+    // Rust-native callback storage
+    rust_callbacks: Mutex<Vec<RustCallbackEntry>>,
     // Event queue
     event_queue: Mutex<mpsc::Receiver<QueuedEvent>>,
     event_sender: mpsc::Sender<QueuedEvent>,
@@ -244,6 +394,7 @@ impl EventDispatcher {
             error_callbacks: Mutex::new(Vec::new()),
             connection_callbacks: Mutex::new(Vec::new()),
             conflict_callbacks: Mutex::new(Vec::new()),
+            rust_callbacks: Mutex::new(Vec::new()),
             event_queue: Mutex::new(receiver),
             event_sender: sender,
             callback_thread_id: Mutex::new(None),
@@ -378,6 +529,83 @@ impl EventDispatcher {
             .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
 
         callbacks.push(ConflictCallbackEntry { callback, context });
+
+        Ok(())
+    }
+
+    /// Register a Rust-native callback for all events
+    ///
+    /// This provides an idiomatic Rust interface using the `SyncEvent` enum.
+    /// The callback receives typed event variants with only relevant data.
+    ///
+    /// # Parameters
+    /// * `callback` - Closure to call for events
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use sync_client::events::{EventDispatcher, SyncEvent};
+    ///
+    /// let dispatcher = EventDispatcher::new();
+    ///
+    /// dispatcher.register_rust_callback(|event| {
+    ///     match event {
+    ///         SyncEvent::DocumentCreated { id, title, .. } => {
+    ///             println!("Document created: {} - {}", id, title);
+    ///         }
+    ///         SyncEvent::SyncCompleted { document_count } => {
+    ///             println!("Synced {} documents", document_count);
+    ///         }
+    ///         SyncEvent::ConnectionSucceeded { server_url } => {
+    ///             println!("Connected to {}", server_url);
+    ///         }
+    ///         _ => {}
+    ///     }
+    /// }).unwrap();
+    /// ```
+    pub fn register_rust_callback<F>(&self, callback: F) -> SyncResult<()>
+    where
+        F: Fn(SyncEvent) + Send + 'static,
+    {
+        self.ensure_callback_thread()?;
+
+        let mut callbacks = self
+            .rust_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("rust_callbacks".into()))?;
+
+        callbacks.push(RustCallbackEntry {
+            callback: Box::new(callback),
+            event_filter: None,
+        });
+
+        Ok(())
+    }
+
+    /// Register a Rust-native callback with event type filtering
+    ///
+    /// # Parameters
+    /// * `callback` - Closure to call for events
+    /// * `event_filter` - Only receive events of this type
+    pub fn register_rust_callback_filtered<F>(
+        &self,
+        callback: F,
+        event_filter: EventType,
+    ) -> SyncResult<()>
+    where
+        F: Fn(SyncEvent) + Send + 'static,
+    {
+        self.ensure_callback_thread()?;
+
+        let mut callbacks = self
+            .rust_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("rust_callbacks".into()))?;
+
+        callbacks.push(RustCallbackEntry {
+            callback: Box::new(callback),
+            event_filter: Some(event_filter),
+        });
 
         Ok(())
     }
@@ -553,12 +781,17 @@ impl EventDispatcher {
             .conflict_callbacks
             .lock()
             .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
+        let rust = self
+            .rust_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("rust_callbacks".into()))?;
 
         Ok(!doc.is_empty()
             || !sync.is_empty()
             || !error.is_empty()
             || !conn.is_empty()
-            || !conflict.is_empty())
+            || !conflict.is_empty()
+            || !rust.is_empty())
     }
 
     /// Process all queued events. This MUST be called on the same thread where callbacks were registered.
@@ -603,6 +836,10 @@ impl EventDispatcher {
             .conflict_callbacks
             .lock()
             .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
+        let rust_callbacks = self
+            .rust_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("rust_callbacks".into()))?;
 
         let receiver = self
             .event_queue
@@ -614,6 +851,20 @@ impl EventDispatcher {
 
         // Process all available events
         while let Ok(queued_event) = receiver.try_recv() {
+            // Dispatch to Rust callbacks first (no FFI overhead)
+            if !rust_callbacks.is_empty() {
+                let sync_event = SyncEvent::from_queued(&queued_event);
+                for entry in rust_callbacks.iter() {
+                    if let Some(filter) = entry.event_filter {
+                        if filter != queued_event.event_type {
+                            continue;
+                        }
+                    }
+                    (entry.callback)(sync_event.clone());
+                }
+            }
+
+            // Then dispatch to C FFI callbacks
             temp_strings.clear();
 
             // Convert strings to C-compatible format
@@ -741,7 +992,7 @@ impl Default for EventDispatcher {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_event_dispatcher_creation() {
@@ -1035,5 +1286,85 @@ mod tests {
         let processed = dispatcher.process_events().unwrap();
         assert_eq!(processed, 1);
         assert_eq!(conflict_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_rust_callback() {
+        let dispatcher = EventDispatcher::new();
+        let events_received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let events_clone = events_received.clone();
+
+        // Register Rust callback
+        dispatcher
+            .register_rust_callback(move |event| {
+                let desc = match &event {
+                    SyncEvent::DocumentCreated { title, .. } => format!("created:{}", title),
+                    SyncEvent::SyncCompleted { document_count } => {
+                        format!("synced:{}", document_count)
+                    }
+                    SyncEvent::ConnectionSucceeded { server_url } => {
+                        format!("connected:{}", server_url)
+                    }
+                    _ => format!("other:{:?}", event.event_type()),
+                };
+                events_clone.lock().unwrap().push(desc);
+            })
+            .unwrap();
+
+        // Emit events
+        let doc_id = Uuid::new_v4();
+        dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test Doc"}));
+        dispatcher.emit_sync_completed(42);
+        dispatcher.emit_connection_succeeded("ws://localhost:8080");
+
+        // Process events
+        let processed = dispatcher.process_events().unwrap();
+        assert_eq!(processed, 3);
+
+        // Verify events were received
+        let events = events_received.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0], "created:Test Doc");
+        assert_eq!(events[1], "synced:42");
+        assert_eq!(events[2], "connected:ws://localhost:8080");
+    }
+
+    #[test]
+    fn test_rust_and_c_callbacks_together() {
+        let dispatcher = EventDispatcher::new();
+
+        // Rust callback
+        let rust_count = Arc::new(AtomicUsize::new(0));
+        let rust_clone = rust_count.clone();
+        dispatcher
+            .register_rust_callback(move |_event| {
+                rust_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap();
+
+        // C FFI callback
+        let c_count = Arc::new(AtomicUsize::new(0));
+        let c_clone = c_count.clone();
+
+        extern "C" fn c_callback(_event_type: EventType, _doc_count: u64, context: *mut c_void) {
+            let count = unsafe { &*(context as *const AtomicUsize) };
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        dispatcher
+            .register_sync_callback(c_callback, &*c_clone as *const AtomicUsize as *mut c_void)
+            .unwrap();
+
+        // Emit sync events
+        dispatcher.emit_sync_started();
+        dispatcher.emit_sync_completed(10);
+
+        // Process events
+        let processed = dispatcher.process_events().unwrap();
+        assert_eq!(processed, 2);
+
+        // Both callbacks should have been invoked
+        assert_eq!(rust_count.load(Ordering::SeqCst), 2);
+        assert_eq!(c_count.load(Ordering::SeqCst), 2);
     }
 }

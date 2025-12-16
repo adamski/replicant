@@ -256,6 +256,86 @@ public:
         return count;
     }
 
+    /**
+     * Register a callback for document events (Created, Updated, Deleted)
+     *
+     * @param callback Function to call for document events
+     * @param context User-defined context pointer passed to callback
+     * @param event_filter Optional filter: 0=Created, 1=Updated, 2=Deleted, -1=all
+     * @throws sync_exception if registration fails
+     */
+    void register_document_callback(DocumentEventCallback callback, void* context, int32_t event_filter = -1)
+    {
+        SyncResult result = sync_engine_register_document_callback(engine_.get(), callback, context, event_filter);
+        check_result(result);
+    }
+
+    /**
+     * Register a callback for sync events (Started, Completed)
+     *
+     * @param callback Function to call for sync events
+     * @param context User-defined context pointer passed to callback
+     * @throws sync_exception if registration fails
+     */
+    void register_sync_callback(SyncEventCallback callback, void* context)
+    {
+        SyncResult result = sync_engine_register_sync_callback(engine_.get(), callback, context);
+        check_result(result);
+    }
+
+    /**
+     * Register a callback for error events (SyncError)
+     *
+     * @param callback Function to call for error events
+     * @param context User-defined context pointer passed to callback
+     * @throws sync_exception if registration fails
+     */
+    void register_error_callback(ErrorEventCallback callback, void* context)
+    {
+        SyncResult result = sync_engine_register_error_callback(engine_.get(), callback, context);
+        check_result(result);
+    }
+
+    /**
+     * Register a callback for connection events (Lost, Attempted, Succeeded)
+     *
+     * @param callback Function to call for connection events
+     * @param context User-defined context pointer passed to callback
+     * @throws sync_exception if registration fails
+     */
+    void register_connection_callback(ConnectionEventCallback callback, void* context)
+    {
+        SyncResult result = sync_engine_register_connection_callback(engine_.get(), callback, context);
+        check_result(result);
+    }
+
+    /**
+     * Register a callback for conflict events (ConflictDetected)
+     *
+     * @param callback Function to call for conflict events
+     * @param context User-defined context pointer passed to callback
+     * @throws sync_exception if registration fails
+     */
+    void register_conflict_callback(ConflictEventCallback callback, void* context)
+    {
+        SyncResult result = sync_engine_register_conflict_callback(engine_.get(), callback, context);
+        check_result(result);
+    }
+
+    /**
+     * Process all queued events on the current thread
+     *
+     * @return Number of events processed
+     * @throws sync_exception if processing fails
+     */
+    uint32_t process_events()
+    {
+        uint32_t count = 0;
+        SyncResult result = sync_engine_process_events(engine_.get(), &count);
+        check_result(result);
+        return count;
+    }
+
     // Disable copy operations (move-only type)
     sync_engine(const sync_engine&) = delete;
     sync_engine& operator=(const sync_engine&) = delete;

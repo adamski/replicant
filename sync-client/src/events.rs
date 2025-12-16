@@ -7,38 +7,19 @@
 //!
 //! - **Thread-Safe Design**: Events can be generated from any thread but callbacks are
 //!   only invoked on the thread that registered them
-//! - **Event Filtering**: Subscribe to specific event types or all events
+//! - **Type-Specific Callbacks**: Separate callback types for documents, sync, errors,
+//!   connections, and conflicts
+//! - **Event Filtering**: Subscribe to specific event types or all events within a category
 //! - **Context Passing**: Pass application context data to callbacks
 //! - **Offline/Online Events**: Receive events for both local and synchronized operations
 //!
-//! # Usage
+//! # Callback Types
 //!
-//! ```rust,no_run
-//! use sync_client::events::{EventDispatcher, EventType};
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create event dispatcher
-//! let dispatcher = EventDispatcher::new();
-//!
-//! // Register callback for all events
-//! dispatcher.register_rust_callback(
-//!     Box::new(|event_type, _document_id, _title, _content, _error, _numeric_data, _boolean_data, _context| {
-//!         // Handle event
-//!         println!("Event received: {:?}", event_type);
-//!     }),
-//!     std::ptr::null_mut(),
-//!     None
-//! )?;
-//!
-//! // In your main loop, process events
-//! loop {
-//!     let processed = dispatcher.process_events()?;
-//!     // ... do other work
-//! #   break; // Exit loop for doctest
-//! }
-//! # Ok(())
-//! # }
-//! ```
+//! - `DocumentEventCallback`: DocumentCreated, DocumentUpdated, DocumentDeleted
+//! - `SyncEventCallback`: SyncStarted, SyncCompleted
+//! - `ErrorEventCallback`: SyncError
+//! - `ConnectionEventCallback`: ConnectionLost, ConnectionAttempted, ConnectionSucceeded
+//! - `ConflictEventCallback`: ConflictDetected
 //!
 //! # Thread Safety
 //!
@@ -82,86 +63,115 @@ pub enum EventType {
     ConnectionSucceeded = 9,
 }
 
-/// Event data structure passed to C/C++ callbacks
-///
-/// Contains all relevant information about the event. Not all fields are populated
-/// for all event types - check the event_type to determine which fields are valid.
-#[repr(C)]
-#[derive(Debug)]
-pub struct EventData {
-    /// Type of event that occurred
-    pub event_type: EventType,
-    /// Document UUID (may be null for non-document events)
-    pub document_id: *const c_char,
-    /// Document title (may be null)
-    pub title: *const c_char,
-    /// Document content as JSON string (may be null)
-    pub content: *const c_char,
-    /// Error message (only for error events, may be null)
-    pub error: *const c_char,
-    /// Numeric data (e.g., sync count for SYNC_COMPLETED)
-    pub numeric_data: u64,
-    /// Boolean data (e.g., connection state for CONNECTION_STATE_CHANGED)
-    pub boolean_data: bool,
-}
+// =============================================================================
+// Type-Specific Callback Types (C FFI)
+// =============================================================================
 
-/// C-compatible callback function type for event notifications
+/// Document event callback for DocumentCreated, DocumentUpdated, DocumentDeleted
 ///
 /// # Parameters
-///
-/// * `event` - Pointer to event data (valid only during callback execution)
-/// * `context` - User-defined context pointer passed during registration
-///
-/// # Safety
-///
-/// The event pointer is only valid during the callback execution.
-/// Do not store or access it after the callback returns.
-/// String pointers in the event data are temporary and will be freed
-/// after the callback returns. Copy them if you need to retain the data.
-pub type EventCallback = extern "C" fn(event: *const EventData, context: *mut c_void);
-
-/// Rust-native callback function type for event handling
-///
-/// This is a more ergonomic callback interface for Rust applications that
-/// passes individual event parameters rather than a C-style struct pointer.
-///
-/// # Parameters
-///
-/// * `event_type` - The type of event that occurred
-/// * `document_id` - Optional document ID (for document-related events)
-/// * `title` - Optional document title
-/// * `content` - Optional document content as JSON string
-/// * `error` - Optional error message (for error events)
-/// * `numeric_data` - Numeric data (e.g., sync count)
-/// * `boolean_data` - Boolean data (e.g., connection state)
+/// * `event_type` - The specific document event type
+/// * `document_id` - UUID of the document (always non-null)
+/// * `title` - Document title (null for Deleted events)
+/// * `content` - Full document JSON (null for Deleted events)
 /// * `context` - User-defined context pointer
-pub type RustEventCallback = Box<
-    dyn Fn(
-            EventType,
-            Option<&str>, // document_id
-            Option<&str>, // title
-            Option<&str>, // content
-            Option<&str>, // error
-            u64,          // numeric_data
-            bool,         // boolean_data
-            *mut c_void,  // context
-        ) + Send
-        + Sync,
->;
+pub type DocumentEventCallback = extern "C" fn(
+    event_type: EventType,
+    document_id: *const c_char,
+    title: *const c_char,
+    content: *const c_char,
+    context: *mut c_void,
+);
 
-enum CallbackType {
-    CFfi(EventCallback),
-    Rust(RustEventCallback),
-}
+/// Sync event callback for SyncStarted, SyncCompleted
+///
+/// # Parameters
+/// * `event_type` - SyncStarted or SyncCompleted
+/// * `document_count` - Number of documents synced (0 for SyncStarted)
+/// * `context` - User-defined context pointer
+pub type SyncEventCallback =
+    extern "C" fn(event_type: EventType, document_count: u64, context: *mut c_void);
 
-struct CallbackEntry {
-    callback: CallbackType,
+/// Error event callback for SyncError
+///
+/// # Parameters
+/// * `event_type` - Always SyncError
+/// * `error` - Error message (always non-null)
+/// * `context` - User-defined context pointer
+pub type ErrorEventCallback =
+    extern "C" fn(event_type: EventType, error: *const c_char, context: *mut c_void);
+
+/// Connection event callback for ConnectionLost, ConnectionAttempted, ConnectionSucceeded
+///
+/// # Parameters
+/// * `event_type` - The connection event type
+/// * `connected` - true if connected (valid for Lost/Succeeded), false otherwise
+/// * `attempt_number` - Reconnection attempt number (valid for ConnectionAttempted)
+/// * `context` - User-defined context pointer
+pub type ConnectionEventCallback = extern "C" fn(
+    event_type: EventType,
+    connected: bool,
+    attempt_number: u32,
+    context: *mut c_void,
+);
+
+/// Conflict event callback for ConflictDetected
+///
+/// # Parameters
+/// * `event_type` - Always ConflictDetected
+/// * `document_id` - UUID of the conflicted document (always non-null)
+/// * `winning_content` - Content of the winning version (always non-null)
+/// * `losing_content` - Content of the losing version (may be null)
+/// * `context` - User-defined context pointer
+pub type ConflictEventCallback = extern "C" fn(
+    event_type: EventType,
+    document_id: *const c_char,
+    winning_content: *const c_char,
+    losing_content: *const c_char,
+    context: *mut c_void,
+);
+
+// =============================================================================
+// Callback Entry Types (Internal)
+// =============================================================================
+
+struct DocumentCallbackEntry {
+    callback: DocumentEventCallback,
     context: *mut c_void,
     event_filter: Option<EventType>,
 }
 
-unsafe impl Send for CallbackEntry {}
-unsafe impl Sync for CallbackEntry {}
+struct SyncCallbackEntry {
+    callback: SyncEventCallback,
+    context: *mut c_void,
+}
+
+struct ErrorCallbackEntry {
+    callback: ErrorEventCallback,
+    context: *mut c_void,
+}
+
+struct ConnectionCallbackEntry {
+    callback: ConnectionEventCallback,
+    context: *mut c_void,
+}
+
+struct ConflictCallbackEntry {
+    callback: ConflictEventCallback,
+    context: *mut c_void,
+}
+
+// Safety: Callback entries are only accessed from the registered thread
+unsafe impl Send for DocumentCallbackEntry {}
+unsafe impl Sync for DocumentCallbackEntry {}
+unsafe impl Send for SyncCallbackEntry {}
+unsafe impl Sync for SyncCallbackEntry {}
+unsafe impl Send for ErrorCallbackEntry {}
+unsafe impl Sync for ErrorCallbackEntry {}
+unsafe impl Send for ConnectionCallbackEntry {}
+unsafe impl Sync for ConnectionCallbackEntry {}
+unsafe impl Send for ConflictCallbackEntry {}
+unsafe impl Sync for ConflictCallbackEntry {}
 
 #[derive(Debug, Clone)]
 pub struct QueuedEvent {
@@ -183,21 +193,25 @@ pub struct QueuedEvent {
 /// # Example
 ///
 /// ```rust,no_run
-/// use sync_client::events::{EventDispatcher, EventData, EventType};
+/// use sync_client::events::{EventDispatcher, EventType};
 /// use std::ffi::c_void;
 ///
 /// // Define callback function
-/// extern "C" fn my_callback(event: *const EventData, _context: *mut c_void) {
-///     unsafe {
-///         println!("Event type: {:?}", (*event).event_type);
-///     }
+/// extern "C" fn my_document_callback(
+///     event_type: EventType,
+///     document_id: *const std::ffi::c_char,
+///     title: *const std::ffi::c_char,
+///     content: *const std::ffi::c_char,
+///     _context: *mut c_void
+/// ) {
+///     println!("Document event: {:?}", event_type);
 /// }
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let dispatcher = EventDispatcher::new();
 ///
 /// // Register callback (sets callback thread to current thread)
-/// dispatcher.register_callback(my_callback, std::ptr::null_mut(), None)?;
+/// dispatcher.register_document_callback(my_document_callback, std::ptr::null_mut(), None)?;
 ///
 /// // In main loop
 /// loop {
@@ -209,7 +223,13 @@ pub struct QueuedEvent {
 /// # }
 /// ```
 pub struct EventDispatcher {
-    callbacks: Mutex<Vec<CallbackEntry>>,
+    // Type-specific callback storage
+    document_callbacks: Mutex<Vec<DocumentCallbackEntry>>,
+    sync_callbacks: Mutex<Vec<SyncCallbackEntry>>,
+    error_callbacks: Mutex<Vec<ErrorCallbackEntry>>,
+    connection_callbacks: Mutex<Vec<ConnectionCallbackEntry>>,
+    conflict_callbacks: Mutex<Vec<ConflictCallbackEntry>>,
+    // Event queue
     event_queue: Mutex<mpsc::Receiver<QueuedEvent>>,
     event_sender: mpsc::Sender<QueuedEvent>,
     callback_thread_id: Mutex<Option<ThreadId>>,
@@ -219,41 +239,54 @@ impl EventDispatcher {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
-            callbacks: Mutex::new(Vec::new()),
+            document_callbacks: Mutex::new(Vec::new()),
+            sync_callbacks: Mutex::new(Vec::new()),
+            error_callbacks: Mutex::new(Vec::new()),
+            connection_callbacks: Mutex::new(Vec::new()),
+            conflict_callbacks: Mutex::new(Vec::new()),
             event_queue: Mutex::new(receiver),
             event_sender: sender,
             callback_thread_id: Mutex::new(None),
         }
     }
 
-    pub fn register_callback(
+    /// Helper to set callback thread ID on first registration
+    fn ensure_callback_thread(&self) -> SyncResult<()> {
+        let mut thread_id = self
+            .callback_thread_id
+            .lock()
+            .map_err(|_| ClientError::LockError("thread ID".into()))?;
+        if thread_id.is_none() {
+            *thread_id = Some(thread::current().id());
+            tracing::info!(
+                "Event callbacks will be processed on thread: {:?}",
+                thread::current().id()
+            );
+        }
+        Ok(())
+    }
+
+    /// Register a callback for document events (Created, Updated, Deleted)
+    ///
+    /// # Parameters
+    /// * `callback` - Function to call for document events
+    /// * `context` - User-defined context pointer passed to callback
+    /// * `event_filter` - Optional filter: DocumentCreated, DocumentUpdated, DocumentDeleted, or None for all
+    pub fn register_document_callback(
         &self,
-        callback: EventCallback,
+        callback: DocumentEventCallback,
         context: *mut c_void,
         event_filter: Option<EventType>,
     ) -> SyncResult<()> {
-        // Set the callback thread ID on first registration
-        {
-            let mut thread_id = self
-                .callback_thread_id
-                .lock()
-                .map_err(|_| ClientError::LockError("thread ID".into()))?;
-            if thread_id.is_none() {
-                *thread_id = Some(thread::current().id());
-                tracing::info!(
-                    "Event callbacks will be processed on thread: {:?}",
-                    thread::current().id()
-                );
-            }
-        }
+        self.ensure_callback_thread()?;
 
         let mut callbacks = self
-            .callbacks
+            .document_callbacks
             .lock()
-            .map_err(|_| ClientError::LockError("callbacks".into()))?;
+            .map_err(|_| ClientError::LockError("document_callbacks".into()))?;
 
-        callbacks.push(CallbackEntry {
-            callback: CallbackType::CFfi(callback),
+        callbacks.push(DocumentCallbackEntry {
+            callback,
             context,
             event_filter,
         });
@@ -261,71 +294,90 @@ impl EventDispatcher {
         Ok(())
     }
 
-    /// Register a Rust-native callback for event notifications
-    ///
-    /// This is a more ergonomic interface for Rust applications that avoids
-    /// the need to work with C-style function pointers and structs.
+    /// Register a callback for sync events (Started, Completed)
     ///
     /// # Parameters
-    ///
-    /// * `callback` - The callback function to invoke for events
-    /// * `context` - Optional user-defined context pointer
-    /// * `event_filter` - Optional filter to only receive specific event types
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use sync_client::events::{EventDispatcher, EventType};
-    ///
-    /// let dispatcher = EventDispatcher::new();
-    ///
-    /// dispatcher.register_rust_callback(
-    ///     Box::new(|event_type, document_id, title, _content, error, numeric_data, boolean_data, _context| {
-    ///         match event_type {
-    ///             EventType::DocumentCreated => {
-    ///                 println!("Document created: {}", title.unwrap_or("untitled"));
-    ///             },
-    ///             EventType::SyncCompleted => {
-    ///                 println!("Sync completed: {} documents", numeric_data);
-    ///             },
-    ///             _ => {}
-    ///         }
-    ///     }),
-    ///     std::ptr::null_mut(),
-    ///     None
-    /// ).unwrap();
-    /// ```
-    pub fn register_rust_callback(
+    /// * `callback` - Function to call for sync events
+    /// * `context` - User-defined context pointer passed to callback
+    pub fn register_sync_callback(
         &self,
-        callback: RustEventCallback,
+        callback: SyncEventCallback,
         context: *mut c_void,
-        event_filter: Option<EventType>,
     ) -> SyncResult<()> {
-        // Set the callback thread ID on first registration
-        {
-            let mut thread_id = self
-                .callback_thread_id
-                .lock()
-                .map_err(|_| ClientError::LockError("thread ID".into()))?;
-            if thread_id.is_none() {
-                *thread_id = Some(thread::current().id());
-                tracing::info!(
-                    "Event callbacks will be processed on thread: {:?}",
-                    thread::current().id()
-                );
-            }
-        }
+        self.ensure_callback_thread()?;
 
         let mut callbacks = self
-            .callbacks
+            .sync_callbacks
             .lock()
-            .map_err(|_| ClientError::LockError("callbacks".into()))?;
+            .map_err(|_| ClientError::LockError("sync_callbacks".into()))?;
 
-        callbacks.push(CallbackEntry {
-            callback: CallbackType::Rust(callback),
-            context,
-            event_filter,
-        });
+        callbacks.push(SyncCallbackEntry { callback, context });
+
+        Ok(())
+    }
+
+    /// Register a callback for error events (SyncError)
+    ///
+    /// # Parameters
+    /// * `callback` - Function to call for error events
+    /// * `context` - User-defined context pointer passed to callback
+    pub fn register_error_callback(
+        &self,
+        callback: ErrorEventCallback,
+        context: *mut c_void,
+    ) -> SyncResult<()> {
+        self.ensure_callback_thread()?;
+
+        let mut callbacks = self
+            .error_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("error_callbacks".into()))?;
+
+        callbacks.push(ErrorCallbackEntry { callback, context });
+
+        Ok(())
+    }
+
+    /// Register a callback for connection events (Lost, Attempted, Succeeded)
+    ///
+    /// # Parameters
+    /// * `callback` - Function to call for connection events
+    /// * `context` - User-defined context pointer passed to callback
+    pub fn register_connection_callback(
+        &self,
+        callback: ConnectionEventCallback,
+        context: *mut c_void,
+    ) -> SyncResult<()> {
+        self.ensure_callback_thread()?;
+
+        let mut callbacks = self
+            .connection_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("connection_callbacks".into()))?;
+
+        callbacks.push(ConnectionCallbackEntry { callback, context });
+
+        Ok(())
+    }
+
+    /// Register a callback for conflict events (ConflictDetected)
+    ///
+    /// # Parameters
+    /// * `callback` - Function to call for conflict events
+    /// * `context` - User-defined context pointer passed to callback
+    pub fn register_conflict_callback(
+        &self,
+        callback: ConflictEventCallback,
+        context: *mut c_void,
+    ) -> SyncResult<()> {
+        self.ensure_callback_thread()?;
+
+        let mut callbacks = self
+            .conflict_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
+
+        callbacks.push(ConflictCallbackEntry { callback, context });
 
         Ok(())
     }
@@ -479,6 +531,36 @@ impl EventDispatcher {
         }
     }
 
+    /// Check if any callbacks are registered
+    fn has_callbacks(&self) -> SyncResult<bool> {
+        let doc = self
+            .document_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("document_callbacks".into()))?;
+        let sync = self
+            .sync_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("sync_callbacks".into()))?;
+        let error = self
+            .error_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("error_callbacks".into()))?;
+        let conn = self
+            .connection_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("connection_callbacks".into()))?;
+        let conflict = self
+            .conflict_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
+
+        Ok(!doc.is_empty()
+            || !sync.is_empty()
+            || !error.is_empty()
+            || !conn.is_empty()
+            || !conflict.is_empty())
+    }
+
     /// Process all queued events. This MUST be called on the same thread where callbacks were registered.
     pub fn process_events(&self) -> SyncResult<usize> {
         // Verify we're on the correct thread
@@ -496,14 +578,31 @@ impl EventDispatcher {
             }
         }
 
-        let callbacks = self
-            .callbacks
-            .lock()
-            .map_err(|_| ClientError::LockError("callbacks".into()))?;
-
-        if callbacks.is_empty() {
+        if !self.has_callbacks()? {
             return Ok(0);
         }
+
+        // Lock all callback vectors
+        let document_callbacks = self
+            .document_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("document_callbacks".into()))?;
+        let sync_callbacks = self
+            .sync_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("sync_callbacks".into()))?;
+        let error_callbacks = self
+            .error_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("error_callbacks".into()))?;
+        let connection_callbacks = self
+            .connection_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("connection_callbacks".into()))?;
+        let conflict_callbacks = self
+            .conflict_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
 
         let receiver = self
             .event_queue
@@ -511,7 +610,7 @@ impl EventDispatcher {
             .map_err(|_| ClientError::LockError("event queue".into()))?;
 
         let mut processed_count = 0;
-        let mut temp_strings = Vec::new();
+        let mut temp_strings: Vec<CString> = Vec::new();
 
         // Process all available events
         while let Ok(queued_event) = receiver.try_recv() {
@@ -546,37 +645,72 @@ impl EventDispatcher {
                 ptr
             });
 
-            let event_data = EventData {
-                event_type: queued_event.event_type,
-                document_id: document_id_cstr.unwrap_or(std::ptr::null()),
-                title: title_cstr.unwrap_or(std::ptr::null()),
-                content: content_cstr.unwrap_or(std::ptr::null()),
-                error: error_cstr.unwrap_or(std::ptr::null()),
-                numeric_data: queued_event.numeric_data,
-                boolean_data: queued_event.boolean_data,
-            };
+            // Dispatch to appropriate callback type based on event type
+            match queued_event.event_type {
+                EventType::DocumentCreated
+                | EventType::DocumentUpdated
+                | EventType::DocumentDeleted => {
+                    let doc_id_ptr = document_id_cstr.unwrap_or(std::ptr::null());
+                    let title_ptr = title_cstr.unwrap_or(std::ptr::null());
+                    let content_ptr = content_cstr.unwrap_or(std::ptr::null());
 
-            // Invoke all matching callbacks
-            for entry in callbacks.iter() {
-                if let Some(filter) = entry.event_filter {
-                    if filter != queued_event.event_type {
-                        continue;
+                    for entry in document_callbacks.iter() {
+                        if let Some(filter) = entry.event_filter {
+                            if filter != queued_event.event_type {
+                                continue;
+                            }
+                        }
+                        (entry.callback)(
+                            queued_event.event_type,
+                            doc_id_ptr,
+                            title_ptr,
+                            content_ptr,
+                            entry.context,
+                        );
                     }
                 }
 
-                match &entry.callback {
-                    CallbackType::CFfi(callback) => {
-                        callback(&event_data, entry.context);
-                    }
-                    CallbackType::Rust(callback) => {
-                        callback(
+                EventType::SyncStarted | EventType::SyncCompleted => {
+                    for entry in sync_callbacks.iter() {
+                        (entry.callback)(
                             queued_event.event_type,
-                            queued_event.document_id.as_deref(),
-                            queued_event.title.as_deref(),
-                            queued_event.content.as_deref(),
-                            queued_event.error.as_deref(),
                             queued_event.numeric_data,
+                            entry.context,
+                        );
+                    }
+                }
+
+                EventType::SyncError => {
+                    let error_ptr = error_cstr.unwrap_or(std::ptr::null());
+                    for entry in error_callbacks.iter() {
+                        (entry.callback)(queued_event.event_type, error_ptr, entry.context);
+                    }
+                }
+
+                EventType::ConnectionLost
+                | EventType::ConnectionAttempted
+                | EventType::ConnectionSucceeded => {
+                    for entry in connection_callbacks.iter() {
+                        (entry.callback)(
+                            queued_event.event_type,
                             queued_event.boolean_data,
+                            queued_event.numeric_data as u32,
+                            entry.context,
+                        );
+                    }
+                }
+
+                EventType::ConflictDetected => {
+                    let doc_id_ptr = document_id_cstr.unwrap_or(std::ptr::null());
+                    let winning_ptr = content_cstr.unwrap_or(std::ptr::null());
+                    let losing_ptr = error_cstr.unwrap_or(std::ptr::null()); // Use error field for losing content
+
+                    for entry in conflict_callbacks.iter() {
+                        (entry.callback)(
+                            queued_event.event_type,
+                            doc_id_ptr,
+                            winning_ptr,
+                            losing_ptr,
                             entry.context,
                         );
                     }
@@ -612,7 +746,8 @@ mod tests {
     #[test]
     fn test_event_dispatcher_creation() {
         let dispatcher = EventDispatcher::new();
-        assert!(dispatcher.callbacks.lock().unwrap().is_empty());
+        assert!(dispatcher.document_callbacks.lock().unwrap().is_empty());
+        assert!(dispatcher.sync_callbacks.lock().unwrap().is_empty());
 
         // Should have no pending events initially
         let result = dispatcher.process_events();
@@ -620,24 +755,30 @@ mod tests {
     }
 
     #[test]
-    fn test_callback_registration_and_processing() {
+    fn test_document_callback_registration_and_processing() {
         let dispatcher = EventDispatcher::new();
         let callback_count = Arc::new(AtomicUsize::new(0));
         let count_clone = callback_count.clone();
 
-        extern "C" fn test_callback(_event: *const EventData, context: *mut c_void) {
+        extern "C" fn test_callback(
+            _event_type: EventType,
+            _doc_id: *const c_char,
+            _title: *const c_char,
+            _content: *const c_char,
+            context: *mut c_void,
+        ) {
             let count = unsafe { &*(context as *const AtomicUsize) };
             count.fetch_add(1, Ordering::SeqCst);
         }
 
-        let result = dispatcher.register_callback(
+        let result = dispatcher.register_document_callback(
             test_callback,
             &*count_clone as *const AtomicUsize as *mut c_void,
             None,
         );
 
         assert!(result.is_ok());
-        assert_eq!(dispatcher.callbacks.lock().unwrap().len(), 1);
+        assert_eq!(dispatcher.document_callbacks.lock().unwrap().len(), 1);
 
         // Emit an event
         let doc_id = Uuid::new_v4();
@@ -651,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_filtering() {
+    fn test_document_event_filtering() {
         let dispatcher = EventDispatcher::new();
         let created_count = Arc::new(AtomicUsize::new(0));
         let updated_count = Arc::new(AtomicUsize::new(0));
@@ -659,14 +800,20 @@ mod tests {
         let created_clone = created_count.clone();
         let updated_clone = updated_count.clone();
 
-        extern "C" fn count_callback(_event: *const EventData, context: *mut c_void) {
+        extern "C" fn count_callback(
+            _event_type: EventType,
+            _doc_id: *const c_char,
+            _title: *const c_char,
+            _content: *const c_char,
+            context: *mut c_void,
+        ) {
             let count = unsafe { &*(context as *const AtomicUsize) };
             count.fetch_add(1, Ordering::SeqCst);
         }
 
         // Register callback only for created events
         dispatcher
-            .register_callback(
+            .register_document_callback(
                 count_callback,
                 &*created_clone as *const AtomicUsize as *mut c_void,
                 Some(EventType::DocumentCreated),
@@ -675,7 +822,7 @@ mod tests {
 
         // Register callback only for updated events
         dispatcher
-            .register_callback(
+            .register_document_callback(
                 count_callback,
                 &*updated_clone as *const AtomicUsize as *mut c_void,
                 Some(EventType::DocumentUpdated),
@@ -696,7 +843,7 @@ mod tests {
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
         assert_eq!(updated_count.load(Ordering::SeqCst), 1);
 
-        // Emit deleted event (neither should trigger)
+        // Emit deleted event (neither should trigger - they're filtered)
         dispatcher.emit_document_deleted(&doc_id);
         dispatcher.process_events().unwrap();
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
@@ -709,17 +856,16 @@ mod tests {
         let callback_count = Arc::new(AtomicUsize::new(0));
         let count_clone = callback_count.clone();
 
-        extern "C" fn test_callback(_event: *const EventData, context: *mut c_void) {
+        extern "C" fn test_callback(_event_type: EventType, _doc_count: u64, context: *mut c_void) {
             let count = unsafe { &*(context as *const AtomicUsize) };
             count.fetch_add(1, Ordering::SeqCst);
         }
 
         // Register callback on main thread
         dispatcher
-            .register_callback(
+            .register_sync_callback(
                 test_callback,
                 &*count_clone as *const AtomicUsize as *mut c_void,
-                None,
             )
             .unwrap();
 
@@ -739,25 +885,47 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_events_queuing() {
+    fn test_multiple_callback_types() {
         let dispatcher = EventDispatcher::new();
-        let callback_count = Arc::new(AtomicUsize::new(0));
-        let count_clone = callback_count.clone();
+        let doc_count = Arc::new(AtomicUsize::new(0));
+        let sync_count = Arc::new(AtomicUsize::new(0));
 
-        extern "C" fn count_callback(_event: *const EventData, context: *mut c_void) {
+        let doc_clone = doc_count.clone();
+        let sync_clone = sync_count.clone();
+
+        extern "C" fn doc_callback(
+            _event_type: EventType,
+            _doc_id: *const c_char,
+            _title: *const c_char,
+            _content: *const c_char,
+            context: *mut c_void,
+        ) {
             let count = unsafe { &*(context as *const AtomicUsize) };
             count.fetch_add(1, Ordering::SeqCst);
         }
 
+        extern "C" fn sync_callback(_event_type: EventType, _doc_count: u64, context: *mut c_void) {
+            let count = unsafe { &*(context as *const AtomicUsize) };
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // Register callbacks for different event types
         dispatcher
-            .register_callback(
-                count_callback,
-                &*count_clone as *const AtomicUsize as *mut c_void,
+            .register_document_callback(
+                doc_callback,
+                &*doc_clone as *const AtomicUsize as *mut c_void,
                 None,
             )
             .unwrap();
 
-        // Emit multiple events
+        dispatcher
+            .register_sync_callback(
+                sync_callback,
+                &*sync_clone as *const AtomicUsize as *mut c_void,
+            )
+            .unwrap();
+
+        // Emit multiple events of different types
         let doc_id = Uuid::new_v4();
         dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test1"}));
         dispatcher.emit_document_updated(&doc_id, &serde_json::json!({"title": "Test2"}));
@@ -768,10 +936,104 @@ mod tests {
         // Process all events at once
         let processed = dispatcher.process_events().unwrap();
         assert_eq!(processed, 5);
-        assert_eq!(callback_count.load(Ordering::SeqCst), 5);
+        assert_eq!(doc_count.load(Ordering::SeqCst), 3); // 3 document events
+        assert_eq!(sync_count.load(Ordering::SeqCst), 2); // 2 sync events
 
         // Process again (should be no more events)
         let processed = dispatcher.process_events().unwrap();
         assert_eq!(processed, 0);
+    }
+
+    #[test]
+    fn test_error_callback() {
+        let dispatcher = EventDispatcher::new();
+        let error_count = Arc::new(AtomicUsize::new(0));
+        let error_clone = error_count.clone();
+
+        extern "C" fn error_callback(
+            _event_type: EventType,
+            _error: *const c_char,
+            context: *mut c_void,
+        ) {
+            let count = unsafe { &*(context as *const AtomicUsize) };
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        dispatcher
+            .register_error_callback(
+                error_callback,
+                &*error_clone as *const AtomicUsize as *mut c_void,
+            )
+            .unwrap();
+
+        dispatcher.emit_sync_error("Test error");
+
+        let processed = dispatcher.process_events().unwrap();
+        assert_eq!(processed, 1);
+        assert_eq!(error_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_connection_callback() {
+        let dispatcher = EventDispatcher::new();
+        let conn_count = Arc::new(AtomicUsize::new(0));
+        let conn_clone = conn_count.clone();
+
+        extern "C" fn conn_callback(
+            _event_type: EventType,
+            _connected: bool,
+            _attempt: u32,
+            context: *mut c_void,
+        ) {
+            let count = unsafe { &*(context as *const AtomicUsize) };
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        dispatcher
+            .register_connection_callback(
+                conn_callback,
+                &*conn_clone as *const AtomicUsize as *mut c_void,
+            )
+            .unwrap();
+
+        dispatcher.emit_connection_lost("ws://localhost:8080");
+        dispatcher.emit_connection_attempted("ws://localhost:8080");
+        dispatcher.emit_connection_succeeded("ws://localhost:8080");
+
+        let processed = dispatcher.process_events().unwrap();
+        assert_eq!(processed, 3);
+        assert_eq!(conn_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn test_conflict_callback() {
+        let dispatcher = EventDispatcher::new();
+        let conflict_count = Arc::new(AtomicUsize::new(0));
+        let conflict_clone = conflict_count.clone();
+
+        extern "C" fn conflict_callback(
+            _event_type: EventType,
+            _doc_id: *const c_char,
+            _winning: *const c_char,
+            _losing: *const c_char,
+            context: *mut c_void,
+        ) {
+            let count = unsafe { &*(context as *const AtomicUsize) };
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        dispatcher
+            .register_conflict_callback(
+                conflict_callback,
+                &*conflict_clone as *const AtomicUsize as *mut c_void,
+            )
+            .unwrap();
+
+        let doc_id = Uuid::new_v4();
+        dispatcher.emit_conflict_detected(&doc_id);
+
+        let processed = dispatcher.process_events().unwrap();
+        assert_eq!(processed, 1);
+        assert_eq!(conflict_count.load(Ordering::SeqCst), 1);
     }
 }

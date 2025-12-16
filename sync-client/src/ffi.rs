@@ -11,7 +11,10 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
-use crate::events::{EventCallback, EventDispatcher, EventType};
+use crate::events::{
+    ConflictEventCallback, ConnectionEventCallback, DocumentEventCallback, ErrorEventCallback,
+    EventDispatcher, EventType, SyncEventCallback,
+};
 use crate::{ClientDatabase, SyncEngine as CoreSyncEngine};
 
 /// Opaque handle to a SyncEngine instance
@@ -413,23 +416,23 @@ pub extern "C" fn sync_get_version() -> *mut c_char {
     }
 }
 
-/// Register an event callback with optional event type filter
+/// Register a callback for document events (Created, Updated, Deleted)
 ///
 /// # Arguments
 /// * `engine` - Sync engine instance
-/// * `callback` - C callback function to invoke for events
+/// * `callback` - C callback function to invoke for document events
 /// * `context` - User-defined context pointer passed to callback
-/// * `event_filter` - Optional event type filter (-1 for all events)
+/// * `event_filter` - Optional filter: 0=Created, 1=Updated, 2=Deleted, -1=all document events
 ///
 /// # Returns
-/// * CSyncResult indicating success or failure
+/// * SyncResult indicating success or failure
 ///
 /// # Safety
 /// Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
 #[no_mangle]
-pub unsafe extern "C" fn sync_engine_register_event_callback(
+pub unsafe extern "C" fn sync_engine_register_document_callback(
     engine: *mut SyncEngine,
-    callback: EventCallback,
+    callback: DocumentEventCallback,
     context: *mut c_void,
     event_filter: i32,
 ) -> SyncResult {
@@ -444,13 +447,6 @@ pub unsafe extern "C" fn sync_engine_register_event_callback(
             0 => Some(EventType::DocumentCreated),
             1 => Some(EventType::DocumentUpdated),
             2 => Some(EventType::DocumentDeleted),
-            3 => Some(EventType::SyncStarted),
-            4 => Some(EventType::SyncCompleted),
-            5 => Some(EventType::SyncError),
-            6 => Some(EventType::ConflictDetected),
-            7 => Some(EventType::ConnectionLost),
-            8 => Some(EventType::ConnectionAttempted),
-            9 => Some(EventType::ConnectionSucceeded),
             _ => return SyncResult::ErrorInvalidInput,
         }
     } else {
@@ -459,7 +455,139 @@ pub unsafe extern "C" fn sync_engine_register_event_callback(
 
     match engine
         .event_dispatcher
-        .register_callback(callback, context, filter)
+        .register_document_callback(callback, context, filter)
+    {
+        Ok(_) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorUnknown,
+    }
+}
+
+/// Register a callback for sync events (Started, Completed)
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `callback` - C callback function to invoke for sync events
+/// * `context` - User-defined context pointer passed to callback
+///
+/// # Returns
+/// * SyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_register_sync_callback(
+    engine: *mut SyncEngine,
+    callback: SyncEventCallback,
+    context: *mut c_void,
+) -> SyncResult {
+    if engine.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    match engine
+        .event_dispatcher
+        .register_sync_callback(callback, context)
+    {
+        Ok(_) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorUnknown,
+    }
+}
+
+/// Register a callback for error events (SyncError)
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `callback` - C callback function to invoke for error events
+/// * `context` - User-defined context pointer passed to callback
+///
+/// # Returns
+/// * SyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_register_error_callback(
+    engine: *mut SyncEngine,
+    callback: ErrorEventCallback,
+    context: *mut c_void,
+) -> SyncResult {
+    if engine.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    match engine
+        .event_dispatcher
+        .register_error_callback(callback, context)
+    {
+        Ok(_) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorUnknown,
+    }
+}
+
+/// Register a callback for connection events (Lost, Attempted, Succeeded)
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `callback` - C callback function to invoke for connection events
+/// * `context` - User-defined context pointer passed to callback
+///
+/// # Returns
+/// * SyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_register_connection_callback(
+    engine: *mut SyncEngine,
+    callback: ConnectionEventCallback,
+    context: *mut c_void,
+) -> SyncResult {
+    if engine.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    match engine
+        .event_dispatcher
+        .register_connection_callback(callback, context)
+    {
+        Ok(_) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorUnknown,
+    }
+}
+
+/// Register a callback for conflict events (ConflictDetected)
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `callback` - C callback function to invoke for conflict events
+/// * `context` - User-defined context pointer passed to callback
+///
+/// # Returns
+/// * SyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_register_conflict_callback(
+    engine: *mut SyncEngine,
+    callback: ConflictEventCallback,
+    context: *mut c_void,
+) -> SyncResult {
+    if engine.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    match engine
+        .event_dispatcher
+        .register_conflict_callback(callback, context)
     {
         Ok(_) => SyncResult::Success,
         Err(_) => SyncResult::ErrorUnknown,

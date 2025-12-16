@@ -53,36 +53,15 @@ crate::integration_test!(
 
         client2
             .event_dispatcher()
-            .register_rust_callback(
-                Box::new(
-                    move |event_type,
-                          document_id,
-                          title,
-                          _content,
-                          _error,
-                          _numeric_data,
-                          _boolean_data,
-                          _context| {
-                        use sync_client::events::EventType;
-                        let mut events = events_clone.lock().unwrap();
+            .register_rust_callback(move |event| {
+                use sync_client::events::SyncEvent;
+                let mut events = events_clone.lock().unwrap();
 
-                        match event_type {
-                            EventType::DocumentCreated => {
-                                if let (Some(doc_id), Some(title_str)) = (document_id, title) {
-                                    events.push(format!("created:{}:{}", doc_id, title_str));
-                                    tracing::info!(
-                                        "Client 2 received DocumentCreated event for {}",
-                                        title_str
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    },
-                ),
-                std::ptr::null_mut(),
-                None,
-            )
+                if let SyncEvent::DocumentCreated { id, title, .. } = event {
+                    events.push(format!("created:{}:{}", id, title));
+                    tracing::info!("Client 2 received DocumentCreated event for {}", title);
+                }
+            })
             .expect("Failed to register callback");
 
         // Process events a few times to ensure callback is ready

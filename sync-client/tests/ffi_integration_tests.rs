@@ -5,13 +5,16 @@
 
 use std::ffi::{c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sync_client::events::{EventData, EventType};
 use sync_client::ffi::{
-    sync_engine_create, sync_engine_create_document, sync_engine_destroy,
-    sync_engine_process_events, sync_engine_register_event_callback, SyncEngine, SyncResult,
+    sync_engine_count_documents, sync_engine_count_pending_sync, sync_engine_create,
+    sync_engine_create_document, sync_engine_destroy, sync_engine_get_all_documents,
+    sync_engine_get_document, sync_engine_is_connected, sync_engine_process_events,
+    sync_engine_register_event_callback, sync_engine_update_document, sync_string_free, SyncEngine,
+    SyncResult,
 };
 
 #[cfg(debug_assertions)]
@@ -83,8 +86,21 @@ extern "C" fn capture_callback(event: *const EventData, context: *mut c_void) {
     *capture.last_boolean_data.lock().unwrap() = event.boolean_data;
 }
 
+static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Creates a test engine with a unique file-based database per test invocation.
 unsafe fn create_test_engine() -> *mut SyncEngine {
-    let db_url = CString::new("sqlite::memory:").unwrap();
+    // Generate a unique database file for each test to avoid conflicts when running in parallel
+    let unique_id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let test_db_path = format!(
+        "/tmp/sync_client_test_{}_{}.db",
+        std::process::id(),
+        unique_id
+    );
+    // Clean up any existing database file
+    let _ = std::fs::remove_file(&test_db_path);
+
+    let db_url = CString::new(format!("sqlite:{}?mode=rwc", test_db_path)).unwrap();
     let server_url = CString::new("ws://localhost:8080/ws").unwrap();
     let email = CString::new("test-user@example.com").unwrap();
     let api_key = CString::new("rpa_test_api_key_example_12345").unwrap();
@@ -536,6 +552,301 @@ fn test_ffi_callback_thread_safety() {
             assert_eq!(capture.call_count.load(Ordering::SeqCst), 6);
         }
 
+        sync_engine_destroy(engine);
+    }
+}
+
+// =============================================================================
+// Tests for Read APIs (get_document, get_all_documents, count_documents, etc.)
+// =============================================================================
+
+#[test]
+fn test_ffi_get_document() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        // Create a document first
+        let content =
+            CString::new(r#"{"title":"Test Get Document","data":"some content"}"#).unwrap();
+        let mut doc_id_buf = [0u8; 37];
+
+        let create_result = sync_engine_create_document(
+            engine,
+            content.as_ptr(),
+            doc_id_buf.as_mut_ptr() as *mut i8,
+        );
+        assert_eq!(create_result, SyncResult::Success);
+
+        let doc_id = CStr::from_ptr(doc_id_buf.as_ptr() as *const i8)
+            .to_string_lossy()
+            .to_string();
+
+        // Now retrieve the document
+        let doc_id_cstr = CString::new(doc_id.clone()).unwrap();
+        let mut out_content: *mut i8 = ptr::null_mut();
+
+        let get_result = sync_engine_get_document(engine, doc_id_cstr.as_ptr(), &mut out_content);
+
+        assert_eq!(get_result, SyncResult::Success);
+        assert!(!out_content.is_null());
+
+        let content_str = CStr::from_ptr(out_content).to_string_lossy().to_string();
+        assert!(content_str.contains("Test Get Document"));
+        assert!(content_str.contains("some content"));
+        assert!(content_str.contains(&doc_id)); // Should include the document ID
+
+        // Free the returned string
+        sync_string_free(out_content);
+
+        sync_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_ffi_get_document_not_found() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        // Try to get a non-existent document
+        let fake_id = CString::new("00000000-0000-0000-0000-000000000000").unwrap();
+        let mut out_content: *mut i8 = ptr::null_mut();
+
+        let result = sync_engine_get_document(engine, fake_id.as_ptr(), &mut out_content);
+
+        assert_eq!(result, SyncResult::ErrorInvalidInput);
+
+        sync_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_ffi_get_all_documents_empty() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        let mut out_documents: *mut i8 = ptr::null_mut();
+
+        let result = sync_engine_get_all_documents(engine, &mut out_documents);
+
+        assert_eq!(result, SyncResult::Success);
+        assert!(!out_documents.is_null());
+
+        let docs_str = CStr::from_ptr(out_documents).to_string_lossy().to_string();
+        assert_eq!(docs_str, "[]"); // Empty array
+
+        sync_string_free(out_documents);
+        sync_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_ffi_get_all_documents_with_data() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        // Create multiple documents
+        let mut doc_ids: Vec<String> = Vec::new();
+        for i in 0..3 {
+            let content =
+                CString::new(format!(r#"{{"title":"Document {}","index":{}}}"#, i, i)).unwrap();
+            let mut doc_id_buf = [0u8; 37];
+
+            let result = sync_engine_create_document(
+                engine,
+                content.as_ptr(),
+                doc_id_buf.as_mut_ptr() as *mut i8,
+            );
+            assert_eq!(result, SyncResult::Success);
+
+            let doc_id = CStr::from_ptr(doc_id_buf.as_ptr() as *const i8)
+                .to_string_lossy()
+                .to_string();
+            doc_ids.push(doc_id);
+        }
+
+        // Get all documents
+        let mut out_documents: *mut i8 = ptr::null_mut();
+        let result = sync_engine_get_all_documents(engine, &mut out_documents);
+
+        assert_eq!(result, SyncResult::Success);
+        assert!(!out_documents.is_null());
+
+        let docs_str = CStr::from_ptr(out_documents).to_string_lossy().to_string();
+
+        // Verify all document IDs are present
+        for doc_id in &doc_ids {
+            assert!(
+                docs_str.contains(doc_id),
+                "Document {} not found in result",
+                doc_id
+            );
+        }
+
+        // Verify it's a JSON array with 3 documents
+        assert!(docs_str.starts_with('['));
+        assert!(docs_str.ends_with(']'));
+        assert!(docs_str.contains("Document 0"));
+        assert!(docs_str.contains("Document 1"));
+        assert!(docs_str.contains("Document 2"));
+
+        sync_string_free(out_documents);
+        sync_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_ffi_count_documents() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        // Initially should be 0
+        let mut count: u64 = 999;
+        let result = sync_engine_count_documents(engine, &mut count);
+        assert_eq!(result, SyncResult::Success);
+        assert_eq!(count, 0);
+
+        // Create some documents
+        for i in 0..5 {
+            let content = CString::new(format!(r#"{{"title":"Doc {}"}}"#, i)).unwrap();
+            let mut doc_id_buf = [0u8; 37];
+            let create_result = sync_engine_create_document(
+                engine,
+                content.as_ptr(),
+                doc_id_buf.as_mut_ptr() as *mut i8,
+            );
+            assert_eq!(create_result, SyncResult::Success);
+        }
+
+        // Count should now be 5
+        let result = sync_engine_count_documents(engine, &mut count);
+        assert_eq!(result, SyncResult::Success);
+        assert_eq!(count, 5);
+
+        sync_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_ffi_is_connected() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        // Should be disconnected (no server running)
+        let connected = sync_engine_is_connected(engine);
+        assert!(!connected);
+
+        sync_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_ffi_count_pending_sync() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        // Initially should have no pending syncs
+        let mut pending_count: u64 = 999;
+        let result = sync_engine_count_pending_sync(engine, &mut pending_count);
+        assert_eq!(result, SyncResult::Success);
+        assert_eq!(pending_count, 0);
+
+        // Create a document (should be pending sync since we're offline)
+        let content = CString::new(r#"{"title":"Pending Doc"}"#).unwrap();
+        let mut doc_id_buf = [0u8; 37];
+        let create_result = sync_engine_create_document(
+            engine,
+            content.as_ptr(),
+            doc_id_buf.as_mut_ptr() as *mut i8,
+        );
+        assert_eq!(create_result, SyncResult::Success);
+
+        // Should now have 1 pending sync
+        let result = sync_engine_count_pending_sync(engine, &mut pending_count);
+        assert_eq!(result, SyncResult::Success);
+        assert_eq!(pending_count, 1);
+
+        sync_engine_destroy(engine);
+    }
+}
+
+#[test]
+fn test_ffi_read_api_null_safety() {
+    unsafe {
+        // Test null engine pointer for all read APIs
+        let mut out_content: *mut i8 = ptr::null_mut();
+        let mut out_count: u64 = 0;
+        let fake_id = CString::new("00000000-0000-0000-0000-000000000000").unwrap();
+
+        // get_document with null engine
+        let result = sync_engine_get_document(ptr::null_mut(), fake_id.as_ptr(), &mut out_content);
+        assert_eq!(result, SyncResult::ErrorInvalidInput);
+
+        // get_all_documents with null engine
+        let result = sync_engine_get_all_documents(ptr::null_mut(), &mut out_content);
+        assert_eq!(result, SyncResult::ErrorInvalidInput);
+
+        // count_documents with null engine
+        let result = sync_engine_count_documents(ptr::null_mut(), &mut out_count);
+        assert_eq!(result, SyncResult::ErrorInvalidInput);
+
+        // count_pending_sync with null engine
+        let result = sync_engine_count_pending_sync(ptr::null_mut(), &mut out_count);
+        assert_eq!(result, SyncResult::ErrorInvalidInput);
+
+        // is_connected with null engine should return false
+        let connected = sync_engine_is_connected(ptr::null_mut());
+        assert!(!connected);
+    }
+}
+
+#[test]
+fn test_ffi_update_and_get_document() {
+    unsafe {
+        let engine = create_test_engine();
+        assert!(!engine.is_null(), "Failed to create sync engine");
+
+        // Create a document
+        let content = CString::new(r#"{"title":"Original Title","value":1}"#).unwrap();
+        let mut doc_id_buf = [0u8; 37];
+
+        let create_result = sync_engine_create_document(
+            engine,
+            content.as_ptr(),
+            doc_id_buf.as_mut_ptr() as *mut i8,
+        );
+        assert_eq!(create_result, SyncResult::Success);
+
+        let doc_id = CStr::from_ptr(doc_id_buf.as_ptr() as *const i8)
+            .to_string_lossy()
+            .to_string();
+        let doc_id_cstr = CString::new(doc_id.clone()).unwrap();
+
+        // Update the document
+        let updated_content = CString::new(r#"{"title":"Updated Title","value":42}"#).unwrap();
+        let update_result =
+            sync_engine_update_document(engine, doc_id_cstr.as_ptr(), updated_content.as_ptr());
+        assert_eq!(update_result, SyncResult::Success);
+
+        // Retrieve and verify the content field has updated values
+        let mut out_content: *mut i8 = ptr::null_mut();
+        let get_result = sync_engine_get_document(engine, doc_id_cstr.as_ptr(), &mut out_content);
+        assert_eq!(get_result, SyncResult::Success);
+
+        let content_str = CStr::from_ptr(out_content).to_string_lossy().to_string();
+        let doc: serde_json::Value = serde_json::from_str(&content_str).unwrap();
+
+        let doc_content = &doc["content"];
+        assert_eq!(doc_content["title"], "Updated Title");
+        assert_eq!(doc_content["value"], 42);
+
+        sync_string_free(out_content);
         sync_engine_destroy(engine);
     }
 }

@@ -26,7 +26,7 @@ impl ServerDatabase {
     pub async fn new(database_url: &str, app_namespace_id: String) -> SyncResult<Self> {
         // Use smaller connection pool in test environments to avoid exhausting PostgreSQL connections
         let max_connections = if std::env::var("RUN_INTEGRATION_TESTS").is_ok() {
-            3 // Tests need fewer connections per server instance
+            10 // Increased for SQLx 0.8 to handle concurrent authentications
         } else {
             10 // Production default
         };

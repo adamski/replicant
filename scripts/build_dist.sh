@@ -22,6 +22,14 @@ else
     exit 1
 fi
 
+echo "Copying C++ wrapper header to dist..."
+if [ -f "sync-client/include/sync_client.hpp" ]; then
+    cp sync-client/include/sync_client.hpp dist/include/
+    echo "✓ C++ header copied to dist/include/sync_client.hpp"
+else
+    echo "⚠ C++ header not found at sync-client/include/sync_client.hpp"
+fi
+
 echo "Copying built libraries to dist..."
 if [ -f "target/release/libsync_client.a" ]; then
     cp target/release/libsync_client.a dist/lib/
@@ -49,8 +57,8 @@ echo "Rust version: $(rustc --version)" >> dist/VERSION.md
 echo ""
 echo "✓ Distribution build complete!"
 echo "SDK available in dist/ folder:"
-echo "  - dist/include/sync_client.h     (C header)"
-echo "  - dist/include/sync_client.hpp   (C++ header - create manually)"
+echo "  - dist/include/sync_client.h     (C header - auto-generated)"
+echo "  - dist/include/sync_client.hpp   (C++ wrapper)"
 echo "  - dist/lib/                      (compiled libraries)"
 echo "  - dist/examples/                 (usage examples)"
 echo ""

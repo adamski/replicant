@@ -502,3 +502,210 @@ pub unsafe extern "C" fn sync_engine_process_events(
         Err(_) => SyncResult::ErrorUnknown,
     }
 }
+
+/// Get a document by ID
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `document_id` - Document ID as UUID string
+/// * `out_content` - Output pointer for document JSON content (caller must free with sync_string_free)
+///
+/// # Returns
+/// * SyncResult::Success if document found and content returned
+/// * SyncResult::ErrorInvalidInput if document not found or invalid ID
+///
+/// # Safety
+/// Caller must ensure engine is valid, document_id is a valid C string, and out_content is a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_get_document(
+    engine: *mut SyncEngine,
+    document_id: *const c_char,
+    out_content: *mut *mut c_char,
+) -> SyncResult {
+    if engine.is_null() || document_id.is_null() || out_content.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    let document_id = match CStr::from_ptr(document_id).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let doc_uuid = match Uuid::parse_str(document_id) {
+        Ok(id) => id,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let doc = match engine
+        .runtime
+        .block_on(async { engine.database.get_document(&doc_uuid).await })
+    {
+        Ok(d) => d,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    // Serialize document to JSON
+    let json = match serde_json::to_string(&doc) {
+        Ok(j) => j,
+        Err(_) => return SyncResult::ErrorSerialization,
+    };
+
+    match CString::new(json) {
+        Ok(c_str) => {
+            *out_content = c_str.into_raw();
+            SyncResult::Success
+        }
+        Err(_) => SyncResult::ErrorSerialization,
+    }
+}
+
+/// Get all documents as a JSON array
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `out_documents` - Output pointer for JSON array of documents (caller must free with sync_string_free)
+///
+/// # Returns
+/// * SyncResult::Success with JSON array (empty array [] if no documents)
+///
+/// # Safety
+/// Caller must ensure engine is valid and out_documents is a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_get_all_documents(
+    engine: *mut SyncEngine,
+    out_documents: *mut *mut c_char,
+) -> SyncResult {
+    if engine.is_null() || out_documents.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    let docs = match engine
+        .runtime
+        .block_on(async { engine.database.get_all_documents().await })
+    {
+        Ok(d) => d,
+        Err(_) => return SyncResult::ErrorDatabase,
+    };
+
+    // Serialize documents array to JSON
+    let json = match serde_json::to_string(&docs) {
+        Ok(j) => j,
+        Err(_) => return SyncResult::ErrorSerialization,
+    };
+
+    match CString::new(json) {
+        Ok(c_str) => {
+            *out_documents = c_str.into_raw();
+            SyncResult::Success
+        }
+        Err(_) => SyncResult::ErrorSerialization,
+    }
+}
+
+/// Get the count of local documents
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `out_count` - Output pointer for document count
+///
+/// # Returns
+/// * SyncResult::Success with count written to out_count
+///
+/// # Safety
+/// Caller must ensure engine is valid and out_count is a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_count_documents(
+    engine: *mut SyncEngine,
+    out_count: *mut u64,
+) -> SyncResult {
+    if engine.is_null() || out_count.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    let docs = match engine
+        .runtime
+        .block_on(async { engine.database.get_all_documents().await })
+    {
+        Ok(d) => d,
+        Err(_) => return SyncResult::ErrorDatabase,
+    };
+
+    *out_count = docs.len() as u64;
+    SyncResult::Success
+}
+
+/// Check if the sync engine is connected to the server
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+///
+/// # Returns
+/// * true if connected, false if disconnected or engine is null
+///
+/// # Safety
+/// Caller must ensure engine was created by sync_engine_create
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_is_connected(engine: *mut SyncEngine) -> bool {
+    if engine.is_null() {
+        return false;
+    }
+
+    let engine = &*engine;
+
+    match &engine.engine {
+        Some(sync_engine) => sync_engine.is_connected(),
+        None => false,
+    }
+}
+
+/// Get the count of documents pending sync to server
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `out_count` - Output pointer for pending document count
+///
+/// # Returns
+/// * SyncResult::Success with count written to out_count
+///
+/// # Safety
+/// Caller must ensure engine is valid and out_count is a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn sync_engine_count_pending_sync(
+    engine: *mut SyncEngine,
+    out_count: *mut u64,
+) -> SyncResult {
+    if engine.is_null() || out_count.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    // If we have a sync engine, use it; otherwise check database directly
+    let count = if let Some(ref sync_engine) = engine.engine {
+        match engine
+            .runtime
+            .block_on(async { sync_engine.count_pending_sync().await })
+        {
+            Ok(c) => c,
+            Err(_) => return SyncResult::ErrorDatabase,
+        }
+    } else {
+        // Offline mode - check pending documents in database
+        match engine
+            .runtime
+            .block_on(async { engine.database.get_pending_documents().await })
+        {
+            Ok(docs) => docs.len(),
+            Err(_) => return SyncResult::ErrorDatabase,
+        }
+    };
+
+    *out_count = count as u64;
+    SyncResult::Success
+}

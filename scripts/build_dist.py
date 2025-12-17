@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""
+Build distribution headers and libraries.
+Creates a stable SDK in the dist/ folder.
+"""
+
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+
+def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    """Run a command and return the result."""
+    return subprocess.run(cmd, check=check, capture_output=True, text=True)
+
+
+def main():
+    # Ensure we're in the workspace root
+    script_dir = Path(__file__).parent
+    workspace_root = script_dir.parent
+    os.chdir(workspace_root)
+
+    print("Building replicant-client library...")
+    result = run_command(["cargo", "build", "--package", "replicant-client", "--release"])
+    if result.returncode != 0:
+        print(f"Build failed: {result.stderr}")
+        sys.exit(1)
+
+    print("Creating dist directory structure...")
+    dist = Path("dist")
+    for subdir in ["include", "lib", "examples", "cmake", "juce/replicant"]:
+        (dist / subdir).mkdir(parents=True, exist_ok=True)
+
+    # Copy C header
+    print("Copying generated C header to dist...")
+    c_header = Path("replicant-client/target/include/replicant.h")
+    if c_header.exists():
+        shutil.copy(c_header, dist / "include" / "replicant.h")
+        print("✓ C header copied to dist/include/replicant.h")
+    else:
+        print("✗ Generated C header not found. Make sure cargo build completed successfully.")
+        sys.exit(1)
+
+    # Copy C++ wrapper header
+    print("Copying C++ wrapper header to dist...")
+    cpp_header = Path("replicant-client/include/replicant.hpp")
+    if cpp_header.exists():
+        shutil.copy(cpp_header, dist / "include" / "replicant.hpp")
+        print("✓ C++ header copied to dist/include/replicant.hpp")
+    else:
+        print("⚠ C++ header not found at replicant-client/include/replicant.hpp")
+
+    # Copy libraries (platform-specific)
+    print("Copying built libraries to dist...")
+    system = platform.system()
+
+    if system == "Darwin":  # macOS
+        libs = [
+            ("target/release/libreplicant_client.a", "Static library"),
+            ("target/release/libreplicant_client.dylib", "Dynamic library"),
+        ]
+    elif system == "Linux":
+        libs = [
+            ("target/release/libreplicant_client.a", "Static library"),
+            ("target/release/libreplicant_client.so", "Shared library"),
+        ]
+    elif system == "Windows":
+        libs = [
+            ("target/release/replicant_client.lib", "Static library"),
+            ("target/release/replicant_client.dll", "Dynamic library"),
+        ]
+    else:
+        libs = []
+        print(f"⚠ Unknown platform: {system}")
+
+    for lib_path, lib_type in libs:
+        lib = Path(lib_path)
+        if lib.exists():
+            shutil.copy(lib, dist / "lib" / lib.name)
+            print(f"✓ {lib_type} copied to dist/lib/")
+
+    # Copy JUCE module
+    print("Copying JUCE module to dist...")
+    juce_src = Path("wrappers/juce/replicant")
+    juce_dst = dist / "juce" / "replicant"
+
+    if juce_src.exists():
+        # Clear destination
+        if juce_dst.exists():
+            shutil.rmtree(juce_dst)
+        juce_dst.mkdir(parents=True, exist_ok=True)
+
+        # Copy files
+        for file in ["replicant.h", "replicant.cpp"]:
+            src_file = juce_src / file
+            if src_file.exists():
+                shutil.copy(src_file, juce_dst / file)
+
+        # Fix include path for dist layout
+        header_file = juce_dst / "replicant.h"
+        if header_file.exists():
+            content = header_file.read_text()
+            content = content.replace(
+                '"../../../dist/include/replicant.hpp"',
+                '"../../include/replicant.hpp"'
+            )
+            header_file.write_text(content)
+
+        print("✓ JUCE module copied to dist/juce/replicant/")
+    else:
+        print("⚠ JUCE module not found at wrappers/juce/replicant/")
+
+    # Get version from Cargo
+    print("Adding version information...")
+    result = run_command(["cargo", "metadata", "--no-deps", "--format-version", "1"], check=False)
+    version = "unknown"
+    if result.returncode == 0:
+        metadata = json.loads(result.stdout)
+        for pkg in metadata.get("packages", []):
+            if pkg.get("name") == "replicant-client":
+                version = pkg.get("version", "unknown")
+                break
+
+    # Get Rust version
+    rust_result = run_command(["rustc", "--version"], check=False)
+    rust_version = rust_result.stdout.strip() if rust_result.returncode == 0 else "unknown"
+
+    # Write version file
+    version_file = dist / "VERSION.md"
+    version_file.write_text(f"""# Replicant SDK v{version}
+
+Generated on: {datetime.now().isoformat()}
+Rust version: {rust_version}
+Platform: {platform.system()} {platform.machine()}
+""")
+
+    print()
+    print("✓ Distribution build complete!")
+    print("SDK available in dist/ folder:")
+    print("  - dist/include/replicant.h     (C header - auto-generated)")
+    print("  - dist/include/replicant.hpp   (C++ wrapper)")
+    print("  - dist/lib/                    (compiled libraries)")
+    print("  - dist/juce/replicant/         (JUCE module)")
+    print("  - dist/examples/               (usage examples)")
+    print()
+    print(f"Version: {version}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,7 +1,7 @@
 /**
- * @file simple_callback_test.c
+ * @file callback_example.c
  * @brief Simple test to verify C compilation and basic callback functionality
- * 
+ *
  * This is a minimal example that can be compiled to test the C interface.
  */
 
@@ -9,126 +9,142 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Include the main sync client header */
-#include "sync_client.h"
+/* Include the main replicant header */
+#include "replicant.h"
 
-/* Simple callback function */
-void simple_callback(const EventData* event, void* context) {
+/* Document callback function */
+void document_callback(
+    EventType event_type,
+    const char* document_id,
+    const char* title,
+    const char* content,
+    void* context)
+{
     int* call_count = (int*)context;
     (*call_count)++;
-    
-    printf("Event received: type=%d, call_count=%d\n", event->event_type, *call_count);
-    
-    if (event->document_id && strlen(event->document_id) > 0) {
-        printf("  Document ID: %s\n", event->document_id);
+
+    printf("Document event received: type=%d, call_count=%d\n", event_type, *call_count);
+
+    if (document_id && strlen(document_id) > 0)
+    {
+        printf("  Document ID: %s\n", document_id);
     }
-    
-    if (event->title && strlen(event->title) > 0) {
-        printf("  Title: %s\n", event->title);
+
+    if (title && strlen(title) > 0)
+    {
+        printf("  Title: %s\n", title);
     }
-    
-    if (event->error && strlen(event->error) > 0) {
-        printf("  Error: %s\n", event->error);
-    }
-    
-    if (event->numeric_data > 0) {
-        printf("  Numeric data: %llu\n", (unsigned long long)event->numeric_data);
-    }
-    
-    if (event->boolean_data) {
-        printf("  Boolean data: true\n");
+
+    if (content && strlen(content) > 0)
+    {
+        printf("  Content: %s\n", content);
     }
 }
 
-int main() {
+int main()
+{
     printf("=== Simple C Callback Test ===\n");
 
-    /* Create sync engine with HMAC authentication */
-    struct SyncEngine* engine = sync_engine_create(
+    /* Create Replicant client with HMAC authentication */
+    struct Replicant* client = replicant_create(
         "sqlite::memory:",
         "ws://localhost:8080/ws",
         "simple-test@example.com",
         "rpa_test_api_key_example_12345",
         "rps_test_api_secret_example_67890"
     );
-    
-    if (!engine) {
-        printf("Failed to create sync engine\n");
+
+    if (!client)
+    {
+        printf("Failed to create Replicant client\n");
         return 1;
     }
-    
-    printf("✓ Sync engine created\n");
-    
-    /* Register callback */
+
+    printf("Replicant client created\n");
+
+    /* Register document callback for all document events */
     int call_count = 0;
-    SyncResult result = sync_engine_register_event_callback(
-        engine,
-        simple_callback,
+    SyncResult result = replicant_register_document_callback(
+        client,
+        document_callback,
         &call_count,
-        -1  /* All events */
+        -1  /* All document events */
     );
-    
-    if (result != Success) {
+
+    if (result != Success)
+    {
         printf("Failed to register callback: %d\n", result);
-        sync_engine_destroy(engine);
+        replicant_destroy(client);
         return 1;
     }
-    
-    printf("✓ Callback registered\n");
-    
+
+    printf("Callback registered\n");
+
     /* Create a document to trigger an event */
     char doc_id[37] = {0};
-    result = sync_engine_create_document(
-        engine,
+    result = replicant_create_document(
+        client,
         "{\"title\":\"Test Document\",\"message\":\"Hello from C!\"}",
         doc_id
     );
-    
-    if (result == Success) {
-        printf("✓ Document created: %s\n", doc_id);
-        printf("✓ Total callbacks received: %d\n", call_count);
-        
-        if (call_count > 0) {
-            printf("✓ Callback system working!\n");
-        } else {
-            printf("⚠ No callbacks received (may be expected in offline mode)\n");
+
+    if (result == Success)
+    {
+        printf("Document created: %s\n", doc_id);
+
+        /* Process events to trigger callbacks */
+        uint32_t processed = 0;
+        replicant_process_events(client, &processed);
+        printf("Events processed: %u\n", processed);
+
+        printf("Total callbacks received: %d\n", call_count);
+
+        if (call_count > 0)
+        {
+            printf("Callback system working!\n");
         }
-    } else {
+        else
+        {
+            printf("Note: No callbacks received (may be expected in offline mode)\n");
+        }
+    }
+    else
+    {
         printf("Failed to create document: %d\n", result);
     }
-    
+
     /* Clean up */
-    sync_engine_destroy(engine);
-    printf("✓ Cleanup complete\n");
-    
+    replicant_destroy(client);
+    printf("Cleanup complete\n");
+
     printf("\n=== Test completed successfully! ===\n");
     return 0;
 }
 
 /*
  * To compile this test:
- * 
+ *
  * 1. First build the Rust library:
  *    cd sync-workspace
  *    cargo build --release
- * 
+ *
  * 2. Then compile this C test:
- *    gcc -I./sync-client/include \
+ *    gcc -I./replicant-client/include \
  *        -L./target/release \
- *        -lsync_client \
+ *        -lreplicant_client \
  *        -ldl -lpthread -lm \
- *        sync-client/examples/simple_callback_test.c \
- *        -o simple_test
- * 
+ *        examples/c/callback_example.c \
+ *        -o callback_example
+ *
  * 3. Run the test:
- *    ./simple_test
- * 
+ *    ./callback_example
+ *
  * Note: On macOS you might need additional flags:
- *    gcc -I./sync-client/include \
+ *    gcc -I./replicant-client/include \
  *        -L./target/release \
- *        -lsync_client \
+ *        -lreplicant_client \
  *        -framework CoreFoundation -framework Security \
  *        -ldl -lpthread -lm \
- *        sync-client/examples/simple_callback_test.c \
- *        -o simple_test
+ *        examples/c/callback_example.c \
+ *        -o callback_example
  */

@@ -2,7 +2,7 @@
  * @file callback_example.cpp
  * @brief C++ example demonstrating type-safe event callbacks
  *
- * This example shows how to use the sync client event system with the new
+ * This example shows how to use the replicant event system with the new
  * type-specific callback model that provides compile-time type safety and
  * eliminates unused fields.
  *
@@ -21,8 +21,8 @@
 #include <chrono>
 #include <thread>
 
-// Include the sync client header
-#include "sync_client.h"
+// Include the replicant header
+#include "replicant.h"
 
 // Simple event statistics - no thread synchronization needed!
 struct event_stats
@@ -200,7 +200,7 @@ void conflict_event_callback(
 class simple_sync_engine
 {
 private:
-    SyncEngine* engine_;
+    Replicant* engine_;
 
 public:
     simple_sync_engine(const std::string& database_url,
@@ -209,7 +209,7 @@ public:
                       const std::string& api_key,
                       const std::string& api_secret)
     {
-        engine_ = sync_engine_create(database_url.c_str(), server_url.c_str(), email.c_str(), api_key.c_str(), api_secret.c_str());
+        engine_ = replicant_create(database_url.c_str(), server_url.c_str(), email.c_str(), api_key.c_str(), api_secret.c_str());
         if (!engine_)
         {
             throw std::runtime_error("Failed to create sync engine");
@@ -220,7 +220,7 @@ public:
     {
         if (engine_)
         {
-            sync_engine_destroy(engine_);
+            replicant_destroy(engine_);
         }
     }
 
@@ -228,43 +228,43 @@ public:
     simple_sync_engine(const simple_sync_engine&) = delete;
     simple_sync_engine& operator=(const simple_sync_engine&) = delete;
 
-    SyncEngine* get() const { return engine_; }
+    Replicant* get() const { return engine_; }
 
     // Register type-specific callbacks
     SyncResult register_document_callback(DocumentEventCallback callback, void* context = nullptr, int event_filter = -1)
     {
-        return sync_engine_register_document_callback(engine_, callback, context, event_filter);
+        return replicant_register_document_callback(engine_, callback, context, event_filter);
     }
 
     SyncResult register_sync_callback(SyncEventCallback callback, void* context = nullptr)
     {
-        return sync_engine_register_sync_callback(engine_, callback, context);
+        return replicant_register_sync_callback(engine_, callback, context);
     }
 
     SyncResult register_error_callback(ErrorEventCallback callback, void* context = nullptr)
     {
-        return sync_engine_register_error_callback(engine_, callback, context);
+        return replicant_register_error_callback(engine_, callback, context);
     }
 
     SyncResult register_connection_callback(ConnectionEventCallback callback, void* context = nullptr)
     {
-        return sync_engine_register_connection_callback(engine_, callback, context);
+        return replicant_register_connection_callback(engine_, callback, context);
     }
 
     SyncResult register_conflict_callback(ConflictEventCallback callback, void* context = nullptr)
     {
-        return sync_engine_register_conflict_callback(engine_, callback, context);
+        return replicant_register_conflict_callback(engine_, callback, context);
     }
 
     SyncResult process_events(uint32_t* processed_count = nullptr)
     {
-        return sync_engine_process_events(engine_, processed_count);
+        return replicant_process_events(engine_, processed_count);
     }
 
     SyncResult create_document(const std::string& content_json, std::string& out_doc_id)
     {
         char doc_id[37] = {0};
-        auto result = sync_engine_create_document(engine_, content_json.c_str(), doc_id);
+        auto result = replicant_create_document(engine_, content_json.c_str(), doc_id);
         if (result == Success)
         {
             out_doc_id = std::string(doc_id);
@@ -274,23 +274,23 @@ public:
 
     SyncResult update_document(const std::string& document_id, const std::string& content_json)
     {
-        return sync_engine_update_document(engine_, document_id.c_str(), content_json.c_str());
+        return replicant_update_document(engine_, document_id.c_str(), content_json.c_str());
     }
 
     SyncResult delete_document(const std::string& document_id)
     {
-        return sync_engine_delete_document(engine_, document_id.c_str());
+        return replicant_delete_document(engine_, document_id.c_str());
     }
 
     #ifdef DEBUG
     SyncResult emit_test_event(int event_type)
     {
-        return sync_engine_emit_test_event(engine_, event_type);
+        return replicant_emit_test_event(engine_, event_type);
     }
 
     SyncResult emit_test_event_burst(int count)
     {
-        return sync_engine_emit_test_event_burst(engine_, count);
+        return replicant_emit_test_event_burst(engine_, count);
     }
     #endif
 };

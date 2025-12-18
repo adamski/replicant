@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.15)
-project(SyncClientCExample LANGUAGES C)
+project(ReplicantCExample LANGUAGES C)
 
 # Include the SDK headers
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../dist/include)
 
-# Find the sync client library
-find_library(SYNC_CLIENT_LIB
-    NAMES sync_client
+# Find the replicant client library
+find_library(REPLICANT_CLIENT_LIB
+    NAMES replicant_client
     PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../../dist/lib
     NO_DEFAULT_PATH
     REQUIRED
@@ -23,12 +23,12 @@ endif()
 
 # C examples
 add_executable(simple_example simple_example.c)
-target_link_libraries(simple_example ${SYNC_CLIENT_LIB} ${PLATFORM_LIBS})
+target_link_libraries(simple_example ${REPLICANT_CLIENT_LIB} ${PLATFORM_LIBS})
 
 add_executable(callback_example callback_example.c)
-target_link_libraries(callback_example ${SYNC_CLIENT_LIB} ${PLATFORM_LIBS})
+target_link_libraries(callback_example ${REPLICANT_CLIENT_LIB} ${PLATFORM_LIBS})
 
 # Print build information
 message(STATUS "Building C example against SDK:")
 message(STATUS "  Headers: ${CMAKE_CURRENT_SOURCE_DIR}/../../dist/include")
-message(STATUS "  Library: ${SYNC_CLIENT_LIB}")
+message(STATUS "  Library: ${REPLICANT_CLIENT_LIB}")

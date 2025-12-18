@@ -1,5 +1,5 @@
 [workspace]
-members = ["sync-core", "sync-client", "sync-server"]
+members = ["replicant", "replicant-core", "replicant-client", "replicant-server"]
 resolver = "2"
 
 [workspace.dependencies]

@@ -131,6 +131,24 @@ async fn test_delete_marks_document_as_pending_then_synced() {
     );
 }
 
+#[tokio::test]
+async fn test_count_documents() {
+    let db = setup_test_db().await;
+    let user_id = Uuid::new_v4();
+    let doc = make_document(user_id, "Test Document", "Test content", 1);
+    let doc1 = make_document(user_id, "Test Document 1", "Test content 1", 1);
+    let doc2 = make_document(user_id, "Test Document 2", "Test content 2", 1);
+    // Create and sync a document
+    db.save_document(&doc).await.unwrap();
+    db.mark_synced(&doc.id).await.unwrap();
+    assert_eq!(db.count_documents().await.unwrap(), 1);
+    db.save_document(&doc1).await.unwrap();
+    assert_eq!(db.count_documents().await.unwrap(), 2);
+    db.save_document(&doc2).await.unwrap();
+    assert_eq!(db.count_documents().await.unwrap(), 3);
+}
+
+
 /// Verifies that the title field is properly extracted from document content
 /// when documents are saved to the client database.
 #[tokio::test]

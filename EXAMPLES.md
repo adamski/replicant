@@ -282,11 +282,11 @@ docker-compose up -d
 
 # Option 2: Manual setup
 export DATABASE_URL="postgres://postgres:postgres@localhost/sync_db"
-cargo run --bin sync-server
+cargo run --bin replicant-server
 
 # Option 3: With monitoring enabled (shows real-time activity)
 export DATABASE_URL="postgres://postgres:postgres@localhost/sync_db"
-MONITORING=true cargo run --bin sync-server
+MONITORING=true cargo run --bin replicant-server
 ```
 
 With monitoring enabled, the server displays:
@@ -302,13 +302,13 @@ In another terminal, run the interactive client:
 
 ```bash
 # Run with defaults (creates databases/alice.sqlite3)
-cargo run --package sync-client --example interactive_client
+cargo run --package replicant-client --example interactive_client
 
 # Or specify a different database name
-cargo run --package sync-client --example interactive_client -- --database bob
+cargo run --package replicant-client --example interactive_client -- --database bob
 
 # Or specify custom options
-cargo run --package sync-client --example interactive_client -- \
+cargo run --package replicant-client --example interactive_client -- \
   --database my_tasks \
   --server ws://localhost:8080/ws \
   --token my-auth-token
@@ -408,7 +408,7 @@ The system supports demo mode for easy testing and development:
 
 ```bash
 # Uses demo-token by default - no setup required
-cargo run --package sync-client --example interactive_client
+cargo run --package replicant-client --example interactive_client
 
 # Server automatically creates users for demo-token
 # Each client gets a unique user ID
@@ -418,7 +418,7 @@ cargo run --package sync-client --example interactive_client
 
 ```bash
 # Use your own auth token
-cargo run --package sync-client --example interactive_client -- \
+cargo run --package replicant-client --example interactive_client -- \
   --token my-custom-token \
   --user-id 550e8400-e29b-41d4-a716-446655440000
 

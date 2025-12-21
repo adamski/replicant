@@ -52,15 +52,15 @@ kill_port_processes() {
     fi
 }
 
-# Kill all sync-server processes
+# Kill all replicant-server processes
 kill_sync_servers() {
-    info "Checking for running sync-server processes..."
+    info "Checking for running replicant-server processes..."
 
-    local pids=$(pgrep -f "sync-server" 2>/dev/null || true)
+    local pids=$(pgrep -f "replicant-server" 2>/dev/null || true)
     if [ -n "$pids" ]; then
-        warn "Found sync-server processes: $pids"
+        warn "Found replicant-server processes: $pids"
         for pid in $pids; do
-            warn "Killing sync-server process $pid..."
+            warn "Killing replicant-server process $pid..."
             kill -9 $pid 2>/dev/null || true
         done
         sleep 1
@@ -87,7 +87,7 @@ setup_database() {
 
     # Run migrations
     log "Running database migrations..."
-    DATABASE_URL="$DATABASE_URL" sqlx migrate run --source sync-server/migrations
+    DATABASE_URL="$DATABASE_URL" sqlx migrate run --source replicant-server/migrations
 }
 
 # Cleanup function
@@ -110,7 +110,7 @@ cleanup() {
         rm -f "$SERVER_PID_FILE"
     fi
 
-    # Kill any remaining sync-server processes
+    # Kill any remaining replicant-server processes
     kill_sync_servers
 }
 
@@ -168,7 +168,7 @@ export RUST_TEST_THREADS=1
 
 # Run all tests sequentially for complete isolation
 log "Running all integration tests sequentially (required for full teardown isolation)"
-cargo llvm-cov --workspace --bin sync-server --test "*" --html  --open -- --test-threads 1
+cargo llvm-cov --workspace --bin replicant-server --test "*" --html  --open -- --test-threads 1
 
 test_exit_code=$?
 

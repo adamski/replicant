@@ -8,30 +8,33 @@ ARG SQLX_OFFLINE=true
 ENV SQLX_OFFLINE=$SQLX_OFFLINE
 
 # Create empty project structure
-RUN USER=root cargo new --bin sync-server
-RUN USER=root cargo new --lib sync-core
-RUN USER=root cargo new --lib sync-client
+RUN USER=root cargo new --bin replicant-server
+RUN USER=root cargo new --lib replicant-core
+RUN USER=root cargo new --lib replicant-client
+RUN USER=root cargo new --lib replicant
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
-COPY sync-server/Cargo.toml ./sync-server/
-COPY sync-core/Cargo.toml ./sync-core/
-COPY sync-client/Cargo.toml ./sync-client/
+COPY replicant-server/Cargo.toml ./replicant-server/
+COPY replicant-core/Cargo.toml ./replicant-core/
+COPY replicant-client/Cargo.toml ./replicant-client/
+COPY replicant/Cargo.toml ./replicant/
 
 # Build dependencies - this is the caching Docker layer
-RUN cargo build --release --bin sync-server
-RUN rm -rf sync-server/src sync-core/src sync-client/src
+RUN cargo build --release --bin replicant-server
+RUN rm -rf replicant-server/src replicant-core/src replicant-client/src replicant/src
 
 # Copy source code
-COPY sync-core/src ./sync-core/src
-COPY sync-server/src ./sync-server/src
-COPY sync-client/src ./sync-client/src
-COPY sync-server/migrations ./sync-server/migrations
-COPY sync-server/.sqlx ./sync-server/.sqlx
+COPY replicant-core/src ./replicant-core/src
+COPY replicant-server/src ./replicant-server/src
+COPY replicant-client/src ./replicant-client/src
+COPY replicant/src ./replicant/src
+COPY replicant-server/migrations ./replicant-server/migrations
+COPY replicant-server/.sqlx ./replicant-server/.sqlx
 
 # Build application
-RUN touch sync-core/src/lib.rs sync-server/src/main.rs sync-client/src/lib.rs
-RUN cargo build --release --bin sync-server
+RUN touch replicant-core/src/lib.rs replicant-server/src/main.rs replicant-client/src/lib.rs replicant/src/lib.rs
+RUN cargo build --release --bin replicant-server
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -40,9 +43,9 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/sync-server /usr/local/bin/
-COPY --from=builder /app/sync-server/migrations /migrations
+COPY --from=builder /app/target/release/replicant-server /usr/local/bin/
+COPY --from=builder /app/replicant-server/migrations /migrations
 
 EXPOSE 8080
 
-CMD ["sync-server"]
+CMD ["replicant-server"]

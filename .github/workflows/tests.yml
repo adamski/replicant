@@ -95,7 +95,7 @@ jobs:
       env:
         DATABASE_URL: postgres://postgres:postgres@localhost:5432/sync_test_db
       run: |
-        cd sync-server
+        cd replicant-server
         sqlx migrate run
     
     - name: Run integration tests

@@ -15,12 +15,12 @@ services:
       timeout: 5s
       retries: 5
   
-  sync-server:
+  replicant-server:
     build: .
     environment:
       DATABASE_URL: postgres://sync_user:sync_password@postgres/sync_db
       BIND_ADDRESS: 0.0.0.0:8080
-      RUST_LOG: sync_server=debug,tower_http=debug
+      RUST_LOG: replicant_server=debug,tower_http=debug
     ports:
       - "8080:8080"
     depends_on:

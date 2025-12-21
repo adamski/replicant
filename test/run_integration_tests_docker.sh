@@ -49,16 +49,16 @@ for i in {1..30}; do
 done
 
 echo -e "${YELLOW}🔨 Building server...${NC}"
-cargo build --bin sync-server
+cargo build --bin replicant-server
 
 echo -e "${YELLOW}📊 Running migrations...${NC}"
-cd sync-server
+cd replicant-server
 DATABASE_URL="$TEST_DATABASE_URL" sqlx migrate run
 cd ..
 
 echo -e "${YELLOW}🚀 Starting sync server...${NC}"
 DATABASE_URL="$TEST_DATABASE_URL" RUST_LOG=warn PORT="$SERVER_PORT" \
-    cargo run --bin sync-server &
+    cargo run --bin replicant-server &
 SERVER_PID=$!
 
 # Wait for server to start (check if port is listening)

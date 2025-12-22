@@ -212,4 +212,96 @@ mod tests {
         let deleted_at: Option<String> = row.try_get("deleted_at").unwrap();
         assert!(deleted_at.is_some());
     }
+
+    #[tokio::test]
+    async fn test_create_document_with_specific_id() {
+        let db = ClientDatabase::new(":memory:").await.unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE user_config (
+                user_id TEXT PRIMARY KEY,
+                server_url TEXT NOT NULL,
+                last_sync_at TIMESTAMP
+            );
+
+            CREATE TABLE documents (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                content JSON NOT NULL,
+                sync_revision INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TIMESTAMP,
+                local_changes JSON,
+                sync_status TEXT DEFAULT 'synced',
+                title TEXT,
+                CHECK (sync_status IN ('synced', 'pending', 'conflict'))
+            );
+            "#,
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO user_config (user_id, server_url) VALUES (?1, ?2)")
+            .bind(user_id.to_string())
+            .bind("ws://localhost:8080/ws")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        // Create document with a specific UUID
+        let specific_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let content = json!({"title": "Original", "text": "First version"});
+        let doc = Document {
+            id: specific_id,
+            user_id,
+            content: content.clone(),
+            content_hash: None,
+            title: None,
+            sync_revision: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        db.save_document(&doc).await.unwrap();
+
+        // Verify document was saved with the specific ID
+        let loaded = db.get_document(&specific_id).await.unwrap();
+        assert_eq!(loaded.id, specific_id);
+        assert_eq!(loaded.content["title"], "Original");
+
+        // Create another document with same ID (upsert behavior)
+        let updated_content = json!({"title": "Updated", "text": "Second version"});
+        let doc2 = Document {
+            id: specific_id,
+            user_id,
+            content: updated_content.clone(),
+            content_hash: None,
+            title: None,
+            sync_revision: 2,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        db.save_document(&doc2).await.unwrap();
+
+        // Verify upsert updated the document
+        let loaded2 = db.get_document(&specific_id).await.unwrap();
+        assert_eq!(loaded2.id, specific_id);
+        assert_eq!(loaded2.content["title"], "Updated");
+        assert_eq!(loaded2.sync_revision, 2);
+
+        // Verify there's only one document with this ID
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE id = ?")
+            .bind(specific_id.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
 }

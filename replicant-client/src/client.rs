@@ -345,8 +345,16 @@ impl Client {
     }
 
     pub async fn create_document(&self, content: serde_json::Value) -> SyncResult<Document> {
+        self.create_document_with_id(Uuid::new_v4(), content).await
+    }
+
+    pub async fn create_document_with_id(
+        &self,
+        id: Uuid,
+        content: serde_json::Value,
+    ) -> SyncResult<Document> {
         let doc = Document {
-            id: Uuid::new_v4(),
+            id,
             user_id: self.user_id,
             content,
             sync_revision: 1,
@@ -357,7 +365,6 @@ impl Client {
             deleted_at: None,
         };
 
-        // Save locally first with explicit "pending" status
         tracing::info!(
             "CLIENT {}: Creating document locally: {}",
             self.client_id,
@@ -367,11 +374,9 @@ impl Client {
             .save_document_with_status(&doc, Some(SyncStatus::Pending))
             .await?;
 
-        // Emit event
         self.event_dispatcher
             .emit_document_created(&doc.id, &doc.content);
 
-        // Attempt immediate sync if connected
         if let Err(e) = self.try_immediate_sync(&doc).await {
             tracing::warn!(
                 "CLIENT {}: Failed to immediately sync new document {}: {}. Will retry later.",
@@ -379,7 +384,6 @@ impl Client {
                 doc.id,
                 e
             );
-            // Document stays in "pending" status for next sync attempt
         }
 
         Ok(doc)

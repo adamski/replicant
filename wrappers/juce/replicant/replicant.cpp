@@ -93,6 +93,11 @@ std::string Replicant::createDocument(const std::string& contentJson)
     return client.create_document(contentJson);
 }
 
+void Replicant::createDocumentWithId(const std::string& documentId, const std::string& contentJson)
+{
+    client.create_document_with_id(documentId, contentJson);
+}
+
 void Replicant::updateDocument(const std::string& documentId, const std::string& contentJson)
 {
     client.update_document(documentId, contentJson);

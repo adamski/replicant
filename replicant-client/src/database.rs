@@ -477,6 +477,14 @@ impl ClientDatabase {
     /// Update the FTS index entry for a single document.
     /// Call this after creating or updating a document.
     pub async fn update_fts_for_document(&self, document_id: &Uuid) -> SyncResult<()> {
+        // Skip FTS update if no search paths are configured
+        let has_config: (i32,) = sqlx::query_as(Queries::HAS_SEARCH_CONFIG)
+            .fetch_one(&self.pool)
+            .await?;
+        if has_config.0 == 0 {
+            return Ok(());
+        }
+
         let doc_id_str = document_id.to_string();
 
         // Use transaction to ensure atomicity (no orphaned entries on crash)

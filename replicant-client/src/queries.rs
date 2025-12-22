@@ -141,6 +141,9 @@ impl Queries {
         "UPDATE sync_queue SET retry_count = retry_count + 1 WHERE id = ?1";
 
     // FTS (Full-Text Search) queries
+    pub const HAS_SEARCH_CONFIG: &'static str =
+        "SELECT EXISTS(SELECT 1 FROM search_config LIMIT 1)";
+
     pub const CLEAR_SEARCH_CONFIG: &'static str = "DELETE FROM search_config";
 
     pub const INSERT_SEARCH_PATH: &'static str = "INSERT INTO search_config (json_path) VALUES (?)";

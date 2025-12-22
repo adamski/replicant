@@ -123,6 +123,33 @@ public:
     uint64_t countPendingSync();
 
     //==============================================================================
+    /** Configure which JSON paths to index for full-text search.
+        @param pathsJson JSON array of JSON paths (e.g., R"(["$.body", "$.notes"])")
+        @note Replaces existing configuration and rebuilds the search index.
+        @throws replicant::SyncException on failure */
+    void configureSearch(const std::string& pathsJson);
+
+    /** Search documents using FTS5 full-text search.
+        @param query FTS5 query string (e.g., "music", "tun*", "\"exact phrase\"")
+        @param limit Maximum number of results (default 100)
+        @return JSON array of matching documents
+        @throws replicant::SyncException on failure
+
+        FTS5 Query Syntax:
+        - Simple terms: "music" matches documents containing "music"
+        - Prefix: "tun*" matches "tuning", "tune", etc.
+        - Phrase: "\"equal temperament\"" matches exact phrase
+        - Boolean: "music AND theory", "piano OR keyboard"
+        - Column filter: "title:beethoven" searches only title field */
+    std::string searchDocuments(const std::string& query, uint32_t limit = 100);
+
+    /** Rebuild the full-text search index.
+        @note Called automatically by configureSearch(), but can be called
+              manually if needed (e.g., after bulk document imports).
+        @throws replicant::SyncException on failure */
+    void rebuildSearchIndex();
+
+    //==============================================================================
     /** Called when a document is created (locally or from sync).
         Parameters: id, title (extracted from content), full content JSON */
     std::function<void(const std::string& id,

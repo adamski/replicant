@@ -129,4 +129,20 @@ uint64_t Replicant::countPendingSync()
     return client.count_pending_sync();
 }
 
+//==============================================================================
+void Replicant::configureSearch(const std::string& pathsJson)
+{
+    client.configure_search(pathsJson);
+}
+
+std::string Replicant::searchDocuments(const std::string& query, uint32_t limit)
+{
+    return client.search_documents(query, limit);
+}
+
+void Replicant::rebuildSearchIndex()
+{
+    client.rebuild_search_index();
+}
+
 } // namespace replicant

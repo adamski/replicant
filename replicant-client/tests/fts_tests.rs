@@ -31,14 +31,10 @@ async fn test_fts_configure_and_search() {
         1,
     );
 
+    // FTS is automatically updated on save
     db.save_document(&doc1).await.unwrap();
     db.save_document(&doc2).await.unwrap();
     db.save_document(&doc3).await.unwrap();
-
-    // Update FTS for each document
-    db.update_fts_for_document(&doc1.id).await.unwrap();
-    db.update_fts_for_document(&doc2.id).await.unwrap();
-    db.update_fts_for_document(&doc3.id).await.unwrap();
 
     // Search for "harmony" - should match doc1
     let results = db.search_documents(&user_id, "harmony", 100).await.unwrap();
@@ -78,10 +74,6 @@ async fn test_fts_prefix_search() {
     db.save_document(&doc2).await.unwrap();
     db.save_document(&doc3).await.unwrap();
 
-    db.update_fts_for_document(&doc1.id).await.unwrap();
-    db.update_fts_for_document(&doc2.id).await.unwrap();
-    db.update_fts_for_document(&doc3.id).await.unwrap();
-
     // Prefix search for "tun*" should match both tuning and tuner docs
     let results = db.search_documents(&user_id, "tun*", 100).await.unwrap();
     assert_eq!(results.len(), 2);
@@ -106,12 +98,10 @@ async fn test_fts_user_isolation() {
     // Create docs for user1
     let doc1 = make_document(user1_id, "User1 Doc", "Secret information", 1);
     db.save_document(&doc1).await.unwrap();
-    db.update_fts_for_document(&doc1.id).await.unwrap();
 
     // Create docs for user2
     let doc2 = make_document(user2_id, "User2 Doc", "Secret information", 1);
     db.save_document(&doc2).await.unwrap();
-    db.update_fts_for_document(&doc2.id).await.unwrap();
 
     // User1 should only see their own docs
     let results = db.search_documents(&user1_id, "secret", 100).await.unwrap();
@@ -136,10 +126,9 @@ async fn test_fts_rebuild_index() {
     // Configure with $.body
     db.configure_search(&["$.text".to_string()]).await.unwrap();
 
-    // Create document with body field
+    // Create document with text field
     let doc = make_document(user_id, "Test Doc", "searchable content here", 1);
     db.save_document(&doc).await.unwrap();
-    db.update_fts_for_document(&doc.id).await.unwrap();
 
     // Verify search works
     let results = db
@@ -173,7 +162,6 @@ async fn test_fts_deleted_documents_excluded() {
     // Create and index a document
     let doc = make_document(user_id, "Test Doc", "unique searchterm", 1);
     db.save_document(&doc).await.unwrap();
-    db.update_fts_for_document(&doc.id).await.unwrap();
 
     // Verify it's searchable
     let results = db
@@ -182,11 +170,8 @@ async fn test_fts_deleted_documents_excluded() {
         .unwrap();
     assert_eq!(results.len(), 1);
 
-    // Delete the document
+    // Delete the document (FTS is automatically updated)
     db.delete_document(&doc.id).await.unwrap();
-
-    // Update FTS (should remove from index)
-    db.update_fts_for_document(&doc.id).await.unwrap();
 
     // Should no longer be searchable
     let results = db

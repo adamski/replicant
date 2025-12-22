@@ -174,6 +174,12 @@ impl ClientDatabase {
             .await?;
 
         tracing::info!("DATABASE: ✅ Document {} saved successfully", doc.id);
+
+        // Update FTS index for this document
+        if let Err(e) = self.update_fts_for_document(&doc.id).await {
+            tracing::warn!("FTS: Failed to update index for {}: {:?}", doc.id, e);
+        }
+
         Ok(())
     }
 
@@ -259,6 +265,11 @@ impl ClientDatabase {
             .bind(document_id.to_string())
             .execute(&self.pool)
             .await?;
+
+        // Remove from FTS index
+        if let Err(e) = self.update_fts_for_document(document_id).await {
+            tracing::warn!("FTS: Failed to remove {} from index: {:?}", document_id, e);
+        }
 
         Ok(())
     }
@@ -383,6 +394,11 @@ impl ClientDatabase {
             "DATABASE: Atomically saved document {} with pending status and queued patch",
             doc.id
         );
+
+        // Update FTS index for this document
+        if let Err(e) = self.update_fts_for_document(&doc.id).await {
+            tracing::warn!("FTS: Failed to update index for {}: {:?}", doc.id, e);
+        }
 
         Ok(())
     }

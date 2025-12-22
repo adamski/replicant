@@ -326,7 +326,7 @@ async fn test_no_orphaned_documents_after_user_deletion() {
 
     // Try to delete the user
     let delete_result = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id.to_string())
+        .bind(user_id)
         .execute(&db.pool)
         .await;
 

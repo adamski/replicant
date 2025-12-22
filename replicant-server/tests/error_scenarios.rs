@@ -124,8 +124,8 @@ async fn test_malformed_json_in_document_content() {
         "INSERT INTO documents (id, user_id, content, sync_revision, version_vector, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW(), NOW())"
     )
-    .bind(doc_id.to_string())
-    .bind(user_id.to_string())
+    .bind(doc_id)
+    .bind(user_id)
     .bind("not valid json")  // Invalid JSON
     .bind(1)
     .bind("{}")
@@ -160,7 +160,7 @@ async fn test_invalid_uuid_handling() {
          VALUES ($1, $2, $3, $4, $5, NOW(), NOW())"
     )
     .bind("not-a-valid-uuid")  // Invalid UUID
-    .bind(user_id.to_string())
+    .bind(user_id)
     .bind(json!({"test": "data"}))
     .bind(1)
     .bind("{}")
@@ -229,8 +229,8 @@ async fn test_not_null_constraint_enforcement() {
         "INSERT INTO documents (id, user_id, content, sync_revision, version_vector, created_at, updated_at)
          VALUES ($1, $2, NULL, $3, $4, NOW(), NOW())"
     )
-    .bind(Uuid::new_v4().to_string())
-    .bind(user_id.to_string())
+    .bind(Uuid::new_v4())
+    .bind(user_id)
     .bind(1)
     .bind("{}")
     .execute(&db.pool)

@@ -56,7 +56,7 @@ async fn generate_credentials(name: &str) -> replicant_core::SyncResult<()> {
 
     // Initialize database connection
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://localhost:5432/sync_db".to_string());
+        .unwrap_or_else(|_| "postgresql://postgres:postgres@localhost:5432/sync_db".to_string());
 
     // Read APP_NAMESPACE_ID from environment
     let app_namespace_id = std::env::var("APP_NAMESPACE_ID")
@@ -131,7 +131,7 @@ async fn run_server() -> replicant_core::SyncResult<()> {
     }
     // Database connection
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "http://localhost:5432/sync_db".to_string());
+        .unwrap_or_else(|_| "postgresql://postgres:postgres@localhost:5432/sync_db".to_string());
 
     // Read APP_NAMESPACE_ID from environment, default to match client's default
     let app_namespace_id = std::env::var("APP_NAMESPACE_ID")

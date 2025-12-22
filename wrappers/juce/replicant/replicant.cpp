@@ -15,11 +15,11 @@ Replicant::Replicant(const std::string& databaseUrl,
                      const std::string& email,
                      const std::string& apiKey,
                      const std::string& apiSecret)
-    : client_(databaseUrl, serverUrl, email, apiKey, apiSecret)
+    : client(databaseUrl, serverUrl, email, apiKey, apiSecret)
 {
-    client_.register_document_callback(documentCallback, this);
-    client_.register_connection_callback(connectionCallback, this);
-    client_.register_error_callback(errorCallback, this);
+    client.register_document_callback(documentCallback, this);
+    client.register_connection_callback(connectionCallback, this);
+    client.register_error_callback(errorCallback, this);
     startTimerHz(10);
 }
 
@@ -38,7 +38,7 @@ Replicant::~Replicant()
 //==============================================================================
 void Replicant::timerCallback()
 {
-    client_.process_events();
+    client.process_events();
 }
 
 //==============================================================================
@@ -90,43 +90,43 @@ void Replicant::errorCallback(EventType /*eventType*/, const char* errorMessage,
 //==============================================================================
 std::string Replicant::createDocument(const std::string& contentJson)
 {
-    return client_.create_document(contentJson);
+    return client.create_document(contentJson);
 }
 
 void Replicant::updateDocument(const std::string& documentId, const std::string& contentJson)
 {
-    client_.update_document(documentId, contentJson);
+    client.update_document(documentId, contentJson);
 }
 
 void Replicant::deleteDocument(const std::string& documentId)
 {
-    client_.delete_document(documentId);
+    client.delete_document(documentId);
 }
 
 std::string Replicant::getDocument(const std::string& documentId)
 {
-    return client_.get_document(documentId);
+    return client.get_document(documentId);
 }
 
 std::string Replicant::getAllDocuments()
 {
-    return client_.get_all_documents();
+    return client.get_all_documents();
 }
 
 //==============================================================================
 bool Replicant::isConnected()
 {
-    return client_.is_connected();
+    return client.is_connected();
 }
 
 uint64_t Replicant::countDocuments()
 {
-    return client_.count_documents();
+    return client.count_documents();
 }
 
 uint64_t Replicant::countPendingSync()
 {
-    return client_.count_pending_sync();
+    return client.count_pending_sync();
 }
 
 } // namespace replicant

@@ -153,7 +153,7 @@ private:
                                     uint32_t attemptNumber, void* context);
     static void errorCallback(EventType eventType, const char* errorMessage, void* context);
 
-    Client client_;
+    replicant::Client client;
 
     JUCE_LEAK_DETECTOR(Replicant)
 };

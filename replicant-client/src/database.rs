@@ -440,21 +440,32 @@ impl ClientDatabase {
     /// Configure which JSON paths to index for full-text search.
     /// Replaces existing configuration and rebuilds the index.
     pub async fn configure_search(&self, json_paths: &[String]) -> SyncResult<()> {
+        // Use transaction to ensure config and index stay in sync
+        let mut tx = self.pool.begin().await?;
+
         // Clear existing config
         sqlx::query(Queries::CLEAR_SEARCH_CONFIG)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
         // Insert new paths
         for path in json_paths {
             sqlx::query(Queries::INSERT_SEARCH_PATH)
                 .bind(path)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
 
-        // Rebuild the index with new configuration
-        self.rebuild_fts_index().await?;
+        // Rebuild the index with new configuration (inline to use same transaction)
+        sqlx::query(Queries::CLEAR_FTS_INDEX)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(Queries::REBUILD_FTS_INDEX)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
 
         tracing::info!(
             "FTS: Configured search with {} paths and rebuilt index",
@@ -468,18 +479,22 @@ impl ClientDatabase {
     pub async fn update_fts_for_document(&self, document_id: &Uuid) -> SyncResult<()> {
         let doc_id_str = document_id.to_string();
 
+        // Use transaction to ensure atomicity (no orphaned entries on crash)
+        let mut tx = self.pool.begin().await?;
+
         // Delete existing entry
         sqlx::query(Queries::DELETE_FTS_ENTRY)
             .bind(&doc_id_str)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
         // Insert new entry (query handles deleted_at check internally)
         sqlx::query(Queries::UPDATE_FTS_ENTRY)
             .bind(&doc_id_str)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
+        tx.commit().await?;
         Ok(())
     }
 

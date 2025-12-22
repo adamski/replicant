@@ -381,42 +381,45 @@ int main() {
 **C++ Integration:**
 
 ```cpp
-#include "sync_client.hpp"
+#include "replicant.hpp"
 #include <iostream>
 
-int main() {
-    try {
-        // Create engine with HMAC authentication
-        SyncClient::sync_engine engine(
+int main()
+{
+    try
+    {
+        // Create client with HMAC authentication
+        replicant::Client client(
             "sqlite:client.db?mode=rwc",
             "ws://localhost:8080/ws",
             "user@example.com",
             "rpa_your_api_key_here",
             "rps_your_secret_here"
         );
-        
-        std::cout << "Sync client version: " << SyncClient::sync_engine::get_version() << std::endl;
-        
+
+        std::cout << "Replicant version: " << replicant::Client::get_version() << std::endl;
+
         // Create a document
-        auto doc_id = engine.create_document(
+        auto doc_id = client.create_document(
             R"({"title":"My Document","content":"Hello World","type":"note","priority":"medium"})"
         );
-        
+
         std::cout << "Created document: " << doc_id << std::endl;
-        
+
         // Update the document
-        engine.update_document(
+        client.update_document(
             doc_id,
             R"({"content":"Hello Updated World","type":"note","priority":"high"})"
         );
-        
+
         std::cout << "Updated document successfully" << std::endl;
-        
-    } catch (const SyncClient::sync_exception& e) {
-        std::cerr << "Sync error: " << e.what() << std::endl;
+    }
+    catch (const replicant::SyncException& e)
+    {
+        std::cerr << "Replicant error: " << e.what() << std::endl;
         return 1;
     }
-    
+
     return 0;
 }
 ```

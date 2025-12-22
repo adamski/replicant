@@ -123,7 +123,7 @@ async fn test_fts_rebuild_index() {
         .unwrap();
     let user_id = db.get_user_id().await.unwrap();
 
-    // Configure with $.body
+    // Configure with $.text
     db.configure_search(&["$.text".to_string()]).await.unwrap();
 
     // Create document with text field

@@ -253,6 +253,102 @@ pub unsafe extern "C" fn replicant_create_document(
     SyncResult::Success
 }
 
+/// Create a new document with a specified ID
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `document_id` - UUID string to use as the document ID
+/// * `content_json` - Document content as JSON string
+///
+/// # Returns
+/// * SyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid, document_id and content_json are valid C strings
+#[no_mangle]
+pub unsafe extern "C" fn replicant_create_document_with_id(
+    engine: *mut Replicant,
+    document_id: *const c_char,
+    content_json: *const c_char,
+) -> SyncResult {
+    if engine.is_null() || document_id.is_null() || content_json.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &mut *engine;
+
+    let document_id_str = match CStr::from_ptr(document_id).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let doc_id = match Uuid::parse_str(document_id_str) {
+        Ok(id) => id,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let content_json = match CStr::from_ptr(content_json).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let content: Value = match serde_json::from_str(content_json) {
+        Ok(c) => c,
+        Err(_) => return SyncResult::ErrorSerialization,
+    };
+
+    if let Some(ref sync_engine) = engine.engine {
+        // Online mode - use sync engine
+        match engine.runtime.block_on(async {
+            sync_engine
+                .create_document_with_id(doc_id, content.clone())
+                .await
+        }) {
+            Ok(doc) => {
+                engine
+                    .event_dispatcher
+                    .emit_document_created(&doc.id, &content);
+            }
+            Err(_) => return SyncResult::ErrorConnection,
+        }
+    } else {
+        // Offline mode - create locally
+        let user_id = match engine
+            .runtime
+            .block_on(async { engine.database.get_user_id().await })
+        {
+            Ok(id) => id,
+            Err(_) => return SyncResult::ErrorDatabase,
+        };
+
+        let doc = replicant_core::models::Document {
+            id: doc_id,
+            user_id,
+            content: content.clone(),
+            sync_revision: 1,
+            content_hash: None,
+            title: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        if engine
+            .runtime
+            .block_on(async { engine.database.save_document(&doc).await })
+            .is_err()
+        {
+            return SyncResult::ErrorDatabase;
+        }
+
+        engine
+            .event_dispatcher
+            .emit_document_created(&doc_id, &content);
+    }
+
+    SyncResult::Success
+}
+
 /// Update an existing document
 ///
 /// # Arguments

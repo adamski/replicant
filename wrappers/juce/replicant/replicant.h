@@ -96,6 +96,12 @@ public:
         @throws replicant::SyncException on failure */
     std::string createDocument(const std::string& contentJson);
 
+    /** Creates a new document with a specified UUID.
+        @param documentId UUID string to use as the document ID
+        @param contentJson Document content as JSON string
+        @throws replicant::SyncException on failure or if documentId is invalid */
+    void createDocumentWithId(const std::string& documentId, const std::string& contentJson);
+
     /** Updates an existing document.
         @throws replicant::SyncException on failure */
     void updateDocument(const std::string& documentId, const std::string& contentJson);

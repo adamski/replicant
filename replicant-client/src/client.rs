@@ -385,6 +385,47 @@ impl Client {
         Ok(doc)
     }
 
+    pub async fn create_document_with_id(
+        &self,
+        id: Uuid,
+        content: serde_json::Value,
+    ) -> SyncResult<Document> {
+        let doc = Document {
+            id,
+            user_id: self.user_id,
+            content,
+            sync_revision: 1,
+            content_hash: None,
+            title: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+
+        tracing::info!(
+            "CLIENT {}: Creating document with ID locally: {}",
+            self.client_id,
+            doc.id
+        );
+        self.db
+            .save_document_with_status(&doc, Some(SyncStatus::Pending))
+            .await?;
+
+        self.event_dispatcher
+            .emit_document_created(&doc.id, &doc.content);
+
+        if let Err(e) = self.try_immediate_sync(&doc).await {
+            tracing::warn!(
+                "CLIENT {}: Failed to immediately sync new document {}: {}. Will retry later.",
+                self.client_id,
+                doc.id,
+                e
+            );
+        }
+
+        Ok(doc)
+    }
+
     pub async fn update_document(
         &self,
         id: Uuid,

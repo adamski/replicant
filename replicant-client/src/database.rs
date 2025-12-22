@@ -283,6 +283,13 @@ impl ClientDatabase {
             .map(|row| DbHelpers::parse_document(&row))
             .collect()
     }
+    pub async fn count_documents(&self) -> SyncResult<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE deleted_at IS NULL")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count)
+    }
 
     pub async fn queue_sync_operation(
         &self,

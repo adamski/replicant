@@ -756,15 +756,15 @@ pub unsafe extern "C" fn replicant_count_documents(
 
     let engine = &*engine;
 
-    let docs = match engine
+    let count = match engine
         .runtime
-        .block_on(async { engine.database.get_all_documents().await })
+        .block_on(async { engine.database.count_documents().await })
     {
         Ok(d) => d,
         Err(_) => return SyncResult::ErrorDatabase,
     };
 
-    *out_count = docs.len() as u64;
+    *out_count = count as u64;
     SyncResult::Success
 }
 

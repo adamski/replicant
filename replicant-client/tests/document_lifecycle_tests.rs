@@ -131,6 +131,64 @@ async fn test_delete_marks_document_as_pending_then_synced() {
     );
 }
 
+#[tokio::test]
+async fn test_count_documents() {
+    let db = setup_test_db().await;
+    let user_id = Uuid::new_v4();
+    let doc = make_document(user_id, "Test Document", "Test content", 1);
+    let doc1 = make_document(user_id, "Test Document 1", "Test content 1", 1);
+    let doc2 = make_document(user_id, "Test Document 2", "Test content 2", 1);
+    // Create and sync a document
+    db.save_document(&doc).await.unwrap();
+    db.mark_synced(&doc.id).await.unwrap();
+    assert_eq!(db.count_documents().await.unwrap(), 1);
+    db.save_document(&doc1).await.unwrap();
+    assert_eq!(db.count_documents().await.unwrap(), 2);
+    db.save_document(&doc2).await.unwrap();
+    assert_eq!(db.count_documents().await.unwrap(), 3);
+}
+
+#[tokio::test]
+async fn test_count_documents_excludes_deleted() {
+    let db = setup_test_db().await;
+    let user_id = Uuid::new_v4();
+
+    // Create 3 documents
+    let doc1 = make_document(user_id, "Document 1", "Content 1", 1);
+    let doc2 = make_document(user_id, "Document 2", "Content 2", 1);
+    let doc3 = make_document(user_id, "Document 3", "Content 3", 1);
+
+    db.save_document(&doc1).await.unwrap();
+    db.save_document(&doc2).await.unwrap();
+    db.save_document(&doc3).await.unwrap();
+
+    assert_eq!(db.count_documents().await.unwrap(), 3);
+
+    // Delete one document
+    db.delete_document(&doc2.id).await.unwrap();
+    assert_eq!(
+        db.count_documents().await.unwrap(),
+        2,
+        "Deleted documents should not be included in count"
+    );
+
+    // Delete another
+    db.delete_document(&doc1.id).await.unwrap();
+    assert_eq!(
+        db.count_documents().await.unwrap(),
+        1,
+        "Count should decrease as documents are deleted"
+    );
+
+    // Delete the last one
+    db.delete_document(&doc3.id).await.unwrap();
+    assert_eq!(
+        db.count_documents().await.unwrap(),
+        0,
+        "Count should be 0 when all documents are deleted"
+    );
+}
+
 /// Verifies that the title field is properly extracted from document content
 /// when documents are saved to the client database.
 #[tokio::test]

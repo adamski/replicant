@@ -148,7 +148,6 @@ async fn test_count_documents() {
     assert_eq!(db.count_documents().await.unwrap(), 3);
 }
 
-
 /// Verifies that the title field is properly extracted from document content
 /// when documents are saved to the client database.
 #[tokio::test]

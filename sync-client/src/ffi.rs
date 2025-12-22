@@ -768,7 +768,6 @@ pub unsafe extern "C" fn sync_engine_count_documents(
     SyncResult::Success
 }
 
-
 /// Check if the sync engine is connected to the server
 ///
 /// # Arguments

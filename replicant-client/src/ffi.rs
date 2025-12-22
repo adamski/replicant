@@ -261,7 +261,15 @@ pub unsafe extern "C" fn replicant_create_document(
 /// * `content_json` - Document content as JSON string
 ///
 /// # Returns
-/// * SyncResult indicating success or failure
+/// * `SyncResult::Success` - Document created successfully
+/// * `SyncResult::ErrorInvalidInput` - Invalid UUID format or null pointers
+/// * `SyncResult::ErrorSerialization` - Invalid JSON content
+/// * `SyncResult::ErrorDatabase` - Database operation failed
+/// * `SyncResult::ErrorConnection` - Sync to server failed (document saved locally)
+///
+/// # Note
+/// If a document with the specified ID already exists, it will be overwritten (upsert behavior).
+/// Use this for ID preservation during data migration or import scenarios.
 ///
 /// # Safety
 /// Caller must ensure engine is valid, document_id and content_json are valid C strings

@@ -19,8 +19,9 @@
 
   dependencies:     juce_core juce_events
   OSXLibs:          replicant_client
-  linuxLibs:        replicant_client
-  windowsLibs:      replicant_client
+  OSXFrameworks:    CoreFoundation Security
+  linuxLibs:        replicant_client pthread dl m
+  windowsLibs:      replicant_client ws2_32 userenv bcrypt
 
  END_JUCE_MODULE_DECLARATION
 
@@ -46,22 +47,24 @@ namespace replicant
     A sync client that provides offline-first document synchronization.
 
     This class wraps the replicant library and integrates with JUCE's
-    event system via Timer. Events are processed on the message thread,
-    making it safe to update UI directly from callbacks.
+    event system via Timer. Events are processed on the message thread
+    at 10Hz, making it safe to update UI directly from callbacks.
 
     Example usage:
     @code
-    replicant::SyncClient sync(
+    replicant::Replicant sync(
         "sqlite:data.db?mode=rwc", "wss://server/ws",
         "user@example.com", "api_key", "api_secret");
 
-    sync.onDocumentCreated = [this](const std::string& id, const std::string& content) {
-        auto task = nlohmann::json::parse(content).get<Task>();
+    sync.onDocumentCreated = [this](const std::string& id,
+                                     const std::string& title,
+                                     const std::string& content) {
+        addToList(id, title);
         refreshUI();
     };
     @endcode
 */
-class SyncClient : private juce::Timer
+class Replicant : private juce::Timer
 {
 public:
     //==============================================================================
@@ -74,49 +77,63 @@ public:
         @param apiKey       Application API key (rpa_ prefix)
         @param apiSecret    Application API secret (rps_ prefix)
     */
-    SyncClient(const std::string& databaseUrl,
-               const std::string& serverUrl,
-               const std::string& email,
-               const std::string& apiKey,
-               const std::string& apiSecret);
+    Replicant(const std::string& databaseUrl,
+              const std::string& serverUrl,
+              const std::string& email,
+              const std::string& apiKey,
+              const std::string& apiSecret);
 
-    ~SyncClient() override;
+    ~Replicant() override;
 
-    SyncClient(const SyncClient&) = delete;
-    SyncClient& operator=(const SyncClient&) = delete;
+    // Non-copyable, non-movable (prevent accidentally invalidating callbacks)
+    Replicant(const Replicant&) = delete;
+    Replicant& operator=(const Replicant&) = delete;
+    Replicant(Replicant&&) = delete;
+    Replicant& operator=(Replicant&&) = delete;
 
     //==============================================================================
-    /** Creates a new document. Returns the document UUID. */
+    /** Creates a new document. Returns the document UUID.
+        @throws replicant::SyncException on failure */
     std::string createDocument(const std::string& contentJson);
 
-    /** Updates an existing document. */
+    /** Updates an existing document.
+        @throws replicant::SyncException on failure */
     void updateDocument(const std::string& documentId, const std::string& contentJson);
 
-    /** Deletes a document. */
+    /** Deletes a document.
+        @throws replicant::SyncException on failure */
     void deleteDocument(const std::string& documentId);
 
-    /** Gets a document by ID. Returns empty string if not found. */
+    /** Gets a document by ID. Returns the full document JSON.
+        @throws replicant::SyncException if not found or on failure */
     std::string getDocument(const std::string& documentId);
 
-    /** Gets all documents as a JSON array. */
+    /** Gets all documents as a JSON array.
+        @throws replicant::SyncException on failure */
     std::string getAllDocuments();
 
     //==============================================================================
     /** Returns true if connected to the sync server. */
-    bool isConnected() const;
+    bool isConnected();
 
     /** Returns the number of documents in the local database. */
-    uint64_t countDocuments() const;
+    uint64_t countDocuments();
 
     /** Returns the number of documents pending sync. */
-    uint64_t countPendingSync() const;
+    uint64_t countPendingSync();
 
     //==============================================================================
-    /** Called when a document is created (locally or from sync). */
-    std::function<void(const std::string& id, const std::string& content)> onDocumentCreated;
+    /** Called when a document is created (locally or from sync).
+        Parameters: id, title (extracted from content), full content JSON */
+    std::function<void(const std::string& id,
+                       const std::string& title,
+                       const std::string& content)> onDocumentCreated;
 
-    /** Called when a document is updated (locally or from sync). */
-    std::function<void(const std::string& id, const std::string& content)> onDocumentUpdated;
+    /** Called when a document is updated (locally or from sync).
+        Parameters: id, title (extracted from content), full content JSON */
+    std::function<void(const std::string& id,
+                       const std::string& title,
+                       const std::string& content)> onDocumentUpdated;
 
     /** Called when a document is deleted (locally or from sync). */
     std::function<void(const std::string& id)> onDocumentDeleted;
@@ -138,7 +155,7 @@ private:
 
     Client client_;
 
-    JUCE_LEAK_DETECTOR(SyncClient)
+    JUCE_LEAK_DETECTOR(Replicant)
 };
 
 } // namespace replicant

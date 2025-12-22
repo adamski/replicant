@@ -15,4 +15,4 @@ WORKDIR /workspace
 
 # The source code will be mounted as a volume
 # This avoids rebuilding the image when code changes
-CMD ["cargo", "watch", "-x", "run --bin sync-server"]
+CMD ["cargo", "watch", "-x", "run --bin replicant-server"]

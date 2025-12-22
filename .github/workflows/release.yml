@@ -41,13 +41,13 @@ jobs:
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Build release binary
-      run: cargo build --release --bin sync-server
+      run: cargo build --release --bin replicant-server
 
     - name: Upload binary artifact
       uses: actions/upload-artifact@v3
       with:
-        name: sync-server-${{ github.ref_name }}
-        path: target/release/sync-server
+        name: replicant-server-${{ github.ref_name }}
+        path: target/release/replicant-server
         retention-days: 90
 
   docker-build-push:

@@ -139,6 +139,60 @@ impl Queries {
 
     pub const INCREMENT_RETRY_COUNT: &'static str =
         "UPDATE sync_queue SET retry_count = retry_count + 1 WHERE id = ?1";
+
+    // FTS (Full-Text Search) queries
+    pub const HAS_SEARCH_CONFIG: &'static str =
+        "SELECT EXISTS(SELECT 1 FROM search_config LIMIT 1)";
+
+    pub const CLEAR_SEARCH_CONFIG: &'static str = "DELETE FROM search_config";
+
+    pub const INSERT_SEARCH_PATH: &'static str = "INSERT INTO search_config (json_path) VALUES (?)";
+
+    pub const DELETE_FTS_ENTRY: &'static str = "DELETE FROM documents_fts WHERE document_id = ?";
+
+    pub const UPDATE_FTS_ENTRY: &'static str = r#"
+        INSERT INTO documents_fts (document_id, title, body)
+        SELECT
+            d.id,
+            COALESCE(d.title, ''),
+            COALESCE(
+                (SELECT GROUP_CONCAT(json_extract(d.content, sc.json_path), ' ')
+                 FROM search_config sc
+                 WHERE json_extract(d.content, sc.json_path) IS NOT NULL),
+                ''
+            )
+        FROM documents d
+        WHERE d.id = ? AND d.deleted_at IS NULL
+    "#;
+
+    pub const REBUILD_FTS_INDEX: &'static str = r#"
+        INSERT INTO documents_fts (document_id, title, body)
+        SELECT
+            d.id,
+            COALESCE(d.title, ''),
+            COALESCE(
+                (SELECT GROUP_CONCAT(json_extract(d.content, sc.json_path), ' ')
+                 FROM search_config sc
+                 WHERE json_extract(d.content, sc.json_path) IS NOT NULL),
+                ''
+            )
+        FROM documents d
+        WHERE d.deleted_at IS NULL
+    "#;
+
+    pub const CLEAR_FTS_INDEX: &'static str = "DELETE FROM documents_fts";
+
+    pub const SEARCH_DOCUMENTS: &'static str = r#"
+        SELECT d.id, d.user_id, d.content, d.sync_revision,
+               d.created_at, d.updated_at, d.deleted_at, d.title
+        FROM documents d
+        JOIN documents_fts fts ON d.id = fts.document_id
+        WHERE d.user_id = ?
+          AND d.deleted_at IS NULL
+          AND documents_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?
+    "#;
 }
 
 /// Helper functions for common database operations

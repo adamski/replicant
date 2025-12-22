@@ -837,3 +837,161 @@ pub unsafe extern "C" fn replicant_count_pending_sync(
     *out_count = count as u64;
     SyncResult::Success
 }
+
+// ===== FTS (Full-Text Search) Functions =====
+
+/// Configure which JSON paths to index for full-text search
+///
+/// # Arguments
+/// * `engine` - Replicant client instance
+/// * `paths_json` - JSON array of JSON paths to index (e.g., '["$.body", "$.notes"]')
+///
+/// # Returns
+/// * SyncResult::Success if configuration succeeded
+/// * SyncResult::ErrorInvalidInput if paths_json is invalid
+/// * SyncResult::ErrorDatabase if index rebuild fails
+///
+/// # Note
+/// This replaces any existing configuration and rebuilds the search index.
+///
+/// # Safety
+/// Caller must ensure engine is valid and paths_json is a valid C string
+#[no_mangle]
+pub unsafe extern "C" fn replicant_configure_search(
+    engine: *mut Replicant,
+    paths_json: *const c_char,
+) -> SyncResult {
+    if engine.is_null() || paths_json.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    let paths_json = match CStr::from_ptr(paths_json).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    // Parse JSON array of paths
+    let paths: Vec<String> = match serde_json::from_str(paths_json) {
+        Ok(p) => p,
+        Err(_) => return SyncResult::ErrorSerialization,
+    };
+
+    match engine
+        .runtime
+        .block_on(async { engine.database.configure_search(&paths).await })
+    {
+        Ok(_) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorDatabase,
+    }
+}
+
+/// Search documents using FTS5 full-text search
+///
+/// # Arguments
+/// * `engine` - Replicant client instance
+/// * `query` - FTS5 query string (e.g., "music", "tun*", "\"exact phrase\"")
+/// * `limit` - Maximum number of results (0 for default of 100)
+/// * `out_documents` - Output pointer for JSON array of matching documents
+///
+/// # Returns
+/// * SyncResult::Success with JSON array in out_documents
+/// * SyncResult::ErrorInvalidInput if query is invalid
+/// * SyncResult::ErrorDatabase if search fails
+///
+/// # FTS5 Query Syntax
+/// * Simple terms: "music" matches documents containing "music"
+/// * Prefix: "tun*" matches "tuning", "tune", etc.
+/// * Phrase: "\"equal temperament\"" matches exact phrase
+/// * Boolean: "music AND theory", "piano OR keyboard"
+/// * Column filter: "title:beethoven" searches only title field
+///
+/// # Safety
+/// Caller must ensure engine is valid, query is a valid C string,
+/// and out_documents is a valid pointer. Caller must free result with replicant_string_free.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_search_documents(
+    engine: *mut Replicant,
+    query: *const c_char,
+    limit: u32,
+    out_documents: *mut *mut c_char,
+) -> SyncResult {
+    if engine.is_null() || query.is_null() || out_documents.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    let query = match CStr::from_ptr(query).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    // Get user_id for filtering
+    let user_id = match engine
+        .runtime
+        .block_on(async { engine.database.get_user_id().await })
+    {
+        Ok(id) => id,
+        Err(_) => return SyncResult::ErrorDatabase,
+    };
+
+    let limit = if limit == 0 { 100 } else { limit as i64 };
+
+    let docs = match engine.runtime.block_on(async {
+        engine
+            .database
+            .search_documents(&user_id, query, limit)
+            .await
+    }) {
+        Ok(d) => d,
+        Err(_) => return SyncResult::ErrorDatabase,
+    };
+
+    // Serialize documents array to JSON
+    let json = match serde_json::to_string(&docs) {
+        Ok(j) => j,
+        Err(_) => return SyncResult::ErrorSerialization,
+    };
+
+    match CString::new(json) {
+        Ok(c_str) => {
+            *out_documents = c_str.into_raw();
+            SyncResult::Success
+        }
+        Err(_) => SyncResult::ErrorSerialization,
+    }
+}
+
+/// Rebuild the full-text search index
+///
+/// # Arguments
+/// * `engine` - Replicant client instance
+///
+/// # Returns
+/// * SyncResult::Success if rebuild succeeded
+/// * SyncResult::ErrorDatabase if rebuild fails
+///
+/// # Note
+/// This is called automatically by replicant_configure_search, but can be
+/// called manually if needed (e.g., after bulk document imports).
+///
+/// # Safety
+/// Caller must ensure engine is valid
+#[no_mangle]
+pub unsafe extern "C" fn replicant_rebuild_search_index(engine: *mut Replicant) -> SyncResult {
+    if engine.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    match engine
+        .runtime
+        .block_on(async { engine.database.rebuild_fts_index().await })
+    {
+        Ok(_) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorDatabase,
+    }
+}

@@ -72,20 +72,15 @@ impl TestContext {
                 base_url
             }
         } else {
-            // No DATABASE_URL set, use local default
-            let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
-            format!("postgres://{}@localhost:5432/{}", user, unique_db_name)
+            // No DATABASE_URL set, use local default with postgres user
+            format!(
+                "postgres://postgres:postgres@localhost:5432/{}",
+                unique_db_name
+            )
         };
 
-        // Use a random port between 9000-19000 for this test to avoid conflicts
-        // Widened range from 1000 to 10000 ports to reduce collision probability
-        // when running many tests in parallel
-        let port = 9000
-            + (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_micros()
-                % 10000) as u16;
+        // Use portpicker to find an available port, avoiding conflicts in parallel tests
+        let port = portpicker::pick_unused_port().expect("No available ports");
 
         let server_url =
             std::env::var("SYNC_SERVER_URL").unwrap_or_else(|_| format!("ws://localhost:{}", port));

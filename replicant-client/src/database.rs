@@ -174,6 +174,12 @@ impl ClientDatabase {
             .await?;
 
         tracing::info!("DATABASE: ✅ Document {} saved successfully", doc.id);
+
+        // Update FTS index for this document
+        if let Err(e) = self.update_fts_for_document(&doc.id).await {
+            tracing::warn!("FTS: Failed to update index for {}: {:?}", doc.id, e);
+        }
+
         Ok(())
     }
 
@@ -259,6 +265,11 @@ impl ClientDatabase {
             .bind(document_id.to_string())
             .execute(&self.pool)
             .await?;
+
+        // Remove from FTS index
+        if let Err(e) = self.update_fts_for_document(document_id).await {
+            tracing::warn!("FTS: Failed to remove {} from index: {:?}", document_id, e);
+        }
 
         Ok(())
     }
@@ -384,6 +395,11 @@ impl ClientDatabase {
             doc.id
         );
 
+        // Update FTS index for this document
+        if let Err(e) = self.update_fts_for_document(&doc.id).await {
+            tracing::warn!("FTS: Failed to update index for {}: {:?}", doc.id, e);
+        }
+
         Ok(())
     }
 
@@ -417,5 +433,112 @@ impl ClientDatabase {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    // ===== FTS (Full-Text Search) Methods =====
+
+    /// Configure which JSON paths to index for full-text search.
+    /// Replaces existing configuration and rebuilds the index.
+    pub async fn configure_search(&self, json_paths: &[String]) -> SyncResult<()> {
+        // Use transaction to ensure config and index stay in sync
+        let mut tx = self.pool.begin().await?;
+
+        // Clear existing config
+        sqlx::query(Queries::CLEAR_SEARCH_CONFIG)
+            .execute(&mut *tx)
+            .await?;
+
+        // Insert new paths
+        for path in json_paths {
+            sqlx::query(Queries::INSERT_SEARCH_PATH)
+                .bind(path)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        // Rebuild the index with new configuration (inline to use same transaction)
+        sqlx::query(Queries::CLEAR_FTS_INDEX)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(Queries::REBUILD_FTS_INDEX)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        tracing::info!(
+            "FTS: Configured search with {} paths and rebuilt index",
+            json_paths.len()
+        );
+        Ok(())
+    }
+
+    /// Update the FTS index entry for a single document.
+    /// Call this after creating or updating a document.
+    pub async fn update_fts_for_document(&self, document_id: &Uuid) -> SyncResult<()> {
+        // Skip FTS update if no search paths are configured
+        let has_config: (i32,) = sqlx::query_as(Queries::HAS_SEARCH_CONFIG)
+            .fetch_one(&self.pool)
+            .await?;
+        if has_config.0 == 0 {
+            return Ok(());
+        }
+
+        let doc_id_str = document_id.to_string();
+
+        // Use transaction to ensure atomicity (no orphaned entries on crash)
+        let mut tx = self.pool.begin().await?;
+
+        // Delete existing entry
+        sqlx::query(Queries::DELETE_FTS_ENTRY)
+            .bind(&doc_id_str)
+            .execute(&mut *tx)
+            .await?;
+
+        // Insert new entry (query handles deleted_at check internally)
+        sqlx::query(Queries::UPDATE_FTS_ENTRY)
+            .bind(&doc_id_str)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Rebuild the entire FTS index from all documents.
+    pub async fn rebuild_fts_index(&self) -> SyncResult<()> {
+        // Clear existing index
+        sqlx::query(Queries::CLEAR_FTS_INDEX)
+            .execute(&self.pool)
+            .await?;
+
+        // Rebuild from all non-deleted documents
+        sqlx::query(Queries::REBUILD_FTS_INDEX)
+            .execute(&self.pool)
+            .await?;
+
+        tracing::info!("FTS: Index rebuilt");
+        Ok(())
+    }
+
+    /// Search documents using FTS5 full-text search.
+    /// Returns documents matching the query, filtered by user_id.
+    pub async fn search_documents(
+        &self,
+        user_id: &Uuid,
+        query: &str,
+        limit: i64,
+    ) -> SyncResult<Vec<Document>> {
+        let rows = sqlx::query(Queries::SEARCH_DOCUMENTS)
+            .bind(user_id.to_string())
+            .bind(query)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+
+        rows.into_iter()
+            .map(|row| DbHelpers::parse_document(&row))
+            .collect()
     }
 }

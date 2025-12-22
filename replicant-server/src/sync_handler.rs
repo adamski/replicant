@@ -9,6 +9,18 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+/// Check if a SyncError is a PostgreSQL duplicate key violation.
+/// This happens when a race condition causes two threads to try inserting the same document.
+fn is_duplicate_key_error(e: &SyncError) -> bool {
+    if let SyncError::DatabaseError(sqlx_err) = e {
+        if let sqlx::Error::Database(db_err) = sqlx_err {
+            // PostgreSQL error code 23505 = unique_violation
+            return db_err.code().map(|c| c == "23505").unwrap_or(false);
+        }
+    }
+    false
+}
+
 pub struct SyncHandler {
     db: Arc<ServerDatabase>,
     tx: mpsc::Sender<ServerMessage>,
@@ -238,14 +250,40 @@ impl SyncHandler {
                                 .await?;
                             }
                             Err(e) => {
-                                // Send error response to the sender
-                                self.tx
-                                    .send(ServerMessage::DocumentCreatedResponse {
-                                        document_id: document.id,
-                                        success: false,
-                                        error: Some(e.to_string()),
-                                    })
+                                // Check if this is a duplicate key error (race condition from retry)
+                                if is_duplicate_key_error(&e) {
+                                    tracing::info!(
+                                        "🔄 Duplicate key detected for document {} - already created by previous request",
+                                        document.id
+                                    );
+
+                                    // Document was created by a concurrent/retry request
+                                    // Return success since the document exists (which is what the client wanted)
+                                    self.tx
+                                        .send(ServerMessage::DocumentCreatedResponse {
+                                            document_id: document.id,
+                                            success: true,
+                                            error: None,
+                                        })
+                                        .await?;
+
+                                    // Broadcast to other clients so they know about this document
+                                    self.broadcast_to_user_except(
+                                        user_id,
+                                        self.client_id,
+                                        ServerMessage::DocumentCreated { document },
+                                    )
                                     .await?;
+                                } else {
+                                    // Other database error - send error response
+                                    self.tx
+                                        .send(ServerMessage::DocumentCreatedResponse {
+                                            document_id: document.id,
+                                            success: false,
+                                            error: Some(e.to_string()),
+                                        })
+                                        .await?;
+                                }
                             }
                         }
                     }

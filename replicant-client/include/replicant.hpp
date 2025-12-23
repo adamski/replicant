@@ -123,6 +123,24 @@ public:
     }
 
     /**
+     * Create a new document with a specified ID
+     *
+     * @param document_id UUID string to use as the document ID
+     * @param content_json Document content as JSON string
+     * @throws SyncException if creation fails or document_id is not a valid UUID
+     */
+    void create_document_with_id(const std::string& document_id, const std::string& content_json)
+    {
+        SyncResult result = replicant_create_document_with_id(
+            handle_.get(),
+            document_id.c_str(),
+            content_json.c_str()
+        );
+
+        check_result(result);
+    }
+
+    /**
      * Update an existing document
      *
      * @param document_id Document ID to update
@@ -254,6 +272,36 @@ public:
         SyncResult result = replicant_count_pending_sync(handle_.get(), &count);
         check_result(result);
         return count;
+    }
+
+    /**
+     * Configure which JSON paths to index for full-text search
+     *
+     * @param paths_json JSON array of paths (e.g., '["$.title", "$.description"]')
+     * @throws SyncException if configuration fails
+     */
+    void configure_search(const std::string& paths_json)
+    {
+        SyncResult result = replicant_configure_search(handle_.get(), paths_json.c_str());
+        check_result(result);
+    }
+
+    /**
+     * Search documents using FTS5 full-text search
+     *
+     * @param query FTS5 query string
+     * @param limit Maximum results (0 for default of 100)
+     * @return JSON array of matching documents
+     * @throws SyncException if search fails
+     */
+    std::string search_documents(const std::string& query, uint32_t limit = 0)
+    {
+        char* docs = nullptr;
+        SyncResult result = replicant_search_documents(handle_.get(), query.c_str(), limit, &docs);
+        check_result(result);
+        std::string results(docs);
+        replicant_string_free(docs);
+        return results;
     }
 
     /**

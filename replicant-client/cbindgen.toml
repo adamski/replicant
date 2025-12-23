@@ -23,6 +23,11 @@ include = [
     "ConflictEventCallback",
 ]
 
+# Prefix types to avoid polluting global namespace in C++
+[export.rename]
+"EventType" = "ReplicantEventType"
+"SyncResult" = "ReplicantSyncResult"
+
 [enum]
 rename_variants = "PascalCase"
 

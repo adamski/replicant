@@ -9,6 +9,31 @@
 namespace replicant
 {
 
+// Clean type aliases - replicant.h puts types in namespace replicant{} when compiled as C++
+// These aliases remove the redundant "Replicant" prefix for cleaner C++ usage:
+//   replicant::EventType instead of replicant::ReplicantEventType
+using EventType = ReplicantEventType;
+using SyncResult = ReplicantSyncResult;
+
+// Enum value aliases for convenient access (e.g., replicant::DocumentCreated)
+constexpr auto DocumentCreated = ReplicantEventType::DocumentCreated;
+constexpr auto DocumentUpdated = ReplicantEventType::DocumentUpdated;
+constexpr auto DocumentDeleted = ReplicantEventType::DocumentDeleted;
+constexpr auto SyncStarted = ReplicantEventType::SyncStarted;
+constexpr auto SyncCompleted = ReplicantEventType::SyncCompleted;
+constexpr auto SyncError = ReplicantEventType::SyncError;
+constexpr auto ConflictDetected = ReplicantEventType::ConflictDetected;
+constexpr auto ConnectionLost = ReplicantEventType::ConnectionLost;
+constexpr auto ConnectionAttempted = ReplicantEventType::ConnectionAttempted;
+constexpr auto ConnectionSucceeded = ReplicantEventType::ConnectionSucceeded;
+
+constexpr auto Success = ReplicantSyncResult::Success;
+constexpr auto ErrorInvalidInput = ReplicantSyncResult::ErrorInvalidInput;
+constexpr auto ErrorConnection = ReplicantSyncResult::ErrorConnection;
+constexpr auto ErrorDatabase = ReplicantSyncResult::ErrorDatabase;
+constexpr auto ErrorSerialization = ReplicantSyncResult::ErrorSerialization;
+constexpr auto ErrorUnknown = ReplicantSyncResult::ErrorUnknown;
+
 /**
  * Exception thrown by replicant operations
  */

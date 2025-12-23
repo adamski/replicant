@@ -50,7 +50,7 @@ private:
 class Client
 {
 private:
-    std::unique_ptr<::Replicant, std::function<void(::Replicant*)>> handle_;
+    std::unique_ptr<Replicant, std::function<void(Replicant*)>> handle;
 
     void check_result(SyncResult result) const
     {
@@ -77,7 +77,7 @@ public:
            const std::string& api_key,
            const std::string& api_secret)
     {
-        ::Replicant* raw_handle = replicant_create(
+        Replicant* raw_handle = replicant_create(
             database_url.c_str(),
             server_url.c_str(),
             email.c_str(),
@@ -90,9 +90,9 @@ public:
             throw SyncException("Failed to create Replicant client");
         }
 
-        handle_ = std::unique_ptr<::Replicant, std::function<void(::Replicant*)>>(
+        handle = std::unique_ptr<Replicant, std::function<void(Replicant*)>>(
             raw_handle,
-            [](::Replicant* r)
+            [](Replicant* r)
             {
                 if (r)
                 {
@@ -113,7 +113,7 @@ public:
     {
         char doc_id[37] = {0}; // UUID string + null terminator
         SyncResult result = replicant_create_document(
-            handle_.get(),
+            handle.get(),
             content_json.c_str(),
             doc_id
         );
@@ -132,7 +132,7 @@ public:
     void create_document_with_id(const std::string& document_id, const std::string& content_json)
     {
         SyncResult result = replicant_create_document_with_id(
-            handle_.get(),
+            handle.get(),
             document_id.c_str(),
             content_json.c_str()
         );
@@ -150,7 +150,7 @@ public:
     void update_document(const std::string& document_id, const std::string& content_json)
     {
         SyncResult result = replicant_update_document(
-            handle_.get(),
+            handle.get(),
             document_id.c_str(),
             content_json.c_str()
         );
@@ -167,7 +167,7 @@ public:
     void delete_document(const std::string& document_id)
     {
         SyncResult result = replicant_delete_document(
-            handle_.get(),
+            handle.get(),
             document_id.c_str()
         );
 
@@ -203,7 +203,7 @@ public:
     {
         char* content = nullptr;
         SyncResult result = replicant_get_document(
-            handle_.get(),
+            handle.get(),
             document_id.c_str(),
             &content
         );
@@ -225,7 +225,7 @@ public:
     {
         char* docs = nullptr;
         SyncResult result = replicant_get_all_documents(
-            handle_.get(),
+            handle.get(),
             &docs
         );
 
@@ -245,7 +245,7 @@ public:
     uint64_t count_documents()
     {
         uint64_t count = 0;
-        SyncResult result = replicant_count_documents(handle_.get(), &count);
+        SyncResult result = replicant_count_documents(handle.get(), &count);
         check_result(result);
         return count;
     }
@@ -257,7 +257,7 @@ public:
      */
     bool is_connected()
     {
-        return replicant_is_connected(handle_.get());
+        return replicant_is_connected(handle.get());
     }
 
     /**
@@ -269,7 +269,7 @@ public:
     uint64_t count_pending_sync()
     {
         uint64_t count = 0;
-        SyncResult result = replicant_count_pending_sync(handle_.get(), &count);
+        SyncResult result = replicant_count_pending_sync(handle.get(), &count);
         check_result(result);
         return count;
     }
@@ -282,7 +282,7 @@ public:
      */
     void configure_search(const std::string& paths_json)
     {
-        SyncResult result = replicant_configure_search(handle_.get(), paths_json.c_str());
+        SyncResult result = replicant_configure_search(handle.get(), paths_json.c_str());
         check_result(result);
     }
 
@@ -297,7 +297,7 @@ public:
     std::string search_documents(const std::string& query, uint32_t limit = 0)
     {
         char* docs = nullptr;
-        SyncResult result = replicant_search_documents(handle_.get(), query.c_str(), limit, &docs);
+        SyncResult result = replicant_search_documents(handle.get(), query.c_str(), limit, &docs);
         check_result(result);
         std::string results(docs);
         replicant_string_free(docs);
@@ -314,7 +314,7 @@ public:
      */
     void register_document_callback(DocumentEventCallback callback, void* context, int32_t event_filter = -1)
     {
-        SyncResult result = replicant_register_document_callback(handle_.get(), callback, context, event_filter);
+        SyncResult result = replicant_register_document_callback(handle.get(), callback, context, event_filter);
         check_result(result);
     }
 
@@ -327,7 +327,7 @@ public:
      */
     void register_sync_callback(SyncEventCallback callback, void* context)
     {
-        SyncResult result = replicant_register_sync_callback(handle_.get(), callback, context);
+        SyncResult result = replicant_register_sync_callback(handle.get(), callback, context);
         check_result(result);
     }
 
@@ -340,7 +340,7 @@ public:
      */
     void register_error_callback(ErrorEventCallback callback, void* context)
     {
-        SyncResult result = replicant_register_error_callback(handle_.get(), callback, context);
+        SyncResult result = replicant_register_error_callback(handle.get(), callback, context);
         check_result(result);
     }
 
@@ -353,7 +353,7 @@ public:
      */
     void register_connection_callback(ConnectionEventCallback callback, void* context)
     {
-        SyncResult result = replicant_register_connection_callback(handle_.get(), callback, context);
+        SyncResult result = replicant_register_connection_callback(handle.get(), callback, context);
         check_result(result);
     }
 
@@ -366,7 +366,7 @@ public:
      */
     void register_conflict_callback(ConflictEventCallback callback, void* context)
     {
-        SyncResult result = replicant_register_conflict_callback(handle_.get(), callback, context);
+        SyncResult result = replicant_register_conflict_callback(handle.get(), callback, context);
         check_result(result);
     }
 
@@ -379,7 +379,7 @@ public:
     uint32_t process_events()
     {
         uint32_t count = 0;
-        SyncResult result = replicant_process_events(handle_.get(), &count);
+        SyncResult result = replicant_process_events(handle.get(), &count);
         check_result(result);
         return count;
     }

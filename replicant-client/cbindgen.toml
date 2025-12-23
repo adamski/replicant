@@ -24,7 +24,7 @@ include = [
 ]
 
 [enum]
-rename_variants = "ScreamingSnakeCase"
+rename_variants = "PascalCase"
 
 [fn]
 rename_args = "snake_case"

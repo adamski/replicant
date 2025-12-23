@@ -1032,23 +1032,12 @@ pub unsafe extern "C" fn replicant_search_documents(
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
-    // Get user_id for filtering
-    let user_id = match engine
-        .runtime
-        .block_on(async { engine.database.get_user_id().await })
-    {
-        Ok(id) => id,
-        Err(_) => return SyncResult::ErrorDatabase,
-    };
-
     let limit = if limit == 0 { 100 } else { limit as i64 };
 
-    let docs = match engine.runtime.block_on(async {
-        engine
-            .database
-            .search_documents(&user_id, query, limit)
-            .await
-    }) {
+    let docs = match engine
+        .runtime
+        .block_on(async { engine.database.search_documents(query, limit).await })
+    {
         Ok(d) => d,
         Err(_) => return SyncResult::ErrorDatabase,
     };

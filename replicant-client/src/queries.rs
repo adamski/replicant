@@ -187,8 +187,7 @@ impl Queries {
                d.created_at, d.updated_at, d.deleted_at, d.title
         FROM documents d
         JOIN documents_fts fts ON d.id = fts.document_id
-        WHERE d.user_id = ?
-          AND d.deleted_at IS NULL
+        WHERE d.deleted_at IS NULL
           AND documents_fts MATCH ?
         ORDER BY rank
         LIMIT ?

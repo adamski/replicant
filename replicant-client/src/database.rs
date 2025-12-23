@@ -530,15 +530,9 @@ impl ClientDatabase {
     }
 
     /// Search documents using FTS5 full-text search.
-    /// Returns documents matching the query, filtered by user_id.
-    pub async fn search_documents(
-        &self,
-        user_id: &Uuid,
-        query: &str,
-        limit: i64,
-    ) -> SyncResult<Vec<Document>> {
+    /// Returns all documents matching the query.
+    pub async fn search_documents(&self, query: &str, limit: i64) -> SyncResult<Vec<Document>> {
         let rows = sqlx::query(Queries::SEARCH_DOCUMENTS)
-            .bind(user_id.to_string())
             .bind(query)
             .bind(limit)
             .fetch_all(&self.pool)

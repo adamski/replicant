@@ -50,9 +50,9 @@ def main():
     c_header = Path("replicant-client/target/include/replicant.h")
     if c_header.exists():
         shutil.copy(c_header, dist / "include" / "replicant.h")
-        print("✓ C header copied to dist/include/replicant.h")
+        print("[OK] C header copied to dist/include/replicant.h")
     else:
-        print("✗ Generated C header not found. Make sure cargo build completed successfully.")
+        print("[FAIL] Generated C header not found. Make sure cargo build completed successfully.")
         sys.exit(1)
 
     # Copy C++ wrapper header
@@ -60,9 +60,9 @@ def main():
     cpp_header = Path("replicant-client/include/replicant.hpp")
     if cpp_header.exists():
         shutil.copy(cpp_header, dist / "include" / "replicant.hpp")
-        print("✓ C++ header copied to dist/include/replicant.hpp")
+        print("[OK] C++ header copied to dist/include/replicant.hpp")
     else:
-        print("⚠ C++ header not found at replicant-client/include/replicant.hpp")
+        print("[WARN] C++ header not found at replicant-client/include/replicant.hpp")
 
     # Copy libraries (platform-specific)
     print("Copying built libraries to dist...")
@@ -85,13 +85,13 @@ def main():
         ]
     else:
         libs = []
-        print(f"⚠ Unknown platform: {system}")
+        print(f"[WARN] Unknown platform: {system}")
 
     for lib_path, lib_type in libs:
         lib = Path(lib_path)
         if lib.exists():
             shutil.copy(lib, dist / "lib" / lib.name)
-            print(f"✓ {lib_type} copied to dist/lib/")
+            print(f"[OK] {lib_type} copied to dist/lib/")
 
     # Copy JUCE module
     print("Copying JUCE module to dist...")
@@ -120,9 +120,9 @@ def main():
             )
             header_file.write_text(content)
 
-        print("✓ JUCE module copied to dist/juce/replicant/")
+        print("[OK] JUCE module copied to dist/juce/replicant/")
     else:
-        print("⚠ JUCE module not found at wrappers/juce/replicant/")
+        print("[WARN] JUCE module not found at wrappers/juce/replicant/")
 
     # Get version from Cargo
     print("Adding version information...")
@@ -149,7 +149,7 @@ Platform: {platform.system()} {platform.machine()}
 """)
 
     print()
-    print("✓ Distribution build complete!")
+    print("[OK] Distribution build complete!")
     print("SDK available in dist/ folder:")
     print("  - dist/include/replicant.h     (C header - auto-generated)")
     print("  - dist/include/replicant.hpp   (C++ wrapper)")

@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.85 as builder
+FROM rust:1.85 AS builder
 
 WORKDIR /app
 
@@ -8,7 +8,7 @@ ARG SQLX_OFFLINE=true
 ENV SQLX_OFFLINE=$SQLX_OFFLINE
 
 # Create empty project structure
-RUN USER=root cargo new --bin replicant-server
+RUN USER=root cargo new --bin replicant-server && touch replicant-server/src/lib.rs
 RUN USER=root cargo new --lib replicant-core
 RUN USER=root cargo new --lib replicant-client
 RUN USER=root cargo new --lib replicant

@@ -4,6 +4,7 @@ Build distribution headers and libraries.
 Creates a stable SDK in the dist/ folder.
 """
 
+import argparse
 import json
 import os
 import platform
@@ -20,16 +21,24 @@ def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProce
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Build distribution SDK")
+    parser.add_argument("--skip-build", action="store_true",
+                        help="Skip cargo build (use pre-built libraries)")
+    args = parser.parse_args()
+
     # Ensure we're in the workspace root
     script_dir = Path(__file__).parent
     workspace_root = script_dir.parent
     os.chdir(workspace_root)
 
-    print("Building replicant-client library...")
-    result = run_command(["cargo", "build", "--package", "replicant-client", "--release"])
-    if result.returncode != 0:
-        print(f"Build failed: {result.stderr}")
-        sys.exit(1)
+    if args.skip_build:
+        print("Skipping build (using pre-built libraries)...")
+    else:
+        print("Building replicant-client library...")
+        result = run_command(["cargo", "build", "--package", "replicant-client", "--release"])
+        if result.returncode != 0:
+            print(f"Build failed: {result.stderr}")
+            sys.exit(1)
 
     print("Creating dist directory structure...")
     dist = Path("dist")

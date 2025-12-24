@@ -17,34 +17,25 @@ jobs:
       SQLX_OFFLINE: true
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Cache cargo registry
-      uses: actions/cache@v3
+    - name: Cache cargo
+      uses: actions/cache@v4
       with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo index
-      uses: actions/cache@v3
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo build
-      uses: actions/cache@v3
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Build release binary
       run: cargo build --release --bin replicant-server
 
     - name: Upload binary artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: replicant-server-${{ github.ref_name }}
         path: target/release/replicant-server
@@ -58,13 +49,13 @@ jobs:
       packages: write
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      uses: docker/setup-buildx-action@v3
 
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v2
+      uses: docker/login-action@v3
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
@@ -72,7 +63,7 @@ jobs:
 
     - name: Extract metadata for Docker
       id: meta
-      uses: docker/metadata-action@v4
+      uses: docker/metadata-action@v5
       with:
         images: ghcr.io/${{ github.repository }}
         tags: |
@@ -82,7 +73,7 @@ jobs:
           type=sha,prefix={{branch}}-
 
     - name: Build and push Docker image
-      uses: docker/build-push-action@v4
+      uses: docker/build-push-action@v5
       with:
         context: .
         push: true
@@ -92,3 +83,137 @@ jobs:
           SQLX_OFFLINE=true
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+  build-dist:
+    name: Build SDK (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+            archive-ext: tar.gz
+          - os: macos-latest
+            platform: macos-universal
+            archive-ext: tar.gz
+          - os: windows-latest
+            platform: windows-x64
+            archive-ext: zip
+    env:
+      SQLX_OFFLINE: true
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build SDK (macOS - all variants)
+      if: runner.os == 'macOS'
+      run: |
+        # Build for both architectures
+        cargo build --package replicant-client --release --target aarch64-apple-darwin
+        cargo build --package replicant-client --release --target x86_64-apple-darwin
+
+        # Copy header from one of the builds (identical for both)
+        mkdir -p replicant-client/target/include
+        cp target/aarch64-apple-darwin/release/build/replicant-client-*/out/replicant.h \
+          replicant-client/target/include/ 2>/dev/null || \
+        find target/aarch64-apple-darwin -name "replicant.h" -path "*/out/*" -exec cp {} replicant-client/target/include/ \;
+
+        # Create universal binaries
+        mkdir -p target/release
+        lipo -create -output target/release/libreplicant_client.a \
+          target/aarch64-apple-darwin/release/libreplicant_client.a \
+          target/x86_64-apple-darwin/release/libreplicant_client.a
+        lipo -create -output target/release/libreplicant_client.dylib \
+          target/aarch64-apple-darwin/release/libreplicant_client.dylib \
+          target/x86_64-apple-darwin/release/libreplicant_client.dylib
+
+        # Build dist with universal binaries
+        python scripts/build_dist.py --skip-build
+        cd dist && tar -czvf ../replicant-sdk-${{ github.ref_name }}-macos-universal.tar.gz . && cd ..
+
+        # Swap in ARM64 libraries and create archive
+        cp target/aarch64-apple-darwin/release/libreplicant_client.a dist/lib/
+        cp target/aarch64-apple-darwin/release/libreplicant_client.dylib dist/lib/
+        cd dist && tar -czvf ../replicant-sdk-${{ github.ref_name }}-macos-arm64.tar.gz . && cd ..
+
+        # Swap in x86_64 libraries and create archive
+        cp target/x86_64-apple-darwin/release/libreplicant_client.a dist/lib/
+        cp target/x86_64-apple-darwin/release/libreplicant_client.dylib dist/lib/
+        cd dist && tar -czvf ../replicant-sdk-${{ github.ref_name }}-macos-x86_64.tar.gz . && cd ..
+
+    - name: Build SDK (Linux/Windows)
+      if: runner.os != 'macOS'
+      run: python scripts/build_dist.py
+
+    - name: Create archive (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        cd dist
+        tar -czvf ../replicant-sdk-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz .
+
+    - name: Create archive (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        cd dist
+        Compress-Archive -Path * -DestinationPath ../replicant-sdk-${{ github.ref_name }}-${{ matrix.platform }}.zip
+
+    - name: Upload artifact (macOS)
+      if: runner.os == 'macOS'
+      uses: actions/upload-artifact@v4
+      with:
+        name: replicant-sdk-macos
+        path: |
+          replicant-sdk-${{ github.ref_name }}-macos-universal.tar.gz
+          replicant-sdk-${{ github.ref_name }}-macos-arm64.tar.gz
+          replicant-sdk-${{ github.ref_name }}-macos-x86_64.tar.gz
+        retention-days: 7
+
+    - name: Upload artifact (Linux/Windows)
+      if: runner.os != 'macOS'
+      uses: actions/upload-artifact@v4
+      with:
+        name: replicant-sdk-${{ matrix.platform }}
+        path: replicant-sdk-${{ github.ref_name }}-${{ matrix.platform }}.${{ matrix.archive-ext }}
+        retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-binary, build-dist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Display artifacts
+      run: ls -R artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/replicant-server-${{ github.ref_name }}/replicant-server
+          artifacts/replicant-sdk-linux-x64/*
+          artifacts/replicant-sdk-macos/*
+          artifacts/replicant-sdk-windows-x64/*
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

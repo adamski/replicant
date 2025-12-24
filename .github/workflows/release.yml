@@ -155,21 +155,46 @@ jobs:
         cp target/x86_64-apple-darwin/release/libreplicant_client.dylib dist/lib/
         cd dist && tar -czvf ../replicant-sdk-${{ github.ref_name }}-macos-x86_64.tar.gz . && cd ..
 
-    - name: Build SDK (Linux/Windows)
-      if: runner.os != 'macOS'
+    - name: Build SDK (Linux)
+      if: runner.os == 'Linux'
       run: python scripts/build_dist.py
+
+    - name: Build SDK (Windows - both CRT variants)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        # Build with static CRT
+        $env:RUSTFLAGS = "-C target-feature=+crt-static"
+        cargo build --package replicant-client --release
+
+        # Copy header for build_dist.py
+        New-Item -ItemType Directory -Force -Path replicant-client/target/include
+        $headerPath = Get-ChildItem -Path target/release/build/replicant-client-*/out/replicant.h -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($headerPath) {
+          Copy-Item $headerPath.FullName -Destination replicant-client/target/include/
+        }
+
+        # Package static CRT variant
+        python scripts/build_dist.py --skip-build
+        Compress-Archive -Path dist/* -DestinationPath replicant-sdk-${{ github.ref_name }}-windows-x64-static-crt.zip
+
+        # Clean for next build
+        Remove-Item -Recurse -Force target/release
+        Remove-Item -Recurse -Force dist/lib/*
+
+        # Build with dynamic CRT (default)
+        $env:RUSTFLAGS = ""
+        cargo build --package replicant-client --release
+
+        # Package dynamic CRT variant
+        python scripts/build_dist.py --skip-build
+        Compress-Archive -Path dist/* -DestinationPath replicant-sdk-${{ github.ref_name }}-windows-x64-dynamic-crt.zip
 
     - name: Create archive (Linux)
       if: runner.os == 'Linux'
       run: |
         cd dist
         tar -czvf ../replicant-sdk-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz .
-
-    - name: Create archive (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        cd dist
-        Compress-Archive -Path * -DestinationPath ../replicant-sdk-${{ github.ref_name }}-${{ matrix.platform }}.zip
 
     - name: Upload artifact (macOS)
       if: runner.os == 'macOS'
@@ -182,12 +207,22 @@ jobs:
           replicant-sdk-${{ github.ref_name }}-macos-x86_64.tar.gz
         retention-days: 7
 
-    - name: Upload artifact (Linux/Windows)
-      if: runner.os != 'macOS'
+    - name: Upload artifact (Linux)
+      if: runner.os == 'Linux'
       uses: actions/upload-artifact@v4
       with:
         name: replicant-sdk-${{ matrix.platform }}
         path: replicant-sdk-${{ github.ref_name }}-${{ matrix.platform }}.${{ matrix.archive-ext }}
+        retention-days: 7
+
+    - name: Upload artifact (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/upload-artifact@v4
+      with:
+        name: replicant-sdk-windows
+        path: |
+          replicant-sdk-${{ github.ref_name }}-windows-x64-static-crt.zip
+          replicant-sdk-${{ github.ref_name }}-windows-x64-dynamic-crt.zip
         retention-days: 7
 
   create-release:
@@ -213,7 +248,7 @@ jobs:
           artifacts/replicant-server-${{ github.ref_name }}/replicant-server
           artifacts/replicant-sdk-linux-x64/*
           artifacts/replicant-sdk-macos/*
-          artifacts/replicant-sdk-windows-x64/*
+          artifacts/replicant-sdk-windows/*
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

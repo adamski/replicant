@@ -85,7 +85,7 @@ function(fetch_replicant)
     elseif(UNIX)
         target_link_libraries(replicant_client INTERFACE pthread dl m)
     elseif(WIN32)
-        target_link_libraries(replicant_client INTERFACE ws2_32 userenv bcrypt ntdll)
+        target_link_libraries(replicant_client INTERFACE ws2_32 userenv bcrypt ntdll secur32 legacy_stdio_definitions)
     endif()
 
     message(STATUS "Replicant SDK configured from: ${replicant_SOURCE_DIR}")

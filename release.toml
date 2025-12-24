@@ -1,0 +1,39 @@
+# cargo-release configuration
+# Usage: cargo release patch|minor|major
+
+# Don't publish to crates.io (private project)
+publish = false
+
+# Push to remote after release
+push = true
+
+# Create git tag
+tag = true
+
+# Tag prefix (creates tags like v0.1.0)
+tag-name = "v{{version}}"
+
+# Commit message format
+tag-message = "Release {{version}}"
+
+# Sign tags (disable if you don't have GPG set up)
+sign-tag = false
+
+# Sign commits (disable if you don't have GPG set up)
+sign-commit = false
+
+# Pre-release hook: run tests before releasing
+pre-release-hook = ["cargo", "test", "--workspace", "--lib"]
+
+# Consolidate commits: single commit for all version bumps in workspace
+consolidate-commits = true
+
+# Commit message for version bump
+pre-release-commit-message = "chore: bump version to {{version}}"
+
+# Allow releasing from main branch only
+allow-branch = ["main"]
+
+# Packages to release (skip internal/dev packages if any)
+# Uncomment and modify if you want to exclude certain packages
+# exclude = ["some-internal-crate"]

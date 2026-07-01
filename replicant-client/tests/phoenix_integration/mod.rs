@@ -65,7 +65,7 @@ pub fn skip_if_no_server() -> bool {
 
 /// Generate deterministic user ID from email (matches server's Auth.deterministic_user_id/1)
 pub fn deterministic_user_id(email: &str) -> Uuid {
-    const APP_ID: &str = "com.example.sync-task-list";
+    const APP_ID: &str = "com.nodeaudio.entonal";
     let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, APP_ID.as_bytes());
     Uuid::new_v5(&app_namespace, email.as_bytes())
 }

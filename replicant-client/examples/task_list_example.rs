@@ -26,7 +26,7 @@ use std::{
 use uuid::Uuid;
 
 // Application identifier for namespace generation
-const APP_ID: &str = "com.example.sync-task-list";
+const APP_ID: &str = "com.nodeaudio.entonal";
 
 fn debug_log(msg: &str) {
     let mut file = std::fs::OpenOptions::new()

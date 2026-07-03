@@ -12,10 +12,11 @@ use replicant_client::events::EventType;
 use replicant_client::ffi::{
     replicant_count_documents, replicant_count_pending_sync, replicant_create,
     replicant_create_document, replicant_destroy, replicant_get_all_documents,
-    replicant_get_document, replicant_is_connected, replicant_process_events,
-    replicant_register_connection_callback, replicant_register_document_callback,
-    replicant_register_error_callback, replicant_register_sync_callback, replicant_string_free,
-    replicant_update_document, Replicant, SyncResult,
+    replicant_get_document, replicant_get_user_id, replicant_is_connected,
+    replicant_process_events, replicant_register_connection_callback,
+    replicant_register_document_callback, replicant_register_error_callback,
+    replicant_register_sync_callback, replicant_string_free, replicant_update_document, Replicant,
+    SyncResult,
 };
 
 #[cfg(debug_assertions)]
@@ -29,6 +30,9 @@ struct DocumentCapture {
     last_document_id: Mutex<Option<String>>,
     last_title: Mutex<Option<String>>,
     last_content: Mutex<Option<String>>,
+    last_user_id: Mutex<Option<String>>,
+    last_author_name: Mutex<Option<String>>,
+    last_visibility: Mutex<Option<String>>,
 }
 
 impl DocumentCapture {
@@ -42,6 +46,9 @@ impl DocumentCapture {
         *self.last_document_id.lock().unwrap() = None;
         *self.last_title.lock().unwrap() = None;
         *self.last_content.lock().unwrap() = None;
+        *self.last_user_id.lock().unwrap() = None;
+        *self.last_author_name.lock().unwrap() = None;
+        *self.last_visibility.lock().unwrap() = None;
     }
 }
 
@@ -92,6 +99,9 @@ extern "C" fn document_capture_callback(
     document_id: *const c_char,
     title: *const c_char,
     content: *const c_char,
+    user_id: *const c_char,
+    author_name: *const c_char,
+    visibility: *const c_char,
     context: *mut c_void,
 ) {
     let capture = unsafe { &*(context as *const DocumentCapture) };
@@ -112,6 +122,21 @@ extern "C" fn document_capture_callback(
     if !content.is_null() {
         let content_str = unsafe { CStr::from_ptr(content).to_string_lossy().to_string() };
         *capture.last_content.lock().unwrap() = Some(content_str);
+    }
+
+    if !user_id.is_null() {
+        let user_id_str = unsafe { CStr::from_ptr(user_id).to_string_lossy().to_string() };
+        *capture.last_user_id.lock().unwrap() = Some(user_id_str);
+    }
+
+    if !author_name.is_null() {
+        let author_name_str = unsafe { CStr::from_ptr(author_name).to_string_lossy().to_string() };
+        *capture.last_author_name.lock().unwrap() = Some(author_name_str);
+    }
+
+    if !visibility.is_null() {
+        let visibility_str = unsafe { CStr::from_ptr(visibility).to_string_lossy().to_string() };
+        *capture.last_visibility.lock().unwrap() = Some(visibility_str);
     }
 }
 
@@ -248,6 +273,21 @@ fn test_ffi_callback_with_document_creation() {
         let captured_content = capture.last_content.lock().unwrap();
         assert!(captured_content.is_some());
         assert!(captured_content.as_ref().unwrap().contains("test data"));
+
+        // Documents created offline are always assigned an owner user_id, so this
+        // must arrive on the callback. author_name/visibility are not seeded by
+        // replicant_create_document, so they merely need to arrive without crashing.
+        let captured_user_id = capture.last_user_id.lock().unwrap();
+        assert!(captured_user_id.is_some());
+
+        // Verify replicant_get_user_id returns the same engine-frozen user UUID
+        let mut out_user_id: *mut c_char = ptr::null_mut();
+        let get_user_id_result = replicant_get_user_id(engine, &mut out_user_id);
+        assert_eq!(get_user_id_result, SyncResult::Success);
+        assert!(!out_user_id.is_null());
+        let engine_user_id = CStr::from_ptr(out_user_id).to_string_lossy().to_string();
+        assert_eq!(engine_user_id, captured_user_id.as_ref().unwrap().clone());
+        replicant_string_free(out_user_id);
 
         replicant_destroy(engine);
     }

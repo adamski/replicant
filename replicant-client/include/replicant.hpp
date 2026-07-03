@@ -178,6 +178,24 @@ public:
     }
 
     /**
+     * Get the engine's own frozen user UUID
+     *
+     * @return User UUID string
+     * @throws SyncException if retrieval fails
+     */
+    std::string get_user_id()
+    {
+        char* user_id = nullptr;
+        SyncResult result = replicant_get_user_id(handle.get(), &user_id);
+
+        check_result(result);
+
+        std::string id(user_id);
+        replicant_string_free(user_id);
+        return id;
+    }
+
+    /**
      * Get the library version
      *
      * @return Version string
@@ -310,7 +328,9 @@ public:
     /**
      * Register a callback for document events (Created, Updated, Deleted)
      *
-     * @param callback Function to call for document events
+     * @param callback Function to call for document events. Receives
+     *   (event_type, document_id, title, content, user_id, author_name, visibility, context).
+     *   user_id, author_name, and visibility are null when unknown/not yet synced.
      * @param context User-defined context pointer passed to callback
      * @param event_filter Optional filter: 0=Created, 1=Updated, 2=Deleted, -1=all
      * @throws SyncException if registration fails

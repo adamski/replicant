@@ -135,11 +135,17 @@ jobs:
       env:
         DATABASE_URL: postgres://postgres:postgres@localhost:5432/replicant_server_test
         SECRET_KEY_BASE: test-secret-key-base-that-is-at-least-64-characters-long-for-testing
-        PHX_SERVER: true
       run: |
         mix phx.server &
-        sleep 5
-        curl -f http://localhost:4000/health || exit 1
+        for i in $(seq 1 60); do
+          if curl -fs http://localhost:4000/health >/dev/null; then
+            echo "Server is up"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "Server did not come up within 60s"
+        exit 1
 
     - name: Run integration tests
       env:

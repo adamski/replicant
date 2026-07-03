@@ -89,16 +89,15 @@ impl ClientDatabase {
         Ok(())
     }
 
-    fn generate_deterministic_user_id(user_identifier: &str) -> Uuid {
-        // Generate deterministic user ID using UUID v5
-        // Use the same logic as the task list example
-        const APP_ID: &str = "com.example.sync-task-list";
+    /// FROZEN — must match replicant-server Auth (namespace + email
+    /// normalization). The crate's only identity derivation; call this
+    /// instead of re-implementing it.
+    pub fn generate_deterministic_user_id(user_identifier: &str) -> Uuid {
+        const APP_ID: &str = "com.nodeaudio.entonal";
 
-        // Create a two-level namespace hierarchy:
-        // 1. DNS namespace -> Application namespace (using APP_ID)
-        // 2. Application namespace -> User ID (using user identifier)
+        let normalized = user_identifier.trim().to_lowercase();
         let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, APP_ID.as_bytes());
-        Uuid::new_v5(&app_namespace, user_identifier.as_bytes())
+        Uuid::new_v5(&app_namespace, normalized.as_bytes())
     }
 
     pub async fn get_user_id(&self) -> SyncResult<Uuid> {
@@ -541,5 +540,30 @@ impl ClientDatabase {
         rows.into_iter()
             .map(|row| DbHelpers::parse_document(&row))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod identity_freeze_tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_user_id_matches_frozen_vectors() {
+        assert_eq!(
+            ClientDatabase::generate_deterministic_user_id("test@example.com").to_string(),
+            "71b2b712-7878-56ee-8323-43809b8198a5"
+        );
+        assert_eq!(
+            ClientDatabase::generate_deterministic_user_id("alice@example.com").to_string(),
+            "af665bed-e8e7-5b1f-ba4f-9343fefde4bb"
+        );
+    }
+
+    #[test]
+    fn normalization_makes_case_and_whitespace_irrelevant() {
+        assert_eq!(
+            ClientDatabase::generate_deterministic_user_id("  Alice@Example.COM ").to_string(),
+            "af665bed-e8e7-5b1f-ba4f-9343fefde4bb"
+        );
     }
 }

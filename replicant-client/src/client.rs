@@ -1241,6 +1241,9 @@ impl Client {
                 document_id,
                 success,
                 error,
+                author_name,
+                visibility,
+                provenance,
             } => {
                 if success {
                     tracing::info!(
@@ -1248,6 +1251,13 @@ impl Client {
                         client_id,
                         document_id
                     );
+                    db.update_attribution(
+                        &document_id,
+                        author_name.clone(),
+                        visibility.clone(),
+                        provenance.clone(),
+                    )
+                    .await?;
                     db.mark_synced(&document_id).await?;
                     // Clean up sync_queue
                     db.remove_from_sync_queue(&document_id).await?;

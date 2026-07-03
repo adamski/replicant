@@ -76,6 +76,12 @@ pub enum ServerMessage {
         document_id: Uuid,
         success: bool,
         error: Option<String>,
+        #[serde(default)]
+        author_name: Option<String>,
+        #[serde(default)]
+        visibility: Option<String>,
+        #[serde(default)]
+        provenance: Option<serde_json::Value>,
     },
     DocumentUpdatedResponse {
         document_id: Uuid,

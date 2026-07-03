@@ -63,11 +63,18 @@ pub fn skip_if_no_server() -> bool {
     std::env::var("RUN_INTEGRATION_TESTS").is_err()
 }
 
-/// Generate deterministic user ID from email (matches server's Auth.deterministic_user_id/1)
+/// Deterministic user ID for an email — the client's frozen derivation,
+/// which matches the server's Auth.deterministic_user_id/1.
 pub fn deterministic_user_id(email: &str) -> Uuid {
-    const APP_ID: &str = "com.nodeaudio.entonal";
-    let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, APP_ID.as_bytes());
-    Uuid::new_v5(&app_namespace, email.as_bytes())
+    replicant_client::ClientDatabase::generate_deterministic_user_id(email)
+}
+
+#[test]
+fn deterministic_user_id_normalizes_like_client_and_server() {
+    assert_eq!(
+        deterministic_user_id("  Integration-Test@Example.COM "),
+        deterministic_user_id(TEST_EMAIL)
+    );
 }
 
 /// A broadcast event received from the server

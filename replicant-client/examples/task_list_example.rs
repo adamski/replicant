@@ -25,9 +25,6 @@ use std::{
 };
 use uuid::Uuid;
 
-// Application identifier for namespace generation
-const APP_ID: &str = "com.nodeaudio.entonal";
-
 fn debug_log(msg: &str) {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -454,15 +451,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let user_id = match db.get_user_id().await {
         Ok(id) => id,
         Err(_) => {
-            // Generate deterministic user ID based on user identifier or create random
+            // Deterministic user ID from the identifier, or random for anonymous use
             let id = if let Some(user_identifier) = &cli.user {
-                // Use UUID v5 for deterministic ID generation
-                // This creates a two-level namespace hierarchy:
-                // 1. DNS namespace -> Application namespace (using APP_ID)
-                // 2. Application namespace -> User ID (using user identifier)
-                // This ensures our user IDs are unique to our application
-                let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, APP_ID.as_bytes());
-                Uuid::new_v5(&app_namespace, user_identifier.as_bytes())
+                ClientDatabase::generate_deterministic_user_id(user_identifier)
             } else {
                 Uuid::new_v4()
             };

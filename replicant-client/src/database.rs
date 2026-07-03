@@ -89,8 +89,10 @@ impl ClientDatabase {
         Ok(())
     }
 
-    fn generate_deterministic_user_id(user_identifier: &str) -> Uuid {
-        // FROZEN — must match replicant-server Auth (namespace + email normalization).
+    /// FROZEN — must match replicant-server Auth (namespace + email
+    /// normalization). The crate's only identity derivation; call this
+    /// instead of re-implementing it.
+    pub fn generate_deterministic_user_id(user_identifier: &str) -> Uuid {
         const APP_ID: &str = "com.nodeaudio.entonal";
 
         let normalized = user_identifier.trim().to_lowercase();

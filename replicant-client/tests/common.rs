@@ -30,6 +30,9 @@ pub fn make_document(user_id: Uuid, title: &str, text: &str, sync_revision: i64)
         created_at: Utc::now(),
         updated_at: Utc::now(),
         deleted_at: None,
+        author_name: None,
+        visibility: None,
+        provenance: None,
     }
 }
 

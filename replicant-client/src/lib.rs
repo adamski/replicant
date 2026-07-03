@@ -86,6 +86,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         // Save document
@@ -118,6 +121,9 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
+                author_name: None,
+                visibility: None,
+                provenance: None,
             },
         };
 
@@ -190,6 +196,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         // Save document
@@ -265,6 +274,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         db.save_document(&doc).await.unwrap();
@@ -286,6 +298,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         db.save_document(&doc2).await.unwrap();

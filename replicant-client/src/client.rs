@@ -375,6 +375,9 @@ impl Client {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         tracing::info!(

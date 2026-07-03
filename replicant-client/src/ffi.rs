@@ -256,6 +256,9 @@ pub unsafe extern "C" fn replicant_create_document(
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         if engine
@@ -375,6 +378,9 @@ pub unsafe extern "C" fn replicant_create_document_with_id(
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         if engine

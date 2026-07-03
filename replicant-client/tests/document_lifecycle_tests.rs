@@ -215,6 +215,9 @@ async fn test_title_extraction() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
+        author_name: None,
+        visibility: None,
+        provenance: None,
     };
 
     db.save_document(&doc_no_title).await.unwrap();

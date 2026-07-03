@@ -488,6 +488,9 @@ fn json_to_document(j: &Value, default_user_id: Uuid) -> Option<Document> {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
+        author_name: None,
+        visibility: None,
+        provenance: None,
     })
 }
 

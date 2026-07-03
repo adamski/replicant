@@ -14,6 +14,12 @@ pub struct Document {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub author_name: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub provenance: Option<serde_json::Value>,
 }
 
 impl Document {
@@ -45,6 +51,9 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         assert_eq!(doc_with_title.title(), Some("My Document"));
@@ -61,10 +70,46 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         assert_eq!(doc_without_title.title(), None);
         assert_eq!(doc_without_title.title_or_default(), "Untitled");
+    }
+
+    #[test]
+    fn document_round_trips_attribution_via_serde() {
+        let json = r#"{
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "user_id": null,
+            "content": {"title": "T"},
+            "sync_revision": 1,
+            "content_hash": null,
+            "title": null,
+            "created_at": "2026-07-03T00:00:00Z",
+            "updated_at": "2026-07-03T00:00:00Z",
+            "deleted_at": null,
+            "author_name": "Robert Rich",
+            "visibility": "public",
+            "provenance": {"copied_from": "x"}
+        }"#;
+        let doc: Document = serde_json::from_str(json).unwrap();
+        assert_eq!(doc.author_name.as_deref(), Some("Robert Rich"));
+        assert_eq!(doc.visibility.as_deref(), Some("public"));
+        assert!(doc.provenance.is_some());
+
+        // Pre-1C payloads (no attribution keys) still deserialize.
+        let legacy = r#"{
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "user_id": null, "content": {}, "sync_revision": 1,
+            "content_hash": null, "title": null,
+            "created_at": "2026-07-03T00:00:00Z", "updated_at": "2026-07-03T00:00:00Z",
+            "deleted_at": null
+        }"#;
+        let doc: Document = serde_json::from_str(legacy).unwrap();
+        assert_eq!(doc.author_name, None);
     }
 }
 

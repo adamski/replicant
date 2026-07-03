@@ -229,6 +229,9 @@ impl DbHelpers {
             deleted_at: deleted_at
                 .and_then(|dt| DateTime::parse_from_rfc3339(&dt).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
+            author_name: None,
+            visibility: None,
+            provenance: None,
         })
     }
 

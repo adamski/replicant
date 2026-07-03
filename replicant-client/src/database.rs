@@ -169,6 +169,9 @@ impl ClientDatabase {
             .bind(params.6) // deleted_at
             .bind(params.7) // sync_status
             .bind(params.8) // title
+            .bind(params.9) // author_name
+            .bind(params.10) // visibility
+            .bind(params.11) // provenance
             .execute(&self.pool)
             .await?;
 

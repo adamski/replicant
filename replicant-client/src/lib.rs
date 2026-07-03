@@ -49,6 +49,9 @@ mod tests {
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
                 title TEXT,
+                author_name TEXT,
+                visibility TEXT,
+                provenance JSON,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -164,6 +167,9 @@ mod tests {
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
                 title TEXT,
+                author_name TEXT,
+                visibility TEXT,
+                provenance JSON,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -245,6 +251,9 @@ mod tests {
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
                 title TEXT,
+                author_name TEXT,
+                visibility TEXT,
+                provenance JSON,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,

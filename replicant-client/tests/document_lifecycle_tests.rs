@@ -189,6 +189,22 @@ async fn test_count_documents_excludes_deleted() {
     );
 }
 
+#[tokio::test]
+async fn test_attribution_persists_across_save_and_load() {
+    let db = setup_test_db().await;
+    let mut doc = make_document(Uuid::new_v4(), "Attributed", "body", 1);
+    doc.author_name = Some("Robert Rich".to_string());
+    doc.visibility = Some("public".to_string());
+    doc.provenance = Some(serde_json::json!({"copied_from": "abc"}));
+
+    db.save_document(&doc).await.unwrap();
+    let loaded = db.get_document(&doc.id).await.unwrap();
+
+    assert_eq!(loaded.author_name.as_deref(), Some("Robert Rich"));
+    assert_eq!(loaded.visibility.as_deref(), Some("public"));
+    assert_eq!(loaded.provenance, doc.provenance);
+}
+
 /// Verifies that the title field is properly extracted from document content
 /// when documents are saved to the client database.
 #[tokio::test]

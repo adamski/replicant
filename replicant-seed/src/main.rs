@@ -1,11 +1,12 @@
 //! `replicant-seed` — push a directory of JSON documents to a Replicant
 //! server. Idempotent by a configurable dedupe field (default: `title`).
 //!
-//! Typical use: bootstrapping a fresh Replicant deployment with a corpus of
-//! seed documents that should be available to every user. The tool is
-//! content-agnostic — each *.json file is pushed verbatim. Conventions like
-//! "an empty `ownerId` field means a public document" are the caller's
-//! concern; bake them into the JSON files.
+//! Typical use: bootstrapping a Replicant deployment with a corpus of seed
+//! documents. Each *.json file is pushed verbatim through the sync channel,
+//! so every seeded document is owned by (and private to) the authenticated
+//! seeding account. To publish a public corpus, use the server-side factory
+//! backfill (`mix replicant.backfill_factory`), which creates owned public
+//! documents.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -99,7 +100,7 @@ fn load_docs(dir: &Path, dedupe_by: &str) -> Result<Vec<LoadedDoc>> {
         let dedupe_key = if dedupe_by.is_empty() {
             None
         } else {
-            extract_dot_path(&content, dedupe_by).map(|v| v.to_string())
+            extract_dot_path(&content, dedupe_by).map(key_to_string)
         };
         docs.push(LoadedDoc {
             path: entry.path().to_path_buf(),
@@ -113,9 +114,8 @@ fn load_docs(dir: &Path, dedupe_by: &str) -> Result<Vec<LoadedDoc>> {
 }
 
 /// Resolve a dot-path like `title` or `metadata.name` against a JSON value.
-/// Returns the value at the path, if it exists. Numbers, strings, and bools
-/// are returned via their `to_string()` representations by the caller —
-/// this function just walks the tree.
+/// Returns the value at the path, if it exists; `key_to_string` renders it
+/// as a dedupe key.
 fn extract_dot_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     let mut current = value;
     for segment in path.split('.') {
@@ -271,5 +271,27 @@ async fn main() -> Result<()> {
         Ok(())
     } else {
         bail!("{} push(es) failed", failed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn local_dedupe_key_matches_server_side_key_for_strings() {
+        let dir = std::env::temp_dir().join(format!("replicant-seed-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("doc.json"), r#"{"title":"Partch 43-tone"}"#).unwrap();
+
+        let docs = load_docs(&dir, "title").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // Must equal the key the server-side index derives via key_to_string —
+        // unwrapped, no JSON quotes — or dedupe never matches.
+        let server_key = key_to_string(&json!("Partch 43-tone"));
+        assert_eq!(docs[0].dedupe_key.as_deref(), Some(server_key.as_str()));
+        assert_eq!(server_key, "Partch 43-tone");
     }
 }

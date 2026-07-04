@@ -98,12 +98,18 @@ pub enum SyncEvent {
         id: String,
         title: String,
         content: serde_json::Value,
+        user_id: Option<String>,
+        author_name: Option<String>,
+        visibility: Option<String>,
     },
     /// An existing document was updated
     DocumentUpdated {
         id: String,
         title: String,
         content: serde_json::Value,
+        user_id: Option<String>,
+        author_name: Option<String>,
+        visibility: Option<String>,
     },
     /// A document was deleted
     DocumentDeleted { id: String },
@@ -158,6 +164,9 @@ impl SyncEvent {
                     .as_ref()
                     .and_then(|c| serde_json::from_str(c).ok())
                     .unwrap_or(serde_json::Value::Null),
+                user_id: event.user_id.clone(),
+                author_name: event.author_name.clone(),
+                visibility: event.visibility.clone(),
             },
             EventType::DocumentUpdated => SyncEvent::DocumentUpdated {
                 id: event.document_id.clone().unwrap_or_default(),
@@ -170,6 +179,9 @@ impl SyncEvent {
                     .as_ref()
                     .and_then(|c| serde_json::from_str(c).ok())
                     .unwrap_or(serde_json::Value::Null),
+                user_id: event.user_id.clone(),
+                author_name: event.author_name.clone(),
+                visibility: event.visibility.clone(),
             },
             EventType::DocumentDeleted => SyncEvent::DocumentDeleted {
                 id: event.document_id.clone().unwrap_or_default(),
@@ -213,12 +225,18 @@ impl SyncEvent {
 /// * `document_id` - UUID of the document (always non-null)
 /// * `title` - Document title (null for Deleted events)
 /// * `content` - Full document JSON (null for Deleted events)
+/// * `user_id` - Owner UUID (null if unknown)
+/// * `author_name` - Author display name (null if unknown)
+/// * `visibility` - "private"/"public" (null if unknown)
 /// * `context` - User-defined context pointer
 pub type DocumentEventCallback = extern "C" fn(
     event_type: EventType,
     document_id: *const c_char,
     title: *const c_char,
     content: *const c_char,
+    user_id: *const c_char,
+    author_name: *const c_char,
+    visibility: *const c_char,
     context: *mut c_void,
 );
 
@@ -330,6 +348,9 @@ pub struct QueuedEvent {
     error: Option<String>,
     numeric_data: u64,
     boolean_data: bool,
+    user_id: Option<String>,
+    author_name: Option<String>,
+    visibility: Option<String>,
 }
 
 /// Thread-safe event dispatcher for managing callbacks and event processing
@@ -350,6 +371,9 @@ pub struct QueuedEvent {
 ///     document_id: *const std::ffi::c_char,
 ///     title: *const std::ffi::c_char,
 ///     content: *const std::ffi::c_char,
+///     user_id: *const std::ffi::c_char,
+///     author_name: *const std::ffi::c_char,
+///     visibility: *const std::ffi::c_char,
 ///     _context: *mut c_void
 /// ) {
 ///     println!("Document event: {:?}", event_type);
@@ -611,6 +635,19 @@ impl EventDispatcher {
     }
 
     pub fn emit_document_created(&self, document_id: &Uuid, content: &serde_json::Value) {
+        self.emit_document_created_with_attribution(document_id, content, None, None, None);
+    }
+
+    /// Emit a document-created event, carrying attribution (owner user_id, author_name,
+    /// visibility) alongside the document content.
+    pub fn emit_document_created_with_attribution(
+        &self,
+        document_id: &Uuid,
+        content: &serde_json::Value,
+        user_id: Option<&Uuid>,
+        author_name: Option<&str>,
+        visibility: Option<&str>,
+    ) {
         // Extract title from content if present
         let title = content
             .get("title")
@@ -624,10 +661,26 @@ impl EventDispatcher {
             None,
             0,
             false,
+            user_id.map(|id| id.to_string()),
+            author_name.map(|s| s.to_string()),
+            visibility.map(|s| s.to_string()),
         );
     }
 
     pub fn emit_document_updated(&self, document_id: &Uuid, content: &serde_json::Value) {
+        self.emit_document_updated_with_attribution(document_id, content, None, None, None);
+    }
+
+    /// Emit a document-updated event, carrying attribution (owner user_id, author_name,
+    /// visibility) alongside the document content.
+    pub fn emit_document_updated_with_attribution(
+        &self,
+        document_id: &Uuid,
+        content: &serde_json::Value,
+        user_id: Option<&Uuid>,
+        author_name: Option<&str>,
+        visibility: Option<&str>,
+    ) {
         // Extract title from content if present
         let title = content
             .get("title")
@@ -641,6 +694,9 @@ impl EventDispatcher {
             None,
             0,
             false,
+            user_id.map(|id| id.to_string()),
+            author_name.map(|s| s.to_string()),
+            visibility.map(|s| s.to_string()),
         );
     }
 
@@ -653,11 +709,25 @@ impl EventDispatcher {
             None,
             0,
             false,
+            None,
+            None,
+            None,
         );
     }
 
     pub fn emit_sync_started(&self) {
-        self.queue_event(EventType::SyncStarted, None, None, None, None, 0, false);
+        self.queue_event(
+            EventType::SyncStarted,
+            None,
+            None,
+            None,
+            None,
+            0,
+            false,
+            None,
+            None,
+            None,
+        );
     }
 
     pub fn emit_sync_completed(&self, synced_count: u64) {
@@ -669,6 +739,9 @@ impl EventDispatcher {
             None,
             synced_count,
             false,
+            None,
+            None,
+            None,
         );
     }
 
@@ -681,6 +754,9 @@ impl EventDispatcher {
             Some(error_message),
             0,
             false,
+            None,
+            None,
+            None,
         );
     }
 
@@ -693,6 +769,9 @@ impl EventDispatcher {
             None,
             0,
             false,
+            None,
+            None,
+            None,
         );
     }
 
@@ -705,6 +784,9 @@ impl EventDispatcher {
             None,
             0,
             false,
+            None,
+            None,
+            None,
         );
     }
 
@@ -717,6 +799,9 @@ impl EventDispatcher {
             None,
             0,
             false,
+            None,
+            None,
+            None,
         );
     }
 
@@ -729,6 +814,9 @@ impl EventDispatcher {
             None,
             0,
             false,
+            None,
+            None,
+            None,
         );
     }
 
@@ -743,6 +831,9 @@ impl EventDispatcher {
         error: Option<&str>,
         numeric_data: u64,
         boolean_data: bool,
+        user_id: Option<String>,
+        author_name: Option<String>,
+        visibility: Option<String>,
     ) {
         let queued_event = QueuedEvent {
             event_type,
@@ -752,6 +843,9 @@ impl EventDispatcher {
             error: error.map(|e| e.to_string()),
             numeric_data,
             boolean_data,
+            user_id,
+            author_name,
+            visibility,
         };
 
         if self.event_sender.send(queued_event).is_err() {
@@ -896,6 +990,27 @@ impl EventDispatcher {
                 ptr
             });
 
+            let user_id_cstr = queued_event.user_id.as_ref().map(|u| {
+                let cstr = CString::new(u.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+                let ptr = cstr.as_ptr();
+                temp_strings.push(cstr);
+                ptr
+            });
+
+            let author_name_cstr = queued_event.author_name.as_ref().map(|a| {
+                let cstr = CString::new(a.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+                let ptr = cstr.as_ptr();
+                temp_strings.push(cstr);
+                ptr
+            });
+
+            let visibility_cstr = queued_event.visibility.as_ref().map(|v| {
+                let cstr = CString::new(v.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+                let ptr = cstr.as_ptr();
+                temp_strings.push(cstr);
+                ptr
+            });
+
             // Dispatch to appropriate callback type based on event type
             match queued_event.event_type {
                 EventType::DocumentCreated
@@ -904,6 +1019,9 @@ impl EventDispatcher {
                     let doc_id_ptr = document_id_cstr.unwrap_or(std::ptr::null());
                     let title_ptr = title_cstr.unwrap_or(std::ptr::null());
                     let content_ptr = content_cstr.unwrap_or(std::ptr::null());
+                    let user_id_ptr = user_id_cstr.unwrap_or(std::ptr::null());
+                    let author_name_ptr = author_name_cstr.unwrap_or(std::ptr::null());
+                    let visibility_ptr = visibility_cstr.unwrap_or(std::ptr::null());
 
                     for entry in document_callbacks.iter() {
                         if let Some(filter) = entry.event_filter {
@@ -916,6 +1034,9 @@ impl EventDispatcher {
                             doc_id_ptr,
                             title_ptr,
                             content_ptr,
+                            user_id_ptr,
+                            author_name_ptr,
+                            visibility_ptr,
                             entry.context,
                         );
                     }
@@ -1016,6 +1137,9 @@ mod tests {
             _doc_id: *const c_char,
             _title: *const c_char,
             _content: *const c_char,
+            _user_id: *const c_char,
+            _author_name: *const c_char,
+            _visibility: *const c_char,
             context: *mut c_void,
         ) {
             let count = unsafe { &*(context as *const AtomicUsize) };
@@ -1056,6 +1180,9 @@ mod tests {
             _doc_id: *const c_char,
             _title: *const c_char,
             _content: *const c_char,
+            _user_id: *const c_char,
+            _author_name: *const c_char,
+            _visibility: *const c_char,
             context: *mut c_void,
         ) {
             let count = unsafe { &*(context as *const AtomicUsize) };
@@ -1149,6 +1276,9 @@ mod tests {
             _doc_id: *const c_char,
             _title: *const c_char,
             _content: *const c_char,
+            _user_id: *const c_char,
+            _author_name: *const c_char,
+            _visibility: *const c_char,
             context: *mut c_void,
         ) {
             let count = unsafe { &*(context as *const AtomicUsize) };

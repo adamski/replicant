@@ -181,7 +181,9 @@ private:
     void timerCallback() override;
 
     static void documentCallback(EventType eventType, const char* docId,
-                                  const char* title, const char* content, void* context);
+                                  const char* title, const char* content,
+                                  const char* userId, const char* authorName,
+                                  const char* visibility, void* context);
     static void connectionCallback(EventType eventType, bool isConnected,
                                     uint32_t attemptNumber, void* context);
     static void errorCallback(EventType eventType, const char* errorMessage, void* context);

@@ -1,6 +1,6 @@
 [package]
 name = "replicant-client"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
@@ -37,7 +37,9 @@ name = "phoenix_spike"
 path = "examples/phoenix_spike.rs"
 
 [build-dependencies]
-cbindgen = "0.26"
+# Exact pin: the tracked replicant-client/include/replicant.h must be regenerated
+# with this exact cbindgen version to avoid banner/whitespace churn on commit.
+cbindgen = "=0.26.0"
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]

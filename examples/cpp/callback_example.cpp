@@ -96,12 +96,15 @@ std::string get_event_type_name(EventType type)
 // Type-specific callbacks - each receives only relevant parameters!
 // =============================================================================
 
-// Document callback - receives doc_id, title, content
+// Document callback - receives doc_id, title, content, user_id, author_name, visibility
 void document_event_callback(
     EventType event_type,
     const char* document_id,
     const char* title,
     const char* content,
+    const char* user_id,
+    const char* author_name,
+    const char* visibility,
     void* context)
 {
     std::string event_name = get_event_type_name(event_type);
@@ -116,6 +119,14 @@ void document_event_callback(
     if (title)
     {
         std::cout << " - Title: '" << title << "'";
+    }
+    if (author_name)
+    {
+        std::cout << " - Author: " << author_name;
+    }
+    if (visibility)
+    {
+        std::cout << " - Visibility: " << visibility;
     }
     std::cout << "\n";
 }

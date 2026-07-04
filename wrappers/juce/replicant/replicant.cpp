@@ -43,7 +43,9 @@ void Replicant::timerCallback()
 
 //==============================================================================
 void Replicant::documentCallback(EventType eventType, const char* docId,
-                                 const char* title, const char* content, void* context)
+                                 const char* title, const char* content,
+                                 const char* /*userId*/, const char* /*authorName*/,
+                                 const char* /*visibility*/, void* context)
 {
     auto* self = static_cast<Replicant*>(context);
     const std::string documentId = docId ? docId : "";

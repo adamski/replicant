@@ -323,3 +323,47 @@ async fn test_array_operations_no_duplication() {
     assert_eq!(tags[0], "existing");
     assert_eq!(tags[1], "new_tag");
 }
+
+/// Proves envelope attribution flows end-to-end: server stamps author_name
+/// (email local-part fallback), visibility, and provenance on create, and
+/// the same fields arrive on full sync — outside the content JSON.
+#[tokio::test]
+#[serial]
+async fn test_envelope_attribution_end_to_end() {
+    if skip_if_no_server() {
+        return;
+    }
+
+    let client = TestClient::connect(TEST_EMAIL).await.unwrap();
+
+    // Create -> reply carries server-stamped attribution.
+    let content = json!({"title": "Envelope check"});
+    let reply = client.create_document(content).await.unwrap();
+    assert_eq!(reply["author_name"], json!("integration-test"));
+    assert_eq!(reply["visibility"], json!("private"));
+
+    let doc_id = reply.get("id").and_then(|v| v.as_str()).unwrap();
+
+    // Full sync -> the doc arrives with the same attribution, outside content.
+    let sync_result = client.request_full_sync().await.unwrap();
+    let documents = sync_result
+        .get("documents")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let doc = documents
+        .iter()
+        .find(|d| {
+            d.get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s == doc_id)
+                .unwrap_or(false)
+        })
+        .expect("Created document should appear in full sync");
+
+    assert_eq!(doc["author_name"], json!("integration-test"));
+    assert_eq!(doc["visibility"], json!("private"));
+    assert!(
+        doc["content"].get("author").is_none(),
+        "attribution must not ride in content"
+    );
+}

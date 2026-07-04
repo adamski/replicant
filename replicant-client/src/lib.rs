@@ -49,6 +49,9 @@ mod tests {
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
                 title TEXT,
+                author_name TEXT,
+                visibility TEXT,
+                provenance JSON,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -86,6 +89,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         // Save document
@@ -118,6 +124,9 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,
+                author_name: None,
+                visibility: None,
+                provenance: None,
             },
         };
 
@@ -158,6 +167,9 @@ mod tests {
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
                 title TEXT,
+                author_name TEXT,
+                visibility TEXT,
+                provenance JSON,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -190,6 +202,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         // Save document
@@ -236,6 +251,9 @@ mod tests {
                 local_changes JSON,
                 sync_status TEXT DEFAULT 'synced',
                 title TEXT,
+                author_name TEXT,
+                visibility TEXT,
+                provenance JSON,
                 CHECK (sync_status IN ('synced', 'pending', 'conflict'))
             );
             "#,
@@ -265,6 +283,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         db.save_document(&doc).await.unwrap();
@@ -286,6 +307,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         db.save_document(&doc2).await.unwrap();

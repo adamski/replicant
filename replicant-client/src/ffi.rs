@@ -229,7 +229,13 @@ pub unsafe extern "C" fn replicant_create_document(
                 // Emit event to FFI event dispatcher
                 engine
                     .event_dispatcher
-                    .emit_document_created(&doc.id, &content);
+                    .emit_document_created_with_attribution(
+                        &doc.id,
+                        &content,
+                        doc.user_id.as_ref(),
+                        doc.author_name.as_deref(),
+                        doc.visibility.as_deref(),
+                    );
                 doc.id
             }
             Err(_) => return SyncResult::ErrorConnection,
@@ -256,6 +262,9 @@ pub unsafe extern "C" fn replicant_create_document(
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         if engine
@@ -269,7 +278,13 @@ pub unsafe extern "C" fn replicant_create_document(
         // Emit event for offline document creation
         engine
             .event_dispatcher
-            .emit_document_created(&doc_id, &content);
+            .emit_document_created_with_attribution(
+                &doc_id,
+                &content,
+                doc.user_id.as_ref(),
+                doc.author_name.as_deref(),
+                doc.visibility.as_deref(),
+            );
 
         doc_id
     };
@@ -350,7 +365,13 @@ pub unsafe extern "C" fn replicant_create_document_with_id(
             Ok(doc) => {
                 engine
                     .event_dispatcher
-                    .emit_document_created(&doc.id, &content);
+                    .emit_document_created_with_attribution(
+                        &doc.id,
+                        &content,
+                        doc.user_id.as_ref(),
+                        doc.author_name.as_deref(),
+                        doc.visibility.as_deref(),
+                    );
             }
             Err(_) => return SyncResult::ErrorConnection,
         }
@@ -375,6 +396,9 @@ pub unsafe extern "C" fn replicant_create_document_with_id(
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         if engine
@@ -387,7 +411,13 @@ pub unsafe extern "C" fn replicant_create_document_with_id(
 
         engine
             .event_dispatcher
-            .emit_document_created(&doc_id, &content);
+            .emit_document_created_with_attribution(
+                &doc_id,
+                &content,
+                doc.user_id.as_ref(),
+                doc.author_name.as_deref(),
+                doc.visibility.as_deref(),
+            );
     }
 
     SyncResult::Success
@@ -472,7 +502,13 @@ pub unsafe extern "C" fn replicant_update_document(
                 // Emit event for offline document update
                 engine
                     .event_dispatcher
-                    .emit_document_updated(&doc_uuid, &updated_doc.content);
+                    .emit_document_updated_with_attribution(
+                        &doc_uuid,
+                        &updated_doc.content,
+                        updated_doc.user_id.as_ref(),
+                        updated_doc.author_name.as_deref(),
+                        updated_doc.visibility.as_deref(),
+                    );
                 SyncResult::Success
             }
             Err(_) => SyncResult::ErrorDatabase,
@@ -547,6 +583,47 @@ pub unsafe extern "C" fn replicant_delete_document(
 pub unsafe extern "C" fn replicant_string_free(s: *mut c_char) {
     if !s.is_null() {
         let _ = CString::from_raw(s);
+    }
+}
+
+/// Get the engine's own frozen user UUID
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `out_user_id` - Output pointer for user UUID string (caller must free with replicant_string_free)
+///
+/// # Returns
+/// * SyncResult::Success if the user ID was retrieved
+/// * SyncResult::ErrorInvalidInput if engine or out_user_id is null
+/// * SyncResult::ErrorDatabase if the user ID could not be read
+///
+/// # Safety
+/// Caller must ensure engine is valid and out_user_id is a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn replicant_get_user_id(
+    engine: *mut Replicant,
+    out_user_id: *mut *mut c_char,
+) -> SyncResult {
+    if engine.is_null() || out_user_id.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    let user_id = match engine
+        .runtime
+        .block_on(async { engine.database.get_user_id().await })
+    {
+        Ok(id) => id,
+        Err(_) => return SyncResult::ErrorDatabase,
+    };
+
+    match CString::new(user_id.to_string()) {
+        Ok(c_str) => {
+            *out_user_id = c_str.into_raw();
+            SyncResult::Success
+        }
+        Err(_) => SyncResult::ErrorSerialization,
     }
 }
 

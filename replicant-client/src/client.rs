@@ -375,6 +375,9 @@ impl Client {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
         };
 
         tracing::info!(
@@ -387,7 +390,13 @@ impl Client {
             .await?;
 
         self.event_dispatcher
-            .emit_document_created(&doc.id, &doc.content);
+            .emit_document_created_with_attribution(
+                &doc.id,
+                &doc.content,
+                doc.user_id.as_ref(),
+                doc.author_name.as_deref(),
+                doc.visibility.as_deref(),
+            );
 
         if let Err(e) = self.try_immediate_sync(&doc).await {
             tracing::warn!(
@@ -499,7 +508,13 @@ impl Client {
 
         // Emit event
         self.event_dispatcher
-            .emit_document_updated(&doc.id, &doc.content);
+            .emit_document_updated_with_attribution(
+                &doc.id,
+                &doc.content,
+                doc.user_id.as_ref(),
+                doc.author_name.as_deref(),
+                doc.visibility.as_deref(),
+            );
 
         // Attempt immediate sync if connected
         tracing::info!(
@@ -1076,7 +1091,13 @@ impl Client {
                 db.mark_synced(&doc.id).await?;
 
                 // Emit event for updated document
-                event_dispatcher.emit_document_updated(&doc.id, &doc.content);
+                event_dispatcher.emit_document_updated_with_attribution(
+                    &doc.id,
+                    &doc.content,
+                    doc.user_id.as_ref(),
+                    doc.author_name.as_deref(),
+                    doc.visibility.as_deref(),
+                );
             }
             ServerMessage::DocumentCreated { document } => {
                 // New document from server - check if we already have it to avoid duplicates
@@ -1099,7 +1120,13 @@ impl Client {
                                 .await?;
 
                             // Emit event for updated document
-                            event_dispatcher.emit_document_updated(&document.id, &document.content);
+                            event_dispatcher.emit_document_updated_with_attribution(
+                                &document.id,
+                                &document.content,
+                                document.user_id.as_ref(),
+                                document.author_name.as_deref(),
+                                document.visibility.as_deref(),
+                            );
                         }
                     }
                     Err(_) => {
@@ -1112,7 +1139,13 @@ impl Client {
                             .await?;
 
                         // Emit event for new document from server
-                        event_dispatcher.emit_document_created(&document.id, &document.content);
+                        event_dispatcher.emit_document_created_with_attribution(
+                            &document.id,
+                            &document.content,
+                            document.user_id.as_ref(),
+                            document.author_name.as_deref(),
+                            document.visibility.as_deref(),
+                        );
                     }
                 }
             }
@@ -1201,7 +1234,13 @@ impl Client {
                                 .await?;
 
                             // Emit event for updated document
-                            event_dispatcher.emit_document_updated(&document.id, &document.content);
+                            event_dispatcher.emit_document_updated_with_attribution(
+                                &document.id,
+                                &document.content,
+                                document.user_id.as_ref(),
+                                document.author_name.as_deref(),
+                                document.visibility.as_deref(),
+                            );
                         } else {
                             tracing::info!(
                                 "CLIENT {}: Skipping older sync (local version {} >= sync version {})",
@@ -1222,7 +1261,13 @@ impl Client {
                             .await?;
 
                         // Emit event for new document
-                        event_dispatcher.emit_document_created(&document.id, &document.content);
+                        event_dispatcher.emit_document_created_with_attribution(
+                            &document.id,
+                            &document.content,
+                            document.user_id.as_ref(),
+                            document.author_name.as_deref(),
+                            document.visibility.as_deref(),
+                        );
                     }
                 }
             }
@@ -1238,6 +1283,9 @@ impl Client {
                 document_id,
                 success,
                 error,
+                author_name,
+                visibility,
+                provenance,
             } => {
                 if success {
                     tracing::info!(
@@ -1245,6 +1293,13 @@ impl Client {
                         client_id,
                         document_id
                     );
+                    db.update_attribution(
+                        &document_id,
+                        author_name.clone(),
+                        visibility.clone(),
+                        provenance.clone(),
+                    )
+                    .await?;
                     db.mark_synced(&document_id).await?;
                     // Clean up sync_queue
                     db.remove_from_sync_queue(&document_id).await?;

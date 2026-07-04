@@ -17,6 +17,9 @@ pub type DocumentParams = (
     Option<String>, // deleted_at
     String,         // sync_status
     String,         // title
+    Option<String>, // author_name
+    Option<String>, // visibility
+    Option<String>, // provenance
 );
 
 /// SQL queries for client database operations
@@ -41,6 +44,10 @@ impl Queries {
             deleted_at TIMESTAMP,
             local_changes JSON,
             sync_status TEXT DEFAULT 'pending',
+            title TEXT,
+            author_name TEXT,
+            visibility TEXT,
+            provenance JSON,
             CHECK (sync_status IN ('synced', 'pending', 'conflict'))
         );
         
@@ -78,7 +85,8 @@ impl Queries {
     // Document queries
     pub const GET_DOCUMENT: &'static str = r#"
         SELECT id, user_id, content, sync_revision,
-               created_at, updated_at, deleted_at, title
+               created_at, updated_at, deleted_at, title,
+               author_name, visibility, provenance
         FROM documents
         WHERE id = ?1
     "#;
@@ -86,26 +94,35 @@ impl Queries {
     pub const UPSERT_DOCUMENT: &'static str = r#"
         INSERT INTO documents (
             id, user_id, content, sync_revision,
-            created_at, updated_at, deleted_at, sync_status, title
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            created_at, updated_at, deleted_at, sync_status, title,
+            author_name, visibility, provenance
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ON CONFLICT(id) DO UPDATE SET
             content = excluded.content,
             sync_revision = excluded.sync_revision,
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at,
             sync_status = excluded.sync_status,
-            title = excluded.title
+            title = excluded.title,
+            author_name = excluded.author_name,
+            visibility = excluded.visibility,
+            provenance = excluded.provenance
     "#;
 
     pub const LIST_USER_DOCUMENTS: &'static str = r#"
-        SELECT id, sync_status, updated_at 
-        FROM documents 
+        SELECT id, user_id, content, sync_revision,
+               created_at, updated_at, deleted_at, title,
+               author_name, visibility, provenance
+        FROM documents
         WHERE user_id = ?1 AND deleted_at IS NULL
         ORDER BY updated_at DESC
     "#;
 
     pub const GET_PENDING_DOCUMENTS: &'static str = r#"
-        SELECT id, deleted_at FROM documents
+        SELECT id, user_id, content, sync_revision,
+               created_at, updated_at, deleted_at, title,
+               author_name, visibility, provenance
+        FROM documents
         WHERE sync_status = ?
         ORDER BY updated_at ASC
     "#;
@@ -184,7 +201,8 @@ impl Queries {
 
     pub const SEARCH_DOCUMENTS: &'static str = r#"
         SELECT d.id, d.user_id, d.content, d.sync_revision,
-               d.created_at, d.updated_at, d.deleted_at, d.title
+               d.created_at, d.updated_at, d.deleted_at, d.title,
+               d.author_name, d.visibility, d.provenance
         FROM documents d
         JOIN documents_fts fts ON d.id = fts.document_id
         WHERE d.deleted_at IS NULL
@@ -216,6 +234,11 @@ impl DbHelpers {
         let updated_at: String = row.get("updated_at");
         let deleted_at: Option<String> = row.get("deleted_at");
         let title: Option<String> = row.try_get("title").ok();
+        let author_name: Option<String> = row.try_get("author_name").ok();
+        let visibility: Option<String> = row.try_get("visibility").ok();
+        let provenance_str: Option<String> = row.try_get("provenance").ok();
+        let provenance: Option<serde_json::Value> =
+            provenance_str.and_then(|s| serde_json::from_str(&s).ok());
 
         Ok(Document {
             id: Uuid::parse_str(&id)?,
@@ -229,6 +252,9 @@ impl DbHelpers {
             deleted_at: deleted_at
                 .and_then(|dt| DateTime::parse_from_rfc3339(&dt).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
+            author_name,
+            visibility,
+            provenance,
         })
     }
 
@@ -257,6 +283,9 @@ impl DbHelpers {
             doc.deleted_at.map(|dt| dt.to_rfc3339()),
             status,
             title,
+            doc.author_name.clone(),
+            doc.visibility.clone(),
+            doc.provenance.as_ref().map(|v| v.to_string()),
         ))
     }
 

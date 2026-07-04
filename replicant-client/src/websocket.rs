@@ -262,9 +262,19 @@ impl WebSocketClient {
         let payload = json!({"id": document.id.to_string(), "content": document.content});
         let resp = self.call("create_document", &payload).await;
 
-        let (success, error) = match &resp {
-            Ok(j) => (j.get("id").is_some(), None),
-            Err(e) => (false, Some(format!("{:?}", e))),
+        let (success, error, author_name, visibility, provenance) = match &resp {
+            Ok(j) => (
+                j.get("id").is_some(),
+                None,
+                j.get("author_name")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                j.get("visibility")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                j.get("provenance").filter(|v| !v.is_null()).cloned(),
+            ),
+            Err(e) => (false, Some(format!("{:?}", e)), None, None, None),
         };
 
         let _ = self
@@ -273,6 +283,9 @@ impl WebSocketClient {
                 document_id: document.id,
                 success,
                 error,
+                author_name,
+                visibility,
+                provenance,
             })
             .await;
         Ok(())
@@ -488,6 +501,15 @@ fn json_to_document(j: &Value, default_user_id: Uuid) -> Option<Document> {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
+        author_name: j
+            .get("author_name")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        visibility: j
+            .get("visibility")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        provenance: j.get("provenance").filter(|v| !v.is_null()).cloned(),
     })
 }
 
@@ -525,4 +547,39 @@ fn json_to_change_event(j: &Value) -> Option<ChangeEvent> {
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(chrono::Utc::now),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_to_document_reads_attribution() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "user_id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "content": {"title": "T"},
+            "sync_revision": 3,
+            "content_hash": "abc",
+            "author_name": "Sevish",
+            "visibility": "public",
+            "provenance": {"copied_from": "x"}
+        });
+        let doc = json_to_document(&j, uuid::Uuid::nil()).unwrap();
+        assert_eq!(doc.author_name.as_deref(), Some("Sevish"));
+        assert_eq!(doc.visibility.as_deref(), Some("public"));
+        assert!(doc.provenance.is_some());
+    }
+
+    #[test]
+    fn json_to_document_tolerates_missing_attribution() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "content": {"title": "T"},
+            "sync_revision": 1
+        });
+        let doc = json_to_document(&j, uuid::Uuid::nil()).unwrap();
+        assert_eq!(doc.author_name, None);
+        assert_eq!(doc.visibility, None);
+    }
 }

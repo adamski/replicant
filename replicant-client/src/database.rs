@@ -169,6 +169,9 @@ impl ClientDatabase {
             .bind(params.6) // deleted_at
             .bind(params.7) // sync_status
             .bind(params.8) // title
+            .bind(params.9) // author_name
+            .bind(params.10) // visibility
+            .bind(params.11) // provenance
             .execute(&self.pool)
             .await?;
 
@@ -250,6 +253,36 @@ impl ClientDatabase {
 
         tracing::info!(
             "DATABASE: ✅ Updated {} sync_revision, rows affected: {}",
+            document_id,
+            result.rows_affected()
+        );
+
+        Ok(())
+    }
+
+    pub async fn update_attribution(
+        &self,
+        document_id: &Uuid,
+        author_name: Option<String>,
+        visibility: Option<String>,
+        provenance: Option<serde_json::Value>,
+    ) -> SyncResult<()> {
+        tracing::info!("DATABASE: 🔄 Updating document {} attribution", document_id);
+
+        let provenance_str = provenance.map(|v| v.to_string());
+
+        let result = sqlx::query(
+            "UPDATE documents SET author_name = ?, visibility = ?, provenance = ? WHERE id = ?",
+        )
+        .bind(author_name)
+        .bind(visibility)
+        .bind(provenance_str)
+        .bind(document_id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        tracing::info!(
+            "DATABASE: ✅ Updated {} attribution, rows affected: {}",
             document_id,
             result.rows_affected()
         );

@@ -20,8 +20,11 @@ sha2 = "0.10"
 hex = "0.4"
 url = "2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
 
 [dev-dependencies]
+tempfile = "3"
 clap = { version = "4.4", features = ["derive", "env"] }
 dialoguer = "0.11"
 colored = "2.1"

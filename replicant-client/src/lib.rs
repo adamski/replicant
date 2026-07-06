@@ -3,6 +3,7 @@ pub mod database;
 pub mod events;
 pub mod offline_queue;
 pub mod queries;
+pub mod secret_store;
 pub mod websocket;
 
 // C FFI module

@@ -600,3 +600,27 @@ mod identity_freeze_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    async fn fresh_db() -> ClientDatabase {
+        let db = ClientDatabase::new(":memory:").await.unwrap();
+        db.run_migrations().await.unwrap();
+        db
+    }
+
+    #[tokio::test]
+    async fn user_config_has_identity_adopted_defaulting_to_zero() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+
+        let row = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let adopted: i64 = row.try_get("identity_adopted").unwrap();
+        assert_eq!(adopted, 0);
+    }
+}

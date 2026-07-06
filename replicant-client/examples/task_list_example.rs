@@ -626,6 +626,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 ActivityType::Error,
                             );
                         }
+                        SyncEvent::IdentityChanged { new_user_id, .. } => {
+                            app_state.add_activity(
+                                format!(
+                                    "Identity adopted: {}...",
+                                    &new_user_id[..8.min(new_user_id.len())]
+                                ),
+                                ActivityType::Connected,
+                            );
+                        }
                     }
                 })
             {

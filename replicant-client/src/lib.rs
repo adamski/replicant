@@ -1,5 +1,6 @@
 pub mod client;
 pub mod database;
+pub mod enrollment;
 pub mod events;
 pub mod offline_queue;
 pub mod queries;

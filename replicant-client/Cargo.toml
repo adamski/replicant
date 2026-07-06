@@ -22,9 +22,11 @@ url = "2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chacha20poly1305 = "0.10"
 rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"
+wiremock = "0.6"
 clap = { version = "4.4", features = ["derive", "env"] }
 dialoguer = "0.11"
 colored = "2.1"

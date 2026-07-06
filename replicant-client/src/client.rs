@@ -128,6 +128,7 @@ impl Client {
         let user_id = if let Some(a) = adoption {
             db.adopt_identity(a.old_user_id, a.canonical_user_id)
                 .await?;
+            event_dispatcher.emit_identity_changed(&a.old_user_id, &a.canonical_user_id, &a.email);
             a.canonical_user_id
         } else {
             user_id
@@ -1715,6 +1716,11 @@ impl Client {
                                 } else {
                                     *user_id.write().expect("user_id lock poisoned") =
                                         a.canonical_user_id;
+                                    event_dispatcher.emit_identity_changed(
+                                        &a.old_user_id,
+                                        &a.canonical_user_id,
+                                        &a.email,
+                                    );
                                 }
                             }
 

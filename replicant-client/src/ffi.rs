@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::events::{
     ConflictEventCallback, ConnectionEventCallback, DocumentEventCallback, ErrorEventCallback,
-    EventDispatcher, EventType, SyncEventCallback,
+    EventDispatcher, EventType, IdentityEventCallback, SyncEventCallback,
 };
 use crate::{Client as CoreClient, ClientDatabase};
 
@@ -809,6 +809,39 @@ pub unsafe extern "C" fn replicant_register_conflict_callback(
     match engine
         .event_dispatcher
         .register_conflict_callback(callback, context)
+    {
+        Ok(_) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorUnknown,
+    }
+}
+
+/// Register a callback for IdentityChanged events
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `callback` - Function to call when the server-authoritative id is adopted
+/// * `context` - User-defined context pointer passed to callback
+///
+/// # Returns
+/// * SyncResult indicating success or failure
+///
+/// # Safety
+/// Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+#[no_mangle]
+pub unsafe extern "C" fn replicant_register_identity_callback(
+    engine: *mut Replicant,
+    callback: IdentityEventCallback,
+    context: *mut c_void,
+) -> SyncResult {
+    if engine.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    match engine
+        .event_dispatcher
+        .register_identity_callback(callback, context)
     {
         Ok(_) => SyncResult::Success,
         Err(_) => SyncResult::ErrorUnknown,

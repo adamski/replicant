@@ -61,6 +61,8 @@ pub enum EventType {
     ConnectionAttempted = 8,
     /// Successfully connected to the server
     ConnectionSucceeded = 9,
+    /// The server-authoritative user id was adopted, replacing the local one
+    IdentityChanged = 10,
 }
 
 // =============================================================================
@@ -131,6 +133,12 @@ pub enum SyncEvent {
     ConnectionAttempted { server_url: String },
     /// Successfully connected to server
     ConnectionSucceeded { server_url: String },
+    /// The server-authoritative user id was adopted, replacing the local one
+    IdentityChanged {
+        old_user_id: String,
+        new_user_id: String,
+        email: String,
+    },
 }
 
 impl SyncEvent {
@@ -147,6 +155,7 @@ impl SyncEvent {
             SyncEvent::ConnectionLost { .. } => EventType::ConnectionLost,
             SyncEvent::ConnectionAttempted { .. } => EventType::ConnectionAttempted,
             SyncEvent::ConnectionSucceeded { .. } => EventType::ConnectionSucceeded,
+            SyncEvent::IdentityChanged { .. } => EventType::IdentityChanged,
         }
     }
 
@@ -209,6 +218,11 @@ impl SyncEvent {
             },
             EventType::ConnectionSucceeded => SyncEvent::ConnectionSucceeded {
                 server_url: event.title.clone().unwrap_or_default(),
+            },
+            EventType::IdentityChanged => SyncEvent::IdentityChanged {
+                old_user_id: event.document_id.clone().unwrap_or_default(),
+                new_user_id: event.user_id.clone().unwrap_or_default(),
+                email: event.title.clone().unwrap_or_default(),
             },
         }
     }
@@ -288,6 +302,22 @@ pub type ConflictEventCallback = extern "C" fn(
     context: *mut c_void,
 );
 
+/// Identity event callback for IdentityChanged
+///
+/// # Parameters
+/// * `event_type` - Always IdentityChanged
+/// * `old_user_id` - The provisional/previous user id (always non-null)
+/// * `new_user_id` - The adopted canonical user id (always non-null)
+/// * `email` - The email the server resolved the id from (may be empty)
+/// * `context` - User-defined context pointer
+pub type IdentityEventCallback = extern "C" fn(
+    event_type: EventType,
+    old_user_id: *const c_char,
+    new_user_id: *const c_char,
+    email: *const c_char,
+    context: *mut c_void,
+);
+
 // =============================================================================
 // Callback Entry Types (Internal)
 // =============================================================================
@@ -318,6 +348,11 @@ struct ConflictCallbackEntry {
     context: *mut c_void,
 }
 
+struct IdentityCallbackEntry {
+    callback: IdentityEventCallback,
+    context: *mut c_void,
+}
+
 // Safety: Callback entries are only accessed from the registered thread
 unsafe impl Send for DocumentCallbackEntry {}
 unsafe impl Sync for DocumentCallbackEntry {}
@@ -329,6 +364,8 @@ unsafe impl Send for ConnectionCallbackEntry {}
 unsafe impl Sync for ConnectionCallbackEntry {}
 unsafe impl Send for ConflictCallbackEntry {}
 unsafe impl Sync for ConflictCallbackEntry {}
+unsafe impl Send for IdentityCallbackEntry {}
+unsafe impl Sync for IdentityCallbackEntry {}
 
 // =============================================================================
 // Rust Callback Entry (Internal)
@@ -401,6 +438,7 @@ pub struct EventDispatcher {
     error_callbacks: Mutex<Vec<ErrorCallbackEntry>>,
     connection_callbacks: Mutex<Vec<ConnectionCallbackEntry>>,
     conflict_callbacks: Mutex<Vec<ConflictCallbackEntry>>,
+    identity_callbacks: Mutex<Vec<IdentityCallbackEntry>>,
     // Rust-native callback storage
     rust_callbacks: Mutex<Vec<RustCallbackEntry>>,
     // Event queue
@@ -418,6 +456,7 @@ impl EventDispatcher {
             error_callbacks: Mutex::new(Vec::new()),
             connection_callbacks: Mutex::new(Vec::new()),
             conflict_callbacks: Mutex::new(Vec::new()),
+            identity_callbacks: Mutex::new(Vec::new()),
             rust_callbacks: Mutex::new(Vec::new()),
             event_queue: Mutex::new(receiver),
             event_sender: sender,
@@ -553,6 +592,23 @@ impl EventDispatcher {
             .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
 
         callbacks.push(ConflictCallbackEntry { callback, context });
+
+        Ok(())
+    }
+
+    pub fn register_identity_callback(
+        &self,
+        callback: IdentityEventCallback,
+        context: *mut c_void,
+    ) -> SyncResult<()> {
+        self.ensure_callback_thread()?;
+
+        let mut callbacks = self
+            .identity_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("identity_callbacks".into()))?;
+
+        callbacks.push(IdentityCallbackEntry { callback, context });
 
         Ok(())
     }
@@ -820,6 +876,22 @@ impl EventDispatcher {
         );
     }
 
+    pub fn emit_identity_changed(&self, old_user_id: &Uuid, new_user_id: &Uuid, email: &str) {
+        // document_id carries the old id, title the email, user_id the new id.
+        self.queue_event(
+            EventType::IdentityChanged,
+            Some(old_user_id),
+            Some(email),
+            None,
+            None,
+            0,
+            false,
+            Some(new_user_id.to_string()),
+            None,
+            None,
+        );
+    }
+
     /// Queue an event for later processing on the callback thread
     #[allow(clippy::too_many_arguments)] // FFI callback constraints
     fn queue_event(
@@ -875,6 +947,10 @@ impl EventDispatcher {
             .conflict_callbacks
             .lock()
             .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
+        let identity = self
+            .identity_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("identity_callbacks".into()))?;
         let rust = self
             .rust_callbacks
             .lock()
@@ -885,6 +961,7 @@ impl EventDispatcher {
             || !error.is_empty()
             || !conn.is_empty()
             || !conflict.is_empty()
+            || !identity.is_empty()
             || !rust.is_empty())
     }
 
@@ -930,6 +1007,10 @@ impl EventDispatcher {
             .conflict_callbacks
             .lock()
             .map_err(|_| ClientError::LockError("conflict_callbacks".into()))?;
+        let identity_callbacks = self
+            .identity_callbacks
+            .lock()
+            .map_err(|_| ClientError::LockError("identity_callbacks".into()))?;
         let rust_callbacks = self
             .rust_callbacks
             .lock()
@@ -1083,6 +1164,22 @@ impl EventDispatcher {
                             doc_id_ptr,
                             winning_ptr,
                             losing_ptr,
+                            entry.context,
+                        );
+                    }
+                }
+
+                EventType::IdentityChanged => {
+                    let old_ptr = document_id_cstr.unwrap_or(std::ptr::null());
+                    let new_ptr = user_id_cstr.unwrap_or(std::ptr::null());
+                    let email_ptr = title_cstr.unwrap_or(std::ptr::null());
+
+                    for entry in identity_callbacks.iter() {
+                        (entry.callback)(
+                            queued_event.event_type,
+                            old_ptr,
+                            new_ptr,
+                            email_ptr,
                             entry.context,
                         );
                     }
@@ -1323,6 +1420,70 @@ mod tests {
         // Process again (should be no more events)
         let processed = dispatcher.process_events().unwrap();
         assert_eq!(processed, 0);
+    }
+
+    #[test]
+    fn identity_changed_delivers_to_rust_callback() {
+        let dispatcher = EventDispatcher::new();
+        let captured: Arc<Mutex<Option<SyncEvent>>> = Arc::new(Mutex::new(None));
+        let c = captured.clone();
+        dispatcher
+            .register_rust_callback(move |e| *c.lock().unwrap() = Some(e))
+            .unwrap();
+
+        let old = Uuid::new_v4();
+        let new = Uuid::new_v4();
+        dispatcher.emit_identity_changed(&old, &new, "user@example.com");
+        assert_eq!(dispatcher.process_events().unwrap(), 1);
+
+        let result = captured.lock().unwrap().clone();
+        match result {
+            Some(SyncEvent::IdentityChanged {
+                old_user_id,
+                new_user_id,
+                email,
+            }) => {
+                assert_eq!(old_user_id, old.to_string());
+                assert_eq!(new_user_id, new.to_string());
+                assert_eq!(email, "user@example.com");
+            }
+            other => panic!("expected IdentityChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn identity_changed_delivers_to_ffi_callback() {
+        let dispatcher = EventDispatcher::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = count.clone();
+
+        extern "C" fn identity_callback(
+            event_type: EventType,
+            old_user_id: *const c_char,
+            new_user_id: *const c_char,
+            email: *const c_char,
+            context: *mut c_void,
+        ) {
+            assert_eq!(event_type, EventType::IdentityChanged);
+            assert!(!old_user_id.is_null());
+            assert!(!new_user_id.is_null());
+            assert!(!email.is_null());
+            let c = unsafe { &*(context as *const AtomicUsize) };
+            c.fetch_add(1, Ordering::SeqCst);
+        }
+
+        dispatcher
+            .register_identity_callback(
+                identity_callback,
+                &*count_clone as *const AtomicUsize as *mut c_void,
+            )
+            .unwrap();
+
+        let old = Uuid::new_v4();
+        let new = Uuid::new_v4();
+        dispatcher.emit_identity_changed(&old, &new, "user@example.com");
+        assert_eq!(dispatcher.process_events().unwrap(), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

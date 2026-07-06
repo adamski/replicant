@@ -62,6 +62,10 @@ typedef enum ReplicantEventType {
    * Successfully connected to the server
    */
   ConnectionSucceeded = 9,
+  /**
+   * The server-authoritative user id was adopted, replacing the local one
+   */
+  IdentityChanged = 10,
 } ReplicantEventType;
 
 /**
@@ -155,6 +159,22 @@ typedef void (*ConflictEventCallback)(enum ReplicantEventType event_type,
                                       const char *document_id,
                                       const char *winning_content,
                                       const char *losing_content,
+                                      void *context);
+
+/**
+ * Identity event callback for IdentityChanged
+ *
+ * # Parameters
+ * * `event_type` - Always IdentityChanged
+ * * `old_user_id` - The provisional/previous user id (always non-null)
+ * * `new_user_id` - The adopted canonical user id (always non-null)
+ * * `email` - The email the server resolved the id from (may be empty)
+ * * `context` - User-defined context pointer
+ */
+typedef void (*IdentityEventCallback)(enum ReplicantEventType event_type,
+                                      const char *old_user_id,
+                                      const char *new_user_id,
+                                      const char *email,
                                       void *context);
 
 /**
@@ -400,6 +420,24 @@ enum ReplicantSyncResult replicant_register_connection_callback(struct Replicant
  */
 enum ReplicantSyncResult replicant_register_conflict_callback(struct Replicant *engine,
                                                               ConflictEventCallback callback,
+                                                              void *context);
+
+/**
+ * Register a callback for IdentityChanged events
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `callback` - Function to call when the server-authoritative id is adopted
+ * * `context` - User-defined context pointer passed to callback
+ *
+ * # Returns
+ * * SyncResult indicating success or failure
+ *
+ * # Safety
+ * Caller must ensure engine is valid, callback is a valid function pointer, and context pointer outlives the callback registration
+ */
+enum ReplicantSyncResult replicant_register_identity_callback(struct Replicant *engine,
+                                                              IdentityEventCallback callback,
                                                               void *context);
 
 /**

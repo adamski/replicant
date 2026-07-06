@@ -1244,3 +1244,192 @@ pub unsafe extern "C" fn replicant_rebuild_search_index(engine: *mut Replicant) 
         Err(_) => SyncResult::ErrorDatabase,
     }
 }
+
+// ============================================================================
+// Enrollment + credential storage
+// ============================================================================
+
+/// Copies `s` (plus a NUL terminator) into the caller-provided `out` buffer.
+///
+/// # Safety
+/// `out` must point to a writable buffer of at least `s.len() + 1` bytes.
+unsafe fn write_cstr_buf(out: *mut c_char, s: &str) {
+    let bytes = s.as_bytes();
+    ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+    out.add(bytes.len()).write(0);
+}
+
+/// Requests an enrollment token be emailed to `email`. Standalone HTTP call
+/// (no engine handle); spins a short-lived runtime to drive the async request.
+///
+/// # Safety
+/// `base_url` and `email` must be valid, non-null C strings.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_enroll_request(
+    base_url: *const c_char,
+    email: *const c_char,
+) -> SyncResult {
+    if base_url.is_null() || email.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let base_url = match CStr::from_ptr(base_url).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let email = match CStr::from_ptr(email).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let runtime = match Runtime::new() {
+        Ok(r) => r,
+        Err(_) => return SyncResult::ErrorUnknown,
+    };
+
+    match runtime.block_on(crate::enrollment::request(base_url, email)) {
+        Ok(()) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorConnection,
+    }
+}
+
+/// Exchanges an enrollment token for a per-user credential. On success writes
+/// the api_key and secret into the out buffers (each must hold >= 69 bytes).
+///
+/// # Safety
+/// All string pointers must be valid, non-null C strings; `out_api_key` and
+/// `out_secret` must each point to a writable buffer of at least 69 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_enroll_claim(
+    base_url: *const c_char,
+    email: *const c_char,
+    token: *const c_char,
+    out_api_key: *mut c_char,
+    out_secret: *mut c_char,
+) -> SyncResult {
+    if base_url.is_null()
+        || email.is_null()
+        || token.is_null()
+        || out_api_key.is_null()
+        || out_secret.is_null()
+    {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let base_url = match CStr::from_ptr(base_url).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let email = match CStr::from_ptr(email).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let token = match CStr::from_ptr(token).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let runtime = match Runtime::new() {
+        Ok(r) => r,
+        Err(_) => return SyncResult::ErrorUnknown,
+    };
+
+    match runtime.block_on(crate::enrollment::claim(base_url, email, token)) {
+        Ok(creds) => {
+            write_cstr_buf(out_api_key, &creds.api_key);
+            write_cstr_buf(out_secret, &creds.secret);
+            SyncResult::Success
+        }
+        Err(crate::enrollment::EnrollError::InvalidToken) => SyncResult::ErrorInvalidInput,
+        Err(_) => SyncResult::ErrorConnection,
+    }
+}
+
+/// Loads stored credentials from `data_dir`. Returns Success and fills the out
+/// buffers, or ErrorDatabase if none are stored / unreadable.
+///
+/// # Safety
+/// `data_dir` must be a valid, non-null C string; out buffers each >= 69 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_load_credentials(
+    data_dir: *const c_char,
+    out_api_key: *mut c_char,
+    out_secret: *mut c_char,
+) -> SyncResult {
+    if data_dir.is_null() || out_api_key.is_null() || out_secret.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let data_dir = match CStr::from_ptr(data_dir).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    match crate::secret_store::load(std::path::Path::new(data_dir)) {
+        Ok(Some(creds)) => {
+            write_cstr_buf(out_api_key, &creds.api_key);
+            write_cstr_buf(out_secret, &creds.secret);
+            SyncResult::Success
+        }
+        Ok(None) | Err(_) => SyncResult::ErrorDatabase,
+    }
+}
+
+/// Stores credentials to `data_dir` (encrypted at rest).
+///
+/// # Safety
+/// All pointers must be valid, non-null C strings.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_store_credentials(
+    data_dir: *const c_char,
+    api_key: *const c_char,
+    secret: *const c_char,
+) -> SyncResult {
+    if data_dir.is_null() || api_key.is_null() || secret.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let data_dir = match CStr::from_ptr(data_dir).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let api_key = match CStr::from_ptr(api_key).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let secret = match CStr::from_ptr(secret).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let creds = crate::secret_store::Credentials {
+        api_key: api_key.to_string(),
+        secret: secret.to_string(),
+    };
+
+    match crate::secret_store::store(std::path::Path::new(data_dir), &creds) {
+        Ok(()) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorDatabase,
+    }
+}
+
+/// Clears any stored credentials in `data_dir`.
+///
+/// # Safety
+/// `data_dir` must be a valid, non-null C string.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_clear_credentials(data_dir: *const c_char) -> SyncResult {
+    if data_dir.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let data_dir = match CStr::from_ptr(data_dir).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    match crate::secret_store::clear(std::path::Path::new(data_dir)) {
+        Ok(()) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorDatabase,
+    }
+}

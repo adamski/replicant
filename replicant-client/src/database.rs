@@ -117,6 +117,27 @@ impl ClientDatabase {
         Ok((Uuid::parse_str(&user_id)?, Uuid::parse_str(&client_id)?))
     }
 
+    /// Atomically adopt the server's canonical id: re-stamp local documents
+    /// owned by `old_id` and flip `user_config` to `canonical_id` with
+    /// `identity_adopted = 1`. A crash mid-adoption leaves the old id intact.
+    pub async fn adopt_identity(&self, old_id: Uuid, canonical_id: Uuid) -> SyncResult<()> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(Queries::RESTAMP_DOCUMENTS_USER_ID)
+            .bind(canonical_id.to_string())
+            .bind(old_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(Queries::ADOPT_USER_CONFIG_IDENTITY)
+            .bind(canonical_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
         let row = sqlx::query(Queries::GET_DOCUMENT)
             .bind(id.to_string())
@@ -606,5 +627,85 @@ mod identity_tests {
             .unwrap();
         let adopted: i64 = row.try_get("identity_adopted").unwrap();
         assert_eq!(adopted, 0);
+    }
+
+    async fn seed_document(db: &ClientDatabase, owner: Option<Uuid>) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO documents (id, user_id, content) VALUES (?1, ?2, ?3)")
+            .bind(id.to_string())
+            .bind(owner.map(|u| u.to_string()))
+            .bind("{}")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn count_docs_for(db: &ClientDatabase, owner: Uuid) -> i64 {
+        sqlx::query("SELECT COUNT(*) as c FROM documents WHERE user_id = ?1")
+            .bind(owner.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("c")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn adopt_identity_restamps_docs_and_flips_flag() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+        let provisional = db.get_user_id().await.unwrap();
+        let canonical = Uuid::new_v4();
+
+        seed_document(&db, Some(provisional)).await;
+        seed_document(&db, Some(provisional)).await;
+        let public_id = seed_document(&db, None).await;
+
+        db.adopt_identity(provisional, canonical).await.unwrap();
+
+        // Identity flipped in user_config.
+        assert_eq!(db.get_user_id().await.unwrap(), canonical);
+        let adopted: i64 = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("identity_adopted")
+            .unwrap();
+        assert_eq!(adopted, 1);
+
+        // Owned documents re-stamped; none remain under the provisional id.
+        assert_eq!(count_docs_for(&db, canonical).await, 2);
+        assert_eq!(count_docs_for(&db, provisional).await, 0);
+
+        // Public (null-owner) document untouched.
+        let pub_null: i64 =
+            sqlx::query("SELECT COUNT(*) as c FROM documents WHERE id = ?1 AND user_id IS NULL")
+                .bind(public_id.to_string())
+                .fetch_one(&db.pool)
+                .await
+                .unwrap()
+                .try_get("c")
+                .unwrap();
+        assert_eq!(pub_null, 1);
+    }
+
+    #[tokio::test]
+    async fn adopt_identity_with_no_documents_still_flips_flag() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+        let provisional = db.get_user_id().await.unwrap();
+        let canonical = Uuid::new_v4();
+
+        db.adopt_identity(provisional, canonical).await.unwrap();
+
+        assert_eq!(db.get_user_id().await.unwrap(), canonical);
+        let adopted: i64 = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("identity_adopted")
+            .unwrap();
+        assert_eq!(adopted, 1);
     }
 }

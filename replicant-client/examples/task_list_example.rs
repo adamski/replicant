@@ -451,12 +451,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let user_id = match db.get_user_id().await {
         Ok(id) => id,
         Err(_) => {
-            // Deterministic user ID from the identifier, or random for anonymous use
-            let id = if let Some(user_identifier) = &cli.user {
-                ClientDatabase::generate_deterministic_user_id(user_identifier)
-            } else {
-                Uuid::new_v4()
-            };
+            // Provisional random id; the server assigns a canonical id on first contact.
+            let id = Uuid::new_v4();
 
             // Client ID should always be unique per client instance
             let client_id = Uuid::new_v4();

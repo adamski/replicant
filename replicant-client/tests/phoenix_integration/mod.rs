@@ -63,20 +63,6 @@ pub fn skip_if_no_server() -> bool {
     std::env::var("RUN_INTEGRATION_TESTS").is_err()
 }
 
-/// Deterministic user ID for an email — the client's frozen derivation,
-/// which matches the server's Auth.deterministic_user_id/1.
-pub fn deterministic_user_id(email: &str) -> Uuid {
-    replicant_client::ClientDatabase::generate_deterministic_user_id(email)
-}
-
-#[test]
-fn deterministic_user_id_normalizes_like_client_and_server() {
-    assert_eq!(
-        deterministic_user_id("  Integration-Test@Example.COM "),
-        deterministic_user_id(TEST_EMAIL)
-    );
-}
-
 /// A broadcast event received from the server
 #[derive(Debug)]
 pub struct BroadcastEvent {
@@ -104,7 +90,7 @@ impl TestClient {
         api_secret: &str,
     ) -> Result<Self, String> {
         let url = Url::parse(&server_url()).map_err(|e| format!("Invalid URL: {}", e))?;
-        let user_id = deterministic_user_id(email);
+        let user_id = Uuid::new_v4();
 
         let socket = Socket::spawn(url, None, None)
             .await

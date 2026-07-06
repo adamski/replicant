@@ -62,7 +62,7 @@ impl ClientDatabase {
     pub async fn ensure_user_config_with_identifier(
         &self,
         server_url: &str,
-        user_identifier: &str,
+        _user_identifier: &str,
     ) -> SyncResult<()> {
         // Check if user_config already exists
         let exists = sqlx::query("SELECT COUNT(*) as count FROM user_config")
@@ -72,12 +72,12 @@ impl ClientDatabase {
         let count: i64 = exists.try_get("count")?;
 
         if count == 0 {
-            // No user config exists, create with deterministic user ID
-            let user_id = Self::generate_deterministic_user_id(user_identifier);
+            // Provisional random id; the server's canonical id is adopted on first contact.
+            let user_id = Uuid::new_v4();
             let client_id = Uuid::new_v4(); // Client ID should always be unique per instance
 
             sqlx::query(
-                "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)",
+                "INSERT INTO user_config (user_id, client_id, server_url, identity_adopted) VALUES (?1, ?2, ?3, 0)",
             )
             .bind(user_id.to_string())
             .bind(client_id.to_string())
@@ -87,17 +87,6 @@ impl ClientDatabase {
         }
 
         Ok(())
-    }
-
-    /// FROZEN — must match replicant-server Auth (namespace + email
-    /// normalization). The crate's only identity derivation; call this
-    /// instead of re-implementing it.
-    pub fn generate_deterministic_user_id(user_identifier: &str) -> Uuid {
-        const APP_ID: &str = "com.nodeaudio.entonal";
-
-        let normalized = user_identifier.trim().to_lowercase();
-        let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, APP_ID.as_bytes());
-        Uuid::new_v5(&app_namespace, normalized.as_bytes())
     }
 
     pub async fn get_user_id(&self) -> SyncResult<Uuid> {
@@ -577,31 +566,6 @@ impl ClientDatabase {
 }
 
 #[cfg(test)]
-mod identity_freeze_tests {
-    use super::*;
-
-    #[test]
-    fn deterministic_user_id_matches_frozen_vectors() {
-        assert_eq!(
-            ClientDatabase::generate_deterministic_user_id("test@example.com").to_string(),
-            "71b2b712-7878-56ee-8323-43809b8198a5"
-        );
-        assert_eq!(
-            ClientDatabase::generate_deterministic_user_id("alice@example.com").to_string(),
-            "af665bed-e8e7-5b1f-ba4f-9343fefde4bb"
-        );
-    }
-
-    #[test]
-    fn normalization_makes_case_and_whitespace_irrelevant() {
-        assert_eq!(
-            ClientDatabase::generate_deterministic_user_id("  Alice@Example.COM ").to_string(),
-            "af665bed-e8e7-5b1f-ba4f-9343fefde4bb"
-        );
-    }
-}
-
-#[cfg(test)]
 mod identity_tests {
     use super::*;
 
@@ -615,6 +579,26 @@ mod identity_tests {
     async fn user_config_has_identity_adopted_defaulting_to_zero() {
         let db = fresh_db().await;
         db.ensure_user_config("ws://localhost/ws").await.unwrap();
+
+        let row = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let adopted: i64 = row.try_get("identity_adopted").unwrap();
+        assert_eq!(adopted, 0);
+    }
+
+    #[tokio::test]
+    async fn ensure_user_config_with_identifier_generates_random_v4_id() {
+        let db = fresh_db().await;
+        db.ensure_user_config_with_identifier("ws://localhost/ws", "test@example.com")
+            .await
+            .unwrap();
+
+        let user_id = db.get_user_id().await.unwrap();
+        // No longer derived from the email.
+        assert_ne!(user_id.to_string(), "71b2b712-7878-56ee-8323-43809b8198a5");
+        assert_eq!(user_id.get_version(), Some(uuid::Version::Random));
 
         let row = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
             .fetch_one(&db.pool)

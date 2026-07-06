@@ -98,6 +98,14 @@ impl ClientDatabase {
         Ok(Uuid::parse_str(&user_id)?)
     }
 
+    pub async fn is_identity_adopted(&self) -> SyncResult<bool> {
+        let row = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&self.pool)
+            .await?;
+        let adopted: i64 = row.try_get("identity_adopted")?;
+        Ok(adopted != 0)
+    }
+
     pub async fn get_client_id(&self) -> SyncResult<Uuid> {
         let row = sqlx::query(Queries::GET_CLIENT_ID)
             .fetch_one(&self.pool)

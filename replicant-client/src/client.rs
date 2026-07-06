@@ -93,8 +93,9 @@ impl Client {
         let (reconnect_sync_tx, reconnect_sync_rx) = mpsc::channel(10);
 
         let is_connected = Arc::new(AtomicBool::new(false));
+        let identity_adopted = db.is_identity_adopted().await.unwrap_or(false);
         // Try to connect to WebSocket, but don't fail if offline
-        let (ws_client, initial_ping_time) = match WebSocketClient::connect(
+        let (ws_client, initial_ping_time, adoption) = match WebSocketClient::connect(
             server_url,
             email,
             client_id,
@@ -103,23 +104,35 @@ impl Client {
             api_secret,
             Some(event_dispatcher.clone()),
             is_connected.clone(),
+            identity_adopted,
         )
         .await
         {
-            Ok((client, receiver)) => {
+            Ok((client, receiver, adoption)) => {
                 // Start forwarding WebSocket messages to our channel
                 tokio::spawn(async move {
                     if let Err(e) = receiver.forward_to(tx).await {
                         tracing::error!("WebSocket receiver error: {}", e);
                     }
                 });
-                (Some(client), Some(Instant::now()))
+                (Some(client), Some(Instant::now()), adoption)
             }
             Err(e) => {
                 eprintln!("Failed to connect to server (will retry): {}", e);
-                (None, None)
+                (None, None, None)
             }
         };
+
+        // Adopt the server's canonical id on first contact: re-stamp local docs
+        // and switch our in-memory identity to it.
+        let user_id = if let Some(a) = adoption {
+            db.adopt_identity(a.old_user_id, a.canonical_user_id)
+                .await?;
+            a.canonical_user_id
+        } else {
+            user_id
+        };
+
         let mut engine = Self {
             db: db.clone(),
             ws_client: Arc::new(Mutex::new(ws_client)),
@@ -1669,6 +1682,7 @@ impl Client {
                     // Read the current (possibly just-adopted) id; copy out so no
                     // lock guard is held across the await.
                     let current_user_id = *user_id.read().expect("user_id lock poisoned");
+                    let identity_adopted = db.is_identity_adopted().await.unwrap_or(false);
 
                     // Try to connect
                     match WebSocketClient::connect(
@@ -1680,16 +1694,29 @@ impl Client {
                         &api_secret,
                         Some(event_dispatcher.clone()),
                         is_connected.clone(),
+                        identity_adopted,
                     )
                     .await
                     {
-                        Ok((new_client, receiver)) => {
+                        Ok((new_client, receiver, adoption)) => {
                             tracing::info!(
                                 "✅ CLIENT {}: Reconnection successful after {} attempts!",
                                 client_id,
                                 connection_attempts
                             );
                             connection_attempts = 0;
+
+                            // Adopt the server's canonical id if it differs.
+                            if let Some(a) = adoption {
+                                if let Err(e) =
+                                    db.adopt_identity(a.old_user_id, a.canonical_user_id).await
+                                {
+                                    tracing::error!("Identity adoption failed: {}", e);
+                                } else {
+                                    *user_id.write().expect("user_id lock poisoned") =
+                                        a.canonical_user_id;
+                                }
+                            }
 
                             // Update the client
                             *ws_client.lock().await = Some(new_client);

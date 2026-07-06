@@ -30,6 +30,15 @@ pub struct WebSocketClient {
     user_id: Uuid,
 }
 
+/// The server assigned a canonical id differing from the local one; the caller
+/// must re-stamp local documents and update its in-memory identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Adoption {
+    pub old_user_id: Uuid,
+    pub canonical_user_id: Uuid,
+    pub email: String,
+}
+
 pub struct WebSocketReceiver {
     rx: mpsc::Receiver<ServerMessage>,
 }
@@ -44,7 +53,8 @@ impl WebSocketClient {
         api_secret: &str,
         event_dispatcher: Option<Arc<EventDispatcher>>,
         is_connected: Arc<AtomicBool>,
-    ) -> SyncResult<(Self, WebSocketReceiver)> {
+        identity_adopted: bool,
+    ) -> SyncResult<(Self, WebSocketReceiver, Option<Adoption>)> {
         Self::connect_with_hmac(
             server_url,
             email,
@@ -54,6 +64,7 @@ impl WebSocketClient {
             api_secret,
             event_dispatcher,
             is_connected,
+            identity_adopted,
         )
         .await
     }
@@ -67,7 +78,8 @@ impl WebSocketClient {
         api_secret: &str,
         event_dispatcher: Option<Arc<EventDispatcher>>,
         is_connected: Arc<AtomicBool>,
-    ) -> SyncResult<(Self, WebSocketReceiver)> {
+        identity_adopted: bool,
+    ) -> SyncResult<(Self, WebSocketReceiver, Option<Adoption>)> {
         let ws_url = Self::to_websocket_url(server_url)?;
 
         if let Some(ref d) = event_dispatcher {
@@ -87,15 +99,17 @@ impl WebSocketClient {
             ws_err(format!("Connect failed: {:?}", e))
         })?;
 
-        // Join channel with HMAC auth
+        // Join channel with HMAC auth. Send user_id only once identity is adopted
+        // (steady-state); a provisional client bootstrap-joins by email.
         let timestamp = chrono::Utc::now().timestamp();
         let signature = Self::create_hmac_signature(api_secret, timestamp, email, api_key, "");
-        let join_payload = json!({
-            "email": email,
-            "api_key": api_key,
-            "signature": signature,
-            "timestamp": timestamp
-        });
+        let payload_user_id = if identity_adopted {
+            Some(user_id)
+        } else {
+            None
+        };
+        let join_payload =
+            Self::build_join_payload(email, api_key, &signature, timestamp, payload_user_id);
 
         // Join per-user channel
         let channel = socket
@@ -106,12 +120,54 @@ impl WebSocketClient {
             .await
             .map_err(|e| ws_err(format!("Channel create failed: {:?}", e)))?;
 
-        channel.join(JOIN_TIMEOUT).await.map_err(|e| {
+        let join_reply = channel.join(JOIN_TIMEOUT).await.map_err(|e| {
             if let Some(ref d) = event_dispatcher {
                 d.emit_sync_error(&format!("Join failed: {:?}", e));
             }
             ws_err(format!("Join failed: {:?}", e))
         })?;
+
+        // Detect a server-assigned canonical id; if it differs, leave the
+        // provisional topic and rejoin the canonical one (now steady-state).
+        let reply_value = payload_to_value(&join_reply).unwrap_or_else(|| json!({}));
+        let adoption = Self::should_adopt(user_id, &reply_value).map(|canonical| Adoption {
+            old_user_id: user_id,
+            canonical_user_id: canonical,
+            email: reply_value
+                .get("email")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_default(),
+        });
+
+        let (channel, effective_user_id) = if let Some(ref a) = adoption {
+            let canonical = a.canonical_user_id;
+            let _ = channel.leave().await;
+
+            let ts = chrono::Utc::now().timestamp();
+            let sig = Self::create_hmac_signature(api_secret, ts, email, api_key, "");
+            let canonical_payload =
+                Self::build_join_payload(email, api_key, &sig, ts, Some(canonical));
+
+            let canonical_channel = socket
+                .channel(
+                    Topic::from_string(format!("sync:user:{}", canonical)),
+                    Some(to_payload(&canonical_payload)?),
+                )
+                .await
+                .map_err(|e| ws_err(format!("Canonical channel create failed: {:?}", e)))?;
+
+            canonical_channel.join(JOIN_TIMEOUT).await.map_err(|e| {
+                if let Some(ref d) = event_dispatcher {
+                    d.emit_sync_error(&format!("Canonical join failed: {:?}", e));
+                }
+                ws_err(format!("Canonical join failed: {:?}", e))
+            })?;
+
+            (canonical_channel, canonical)
+        } else {
+            (channel, user_id)
+        };
 
         // Join public channel for public document events
         let public_channel = socket
@@ -135,8 +191,18 @@ impl WebSocketClient {
         }
 
         let (tx, rx) = mpsc::channel::<ServerMessage>(100);
-        Self::setup_broadcast_handlers(&channel, tx.clone(), user_id, is_connected.clone());
-        Self::setup_broadcast_handlers(&public_channel, tx.clone(), user_id, is_connected);
+        Self::setup_broadcast_handlers(
+            &channel,
+            tx.clone(),
+            effective_user_id,
+            is_connected.clone(),
+        );
+        Self::setup_broadcast_handlers(
+            &public_channel,
+            tx.clone(),
+            effective_user_id,
+            is_connected,
+        );
 
         // Emit auth success
         let _ = tx
@@ -151,10 +217,42 @@ impl WebSocketClient {
                 channel,
                 _public_channel: public_channel,
                 tx,
-                user_id,
+                user_id: effective_user_id,
             },
             WebSocketReceiver { rx },
+            adoption,
         ))
+    }
+
+    /// Build the channel join payload. `user_id` is included only for a
+    /// steady-state (already-adopted) join; a bootstrap join omits it.
+    pub(crate) fn build_join_payload(
+        email: &str,
+        api_key: &str,
+        signature: &str,
+        timestamp: i64,
+        user_id: Option<Uuid>,
+    ) -> Value {
+        let mut payload = json!({
+            "email": email,
+            "api_key": api_key,
+            "signature": signature,
+            "timestamp": timestamp,
+        });
+        if let Some(uid) = user_id {
+            payload["user_id"] = json!(uid.to_string());
+        }
+        payload
+    }
+
+    /// The canonical id to adopt, if the join reply carries a `user_id` that
+    /// differs from the local one. `None` means no adoption is needed.
+    pub(crate) fn should_adopt(local: Uuid, reply: &Value) -> Option<Uuid> {
+        let canonical = reply
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())?;
+        (canonical != local).then_some(canonical)
     }
 
     fn to_websocket_url(server_url: &str) -> SyncResult<String> {
@@ -581,5 +679,44 @@ mod tests {
         let doc = json_to_document(&j, uuid::Uuid::nil()).unwrap();
         assert_eq!(doc.author_name, None);
         assert_eq!(doc.visibility, None);
+    }
+
+    #[test]
+    fn provisional_join_payload_omits_user_id() {
+        let payload = WebSocketClient::build_join_payload("a@b.com", "key", "sig", 123, None);
+        assert!(payload.get("user_id").is_none());
+        assert_eq!(payload["email"], "a@b.com");
+    }
+
+    #[test]
+    fn adopted_join_payload_includes_user_id() {
+        let uid = Uuid::new_v4();
+        let payload = WebSocketClient::build_join_payload("a@b.com", "key", "sig", 123, Some(uid));
+        assert_eq!(payload["user_id"], uid.to_string());
+    }
+
+    #[test]
+    fn should_adopt_detects_canonical_mismatch() {
+        let local = Uuid::new_v4();
+        let canonical = Uuid::new_v4();
+        let reply = serde_json::json!({ "user_id": canonical.to_string(), "email": "a@b.com" });
+        assert_eq!(
+            WebSocketClient::should_adopt(local, &reply),
+            Some(canonical)
+        );
+    }
+
+    #[test]
+    fn should_adopt_noop_when_ids_match() {
+        let local = Uuid::new_v4();
+        let reply = serde_json::json!({ "user_id": local.to_string() });
+        assert_eq!(WebSocketClient::should_adopt(local, &reply), None);
+    }
+
+    #[test]
+    fn should_adopt_noop_when_reply_has_no_user_id() {
+        let local = Uuid::new_v4();
+        let reply = serde_json::json!({ "email": "a@b.com" });
+        assert_eq!(WebSocketClient::should_adopt(local, &reply), None);
     }
 }

@@ -611,6 +611,58 @@ enum ReplicantSyncResult replicant_search_documents(struct Replicant *engine,
 enum ReplicantSyncResult replicant_rebuild_search_index(struct Replicant *engine);
 
 /**
+ * Requests an enrollment token be emailed to `email`. Standalone HTTP call
+ * (no engine handle); spins a short-lived runtime to drive the async request.
+ *
+ * # Safety
+ * `base_url` and `email` must be valid, non-null C strings.
+ */
+enum ReplicantSyncResult replicant_enroll_request(const char *base_url, const char *email);
+
+/**
+ * Exchanges an enrollment token for a per-user credential. On success writes
+ * the api_key and secret into the out buffers (each must hold >= 69 bytes).
+ *
+ * # Safety
+ * All string pointers must be valid, non-null C strings; `out_api_key` and
+ * `out_secret` must each point to a writable buffer of at least 69 bytes.
+ */
+enum ReplicantSyncResult replicant_enroll_claim(const char *base_url,
+                                                const char *email,
+                                                const char *token,
+                                                char *out_api_key,
+                                                char *out_secret);
+
+/**
+ * Loads stored credentials from `data_dir`. Returns Success and fills the out
+ * buffers, or ErrorDatabase if none are stored / unreadable.
+ *
+ * # Safety
+ * `data_dir` must be a valid, non-null C string; out buffers each >= 69 bytes.
+ */
+enum ReplicantSyncResult replicant_load_credentials(const char *data_dir,
+                                                    char *out_api_key,
+                                                    char *out_secret);
+
+/**
+ * Stores credentials to `data_dir` (encrypted at rest).
+ *
+ * # Safety
+ * All pointers must be valid, non-null C strings.
+ */
+enum ReplicantSyncResult replicant_store_credentials(const char *data_dir,
+                                                     const char *api_key,
+                                                     const char *secret);
+
+/**
+ * Clears any stored credentials in `data_dir`.
+ *
+ * # Safety
+ * `data_dir` must be a valid, non-null C string.
+ */
+enum ReplicantSyncResult replicant_clear_credentials(const char *data_dir);
+
+/**
  * Trigger a test event (for development/testing purposes)
  *
  * # Arguments

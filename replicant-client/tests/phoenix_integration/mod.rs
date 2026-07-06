@@ -22,6 +22,7 @@
 
 mod basic_sync_test;
 mod conflict_test;
+mod identity_adoption_test;
 mod live_sync_test;
 mod multi_client_test;
 

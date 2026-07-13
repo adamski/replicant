@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         SyncEvent::SyncCompleted { document_count } => {
                             format!("✅ Sync completed: {} docs", document_count)
                         }
-                        SyncEvent::SyncError { message } => {
+                        SyncEvent::SyncError { message, .. } => {
                             format!("🚨 Sync error: {}", message)
                         }
                         SyncEvent::ConnectionLost { server_url } => {

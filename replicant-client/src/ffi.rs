@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
+use crate::error_code::ReplicantErrorCode;
 use crate::events::{
     ConflictEventCallback, ConnectionEventCallback, DocumentEventCallback, ErrorEventCallback,
     EventDispatcher, EventType, IdentityEventCallback, SyncEventCallback,
@@ -177,7 +178,10 @@ pub unsafe extern "C" fn replicant_create(
                 event_dispatcher_clone.emit_sync_completed(0);
             }
             Err(e) => {
-                event_dispatcher_clone.emit_sync_error(&format!("Background init failed: {}", e));
+                event_dispatcher_clone.emit_sync_error(
+                    ReplicantErrorCode::Unknown,
+                    &format!("Background init failed: {}", e),
+                );
             }
         }
     });

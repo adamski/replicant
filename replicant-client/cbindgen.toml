@@ -16,6 +16,7 @@ include = [
     "SyncResult",
     "Document",
     "EventType",
+    "ReplicantErrorCode",
     "DocumentEventCallback",
     "SyncEventCallback",
     "ErrorEventCallback",

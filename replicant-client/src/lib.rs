@@ -1,6 +1,7 @@
 pub mod client;
 pub mod database;
 pub mod enrollment;
+pub mod error_code;
 pub mod events;
 pub mod offline_queue;
 pub mod queries;
@@ -16,7 +17,8 @@ pub mod ffi_test;
 
 pub use client::Client;
 pub use database::ClientDatabase;
-pub use websocket::WebSocketClient;
+pub use error_code::{is_credential_rejection, ReplicantErrorCode};
+pub use websocket::{error_code_for_join_reject, WebSocketClient};
 
 #[cfg(test)]
 mod tests {

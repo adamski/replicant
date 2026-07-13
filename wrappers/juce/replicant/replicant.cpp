@@ -82,11 +82,12 @@ void Replicant::connectionCallback(EventType eventType, bool /*isConnected*/,
         self->onConnectionChanged(eventType == ConnectionSucceeded);
 }
 
-void Replicant::errorCallback(EventType /*eventType*/, const char* errorMessage, void* context)
+void Replicant::errorCallback(EventType /*eventType*/, int32_t errorCode,
+                              const char* errorMessage, void* context)
 {
     auto* self = static_cast<Replicant*>(context);
     if (self->onSyncError && errorMessage)
-        self->onSyncError(errorMessage);
+        self->onSyncError(errorCode, errorMessage);
 }
 
 //==============================================================================

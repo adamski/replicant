@@ -108,7 +108,7 @@ void on_connection_event(EventType event_type, bool is_connected,
 /**
  * @brief Error event callback
  */
-void on_error_event(EventType event_type, const char* error_message, void* context)
+void on_error_event(EventType event_type, int32_t error_code, const char* error_message, void* context)
 {
     auto* stats = static_cast<EventStats*>(context);
     stats->errors++;

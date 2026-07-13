@@ -30,7 +30,7 @@ mod multi_client_test;
 pub use serial_test::serial;
 
 use hmac::{Hmac, Mac};
-use phoenix_channels_client::{Channel, Event, Payload, Socket, Topic};
+use phoenix_channels_client::{Channel, ChannelJoinError, Event, Payload, Socket, Topic};
 use replicant_core::models::Document;
 use serde_json::{json, Value};
 use sha2::Sha256;
@@ -256,6 +256,42 @@ impl TestClient {
             .map_err(|e| format!("{:?}", e))
             .and_then(|p| payload_to_value(&p).ok_or_else(|| "Invalid response".to_string()))
     }
+}
+
+/// Attempt only the per-user channel join and surface the RAW phoenix
+/// `ChannelJoinError`, so tests can feed it to the production
+/// `error_code_for_join_reject` mapping and assert the derived code (rather than
+/// substring-matching the message). Returns `None` if the join unexpectedly
+/// succeeded or the socket could not be set up.
+pub async fn raw_user_join_error(
+    email: &str,
+    api_key: &str,
+    api_secret: &str,
+) -> Option<ChannelJoinError> {
+    let url = Url::parse(&server_url()).ok()?;
+    let user_id = test_user_id();
+
+    let socket = Socket::spawn(url, None, None).await.ok()?;
+    socket.connect(Duration::from_secs(10)).await.ok()?;
+
+    let timestamp = chrono::Utc::now().timestamp();
+    let signature = create_hmac_signature(api_secret, timestamp, email, api_key);
+    let join_payload = json!({
+        "email": email,
+        "api_key": api_key,
+        "signature": signature,
+        "timestamp": timestamp
+    });
+
+    let channel = socket
+        .channel(
+            Topic::from_string(format!("sync:user:{}", user_id)),
+            Some(to_payload(&join_payload).ok()?),
+        )
+        .await
+        .ok()?;
+
+    channel.join(Duration::from_secs(10)).await.err()
 }
 
 fn create_hmac_signature(secret: &str, timestamp: i64, email: &str, api_key: &str) -> String {

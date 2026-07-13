@@ -1265,7 +1265,9 @@ pub unsafe extern "C" fn replicant_rebuild_search_index(engine: *mut Replicant) 
 
 /// Copies `s` plus a NUL terminator into `out` iff it fits within `cap`
 /// bytes. Returns `false` — writing an empty C string when `cap > 0` — when
-/// it does not fit; never writes past `cap`.
+/// it does not fit; never writes past `cap`. On a multi-buffer call that
+/// fails partway, earlier out buffers may already be populated — callers
+/// must not read any out buffer unless the call returned success.
 ///
 /// # Safety
 /// `out` must point to a writable buffer of at least `cap` bytes.
@@ -1517,6 +1519,16 @@ mod tests {
         let fitted = unsafe { write_cstr_buf(big.as_mut_ptr() as *mut c_char, big.len(), "fits") };
         assert!(fitted);
         assert_eq!(big[4], 0, "NUL terminator after the copied bytes");
+    }
+
+    #[test]
+    fn write_cstr_buf_exact_fit_boundary() {
+        // len + 1 == cap fits exactly; len == cap does not.
+        let mut buf = [1i8; 5];
+        assert!(unsafe { write_cstr_buf(buf.as_mut_ptr() as *mut c_char, buf.len(), "four") });
+        assert_eq!(buf[4], 0);
+        assert!(!unsafe { write_cstr_buf(buf.as_mut_ptr() as *mut c_char, buf.len(), "five!") });
+        assert_eq!(buf[0], 0, "refused write must leave an empty C string");
     }
 
     #[test]

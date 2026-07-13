@@ -111,6 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &user_email,
         "test-key",
         "test-secret",
+        None,
     )
     .await?;
 

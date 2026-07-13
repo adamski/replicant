@@ -22,6 +22,8 @@
 
 mod basic_sync_test;
 mod conflict_test;
+mod credential_enrollment_test;
+mod identity_adoption_test;
 mod live_sync_test;
 mod multi_client_test;
 
@@ -59,22 +61,19 @@ pub fn server_url() -> String {
         .unwrap_or_else(|_| "ws://localhost:4000/socket/websocket".to_string())
 }
 
+/// The canonical user id bound to `REPLICANT_API_KEY`. Post-#6 the server
+/// binds each credential to a user and rejects `sync:user:<id>` joins whose
+/// id does not match the credential's user (`topic_user_mismatch`), so the
+/// test client must join under this seeded id, not a random one.
+pub fn test_user_id() -> Uuid {
+    std::env::var("REPLICANT_TEST_USER_ID")
+        .ok()
+        .and_then(|s| Uuid::parse_str(&s).ok())
+        .unwrap_or_else(Uuid::new_v4)
+}
+
 pub fn skip_if_no_server() -> bool {
     std::env::var("RUN_INTEGRATION_TESTS").is_err()
-}
-
-/// Deterministic user ID for an email — the client's frozen derivation,
-/// which matches the server's Auth.deterministic_user_id/1.
-pub fn deterministic_user_id(email: &str) -> Uuid {
-    replicant_client::ClientDatabase::generate_deterministic_user_id(email)
-}
-
-#[test]
-fn deterministic_user_id_normalizes_like_client_and_server() {
-    assert_eq!(
-        deterministic_user_id("  Integration-Test@Example.COM "),
-        deterministic_user_id(TEST_EMAIL)
-    );
 }
 
 /// A broadcast event received from the server
@@ -104,7 +103,7 @@ impl TestClient {
         api_secret: &str,
     ) -> Result<Self, String> {
         let url = Url::parse(&server_url()).map_err(|e| format!("Invalid URL: {}", e))?;
-        let user_id = deterministic_user_id(email);
+        let user_id = test_user_id();
 
         let socket = Socket::spawn(url, None, None)
             .await

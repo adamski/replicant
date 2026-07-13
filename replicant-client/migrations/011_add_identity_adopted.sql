@@ -1,0 +1,1 @@
+ALTER TABLE user_config ADD COLUMN identity_adopted INTEGER NOT NULL DEFAULT 0;

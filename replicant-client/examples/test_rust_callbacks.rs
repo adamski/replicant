@@ -60,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "test-user@example.com",
         "test-key",
         "test-secret",
+        None,
     )
     .await
     {
@@ -99,6 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         SyncEvent::ConflictDetected { document_id, .. } => {
                             format!("⚠️ Conflict detected: {}", &document_id[..8])
+                        }
+                        SyncEvent::IdentityChanged { new_user_id, .. } => {
+                            format!("🪪 Identity changed: {}", new_user_id)
                         }
                     };
 

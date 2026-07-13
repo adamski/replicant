@@ -52,3 +52,6 @@ target-docker/
 
 # Development test scripts
 test_*.sh
+
+# Claude local session/handoff files
+.claude/

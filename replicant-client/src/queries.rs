@@ -82,6 +82,12 @@ impl Queries {
     pub const UPDATE_LAST_SYNC: &'static str =
         "UPDATE user_config SET last_sync_at = ?1 WHERE user_id = ?2";
 
+    pub const RESTAMP_DOCUMENTS_USER_ID: &'static str =
+        "UPDATE documents SET user_id = ?1 WHERE user_id = ?2";
+
+    pub const ADOPT_USER_CONFIG_IDENTITY: &'static str =
+        "UPDATE user_config SET user_id = ?1, identity_adopted = 1 WHERE user_id = ?2";
+
     // Document queries
     pub const GET_DOCUMENT: &'static str = r#"
         SELECT id, user_id, content, sync_revision,

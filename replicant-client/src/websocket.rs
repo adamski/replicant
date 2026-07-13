@@ -27,7 +27,6 @@ pub struct WebSocketClient {
     channel: Arc<Channel>,
     _public_channel: Arc<Channel>,
     tx: mpsc::Sender<ServerMessage>,
-    user_id: Uuid,
 }
 
 pub struct WebSocketReceiver {
@@ -87,15 +86,11 @@ impl WebSocketClient {
             ws_err(format!("Connect failed: {:?}", e))
         })?;
 
-        // Join channel with HMAC auth
+        // Join channel with HMAC auth; the topic and payload both carry the
+        // caller's (already-adopted) user id.
         let timestamp = chrono::Utc::now().timestamp();
         let signature = Self::create_hmac_signature(api_secret, timestamp, email, api_key, "");
-        let join_payload = json!({
-            "email": email,
-            "api_key": api_key,
-            "signature": signature,
-            "timestamp": timestamp
-        });
+        let join_payload = Self::build_join_payload(email, api_key, &signature, timestamp, user_id);
 
         // Join per-user channel
         let channel = socket
@@ -106,12 +101,24 @@ impl WebSocketClient {
             .await
             .map_err(|e| ws_err(format!("Channel create failed: {:?}", e)))?;
 
-        channel.join(JOIN_TIMEOUT).await.map_err(|e| {
+        let join_reply = channel.join(JOIN_TIMEOUT).await.map_err(|e| {
             if let Some(ref d) = event_dispatcher {
                 d.emit_sync_error(&format!("Join failed: {:?}", e));
             }
             ws_err(format!("Join failed: {:?}", e))
         })?;
+
+        // Identity drift check: every join reply names the credential's user
+        // id. A mismatch means the local identity diverged from the account —
+        // refuse to sync rather than silently re-stamp anything.
+        let reply_value = payload_to_value(&join_reply).unwrap_or_else(|| json!({}));
+        if let Err(msg) = Self::verify_reply_identity(user_id, &reply_value) {
+            if let Some(ref d) = event_dispatcher {
+                d.emit_sync_error(&msg);
+            }
+            let _ = channel.leave().await;
+            return Err(ws_err(msg));
+        }
 
         // Join public channel for public document events
         let public_channel = socket
@@ -135,8 +142,8 @@ impl WebSocketClient {
         }
 
         let (tx, rx) = mpsc::channel::<ServerMessage>(100);
-        Self::setup_broadcast_handlers(&channel, tx.clone(), user_id, is_connected.clone());
-        Self::setup_broadcast_handlers(&public_channel, tx.clone(), user_id, is_connected);
+        Self::setup_broadcast_handlers(&channel, tx.clone(), is_connected.clone());
+        Self::setup_broadcast_handlers(&public_channel, tx.clone(), is_connected);
 
         // Emit auth success
         let _ = tx
@@ -151,10 +158,48 @@ impl WebSocketClient {
                 channel,
                 _public_channel: public_channel,
                 tx,
-                user_id,
             },
             WebSocketReceiver { rx },
         ))
+    }
+
+    /// Build the channel join payload; always carries the adopted user id.
+    pub(crate) fn build_join_payload(
+        email: &str,
+        api_key: &str,
+        signature: &str,
+        timestamp: i64,
+        user_id: Uuid,
+    ) -> Value {
+        json!({
+            "email": email,
+            "api_key": api_key,
+            "signature": signature,
+            "timestamp": timestamp,
+            "user_id": user_id.to_string(),
+        })
+    }
+
+    /// `Ok` when the join reply's `user_id` (if present) matches ours; `Err`
+    /// with a description when it differs or cannot be parsed. A reply naming
+    /// a different user means local identity diverged from the account — the
+    /// caller must refuse to sync, never silently re-stamp.
+    pub(crate) fn verify_reply_identity(local: Uuid, reply: &Value) -> Result<(), String> {
+        match reply.get("user_id").and_then(|v| v.as_str()) {
+            None => Ok(()),
+            Some(s) => match Uuid::parse_str(s) {
+                Ok(server_id) if server_id == local => Ok(()),
+                Ok(server_id) => Err(format!(
+                    "identity drift: server reports user {} but local identity is {}; \
+                     refusing to sync",
+                    server_id, local
+                )),
+                Err(_) => Err(format!(
+                    "identity drift: server sent unparseable user_id {:?}; refusing to sync",
+                    s
+                )),
+            },
+        }
     }
 
     fn to_websocket_url(server_url: &str) -> SyncResult<String> {
@@ -175,7 +220,6 @@ impl WebSocketClient {
     fn setup_broadcast_handlers(
         channel: &Arc<Channel>,
         tx: mpsc::Sender<ServerMessage>,
-        user_id: Uuid,
         is_connected: Arc<AtomicBool>,
     ) {
         let events = channel.events();
@@ -191,9 +235,7 @@ impl WebSocketClient {
 
                         match event_name.as_str() {
                             "document_created" => {
-                                if let Some(doc) = payload_json
-                                    .as_ref()
-                                    .and_then(|j| json_to_document(j, user_id))
+                                if let Some(doc) = payload_json.as_ref().and_then(json_to_document)
                                 {
                                     let _ = tx_clone
                                         .send(ServerMessage::DocumentCreated { document: doc })
@@ -346,7 +388,7 @@ impl WebSocketClient {
             Ok(j) => {
                 if let Some(docs) = j.get("documents").and_then(|v| v.as_array()) {
                     for doc_json in docs {
-                        if let Some(document) = json_to_document(doc_json, self.user_id) {
+                        if let Some(document) = json_to_document(doc_json) {
                             let _ = self.tx.send(ServerMessage::SyncDocument { document }).await;
                         }
                     }
@@ -481,12 +523,20 @@ fn payload_to_value(p: &Payload) -> Option<Value> {
     }
 }
 
-fn json_to_document(j: &Value, default_user_id: Uuid) -> Option<Document> {
-    // Use server-provided user_id if present (null = public doc), otherwise fall back to default
-    let user_id = if let Some(uid_value) = j.get("user_id") {
-        uid_value.as_str().and_then(|s| Uuid::parse_str(s).ok())
-    } else {
-        Some(default_user_id)
+fn json_to_document(j: &Value) -> Option<Document> {
+    // The server always carries ownership in the sync envelope: a string
+    // user_id (owned doc) or null (public doc). A payload missing the key
+    // entirely is malformed — reject it rather than guess an owner.
+    let Some(uid_value) = j.get("user_id") else {
+        tracing::warn!(
+            "dropping document payload without ownership envelope (id: {:?})",
+            j.get("id")
+        );
+        return None;
+    };
+    let user_id = match uid_value {
+        Value::Null => None,
+        uid_value => Some(Uuid::parse_str(uid_value.as_str()?).ok()?),
     };
     Some(Document {
         id: Uuid::parse_str(j.get("id")?.as_str()?).ok()?,
@@ -565,7 +615,7 @@ mod tests {
             "visibility": "public",
             "provenance": {"copied_from": "x"}
         });
-        let doc = json_to_document(&j, uuid::Uuid::nil()).unwrap();
+        let doc = json_to_document(&j).unwrap();
         assert_eq!(doc.author_name.as_deref(), Some("Sevish"));
         assert_eq!(doc.visibility.as_deref(), Some("public"));
         assert!(doc.provenance.is_some());
@@ -575,11 +625,63 @@ mod tests {
     fn json_to_document_tolerates_missing_attribution() {
         let j = serde_json::json!({
             "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "user_id": null,
             "content": {"title": "T"},
             "sync_revision": 1
         });
-        let doc = json_to_document(&j, uuid::Uuid::nil()).unwrap();
+        let doc = json_to_document(&j).unwrap();
+        assert_eq!(doc.user_id, None, "null user_id means a public document");
         assert_eq!(doc.author_name, None);
         assert_eq!(doc.visibility, None);
+    }
+
+    #[test]
+    fn json_to_document_rejects_payload_without_user_id_key() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "content": {"title": "T"},
+            "sync_revision": 1
+        });
+        assert!(
+            json_to_document(&j).is_none(),
+            "ownership must come from the envelope, never be guessed"
+        );
+    }
+
+    #[test]
+    fn join_payload_always_includes_user_id() {
+        let uid = Uuid::new_v4();
+        let payload = WebSocketClient::build_join_payload("a@b.com", "key", "sig", 123, uid);
+        assert_eq!(payload["user_id"], uid.to_string());
+        assert_eq!(payload["email"], "a@b.com");
+    }
+
+    #[test]
+    fn reply_identity_matching_id_is_ok() {
+        let local = Uuid::new_v4();
+        let reply = serde_json::json!({ "user_id": local.to_string() });
+        assert!(WebSocketClient::verify_reply_identity(local, &reply).is_ok());
+    }
+
+    #[test]
+    fn reply_identity_mismatch_is_drift_error() {
+        let local = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let reply = serde_json::json!({ "user_id": other.to_string() });
+        assert!(WebSocketClient::verify_reply_identity(local, &reply).is_err());
+    }
+
+    #[test]
+    fn reply_identity_absent_is_tolerated() {
+        let local = Uuid::new_v4();
+        let reply = serde_json::json!({ "email": "a@b.com" });
+        assert!(WebSocketClient::verify_reply_identity(local, &reply).is_ok());
+    }
+
+    #[test]
+    fn reply_identity_garbage_is_drift_error() {
+        let local = Uuid::new_v4();
+        let reply = serde_json::json!({ "user_id": "not-a-uuid" });
+        assert!(WebSocketClient::verify_reply_identity(local, &reply).is_err());
     }
 }

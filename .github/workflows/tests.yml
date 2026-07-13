@@ -88,71 +88,27 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-    # Set up Elixir/Phoenix server
-    - name: Clone Phoenix server
-      run: git clone --depth 1 https://github.com/replicant-sync/replicant-server.git /tmp/replicant-server
-
     - name: Set up Elixir
       uses: erlef/setup-beam@v1
       with:
         elixir-version: '1.17'
         otp-version: '27'
 
-    - name: Cache Elixir deps
-      uses: actions/cache@v3
-      with:
-        path: /tmp/replicant-server/deps
-        key: ${{ runner.os }}-mix-${{ hashFiles('/tmp/replicant-server/mix.lock') }}
-
-    - name: Install Phoenix dependencies
-      working-directory: /tmp/replicant-server
-      run: mix deps.get
-
-    - name: Set up Phoenix database
-      working-directory: /tmp/replicant-server
+    # The harness boots the stripped server (a library: no HTTP server of its
+    # own) behind a minimal endpoint that mounts ReplicantServer.Sync.Socket on
+    # :4000, seeds an enrolled user + credential (and one legacy nil-user
+    # credential for the negative test), and runs the gated integration suite.
+    # It clones the server itself at the pinned SERVER_REF, so no separate
+    # checkout/credential/health steps are needed here.
+    - name: Boot stripped server + run integration suite
       env:
-        DATABASE_URL: postgres://postgres:postgres@localhost:5432/replicant_server_test
-        SECRET_KEY_BASE: test-secret-key-base-that-is-at-least-64-characters-long-for-testing
-      run: |
-        mix ecto.create
-        mix ecto.migrate
-
-    - name: Generate API credentials
-      id: credentials
-      working-directory: /tmp/replicant-server
-      env:
-        DATABASE_URL: postgres://postgres:postgres@localhost:5432/replicant_server_test
-        SECRET_KEY_BASE: test-secret-key-base-that-is-at-least-64-characters-long-for-testing
-      run: |
-        OUTPUT=$(mix replicant.gen.credentials --name "CI Test")
-        API_KEY=$(echo "$OUTPUT" | grep "API Key:" | awk '{print $3}')
-        API_SECRET=$(echo "$OUTPUT" | grep "Secret:" | awk '{print $2}')
-        echo "api_key=$API_KEY" >> $GITHUB_OUTPUT
-        echo "api_secret=$API_SECRET" >> $GITHUB_OUTPUT
-
-    - name: Start Phoenix server
-      working-directory: /tmp/replicant-server
-      env:
-        DATABASE_URL: postgres://postgres:postgres@localhost:5432/replicant_server_test
-        SECRET_KEY_BASE: test-secret-key-base-that-is-at-least-64-characters-long-for-testing
-      run: |
-        mix phx.server &
-        for i in $(seq 1 60); do
-          if curl -fs http://localhost:4000/health >/dev/null; then
-            echo "Server is up"
-            exit 0
-          fi
-          sleep 1
-        done
-        echo "Server did not come up within 60s"
-        exit 1
-
-    - name: Run integration tests
-      env:
-        RUN_INTEGRATION_TESTS: 1
-        REPLICANT_API_KEY: ${{ steps.credentials.outputs.api_key }}
-        REPLICANT_API_SECRET: ${{ steps.credentials.outputs.api_secret }}
-      run: cargo test --package replicant-client --test integration -- --nocapture
+        REPLICANT_SERVER_REF: '332a8ba'  # origin/main (PR #7 merged: claim -> user_id)
+        REPLICANT_SERVER_DIR: /tmp/replicant-server-interop
+        INTEROP_DB_HOST: localhost
+        INTEROP_DB_USER: postgres
+        INTEROP_DB_PASS: postgres
+        INTEROP_DB_NAME: replicant_server_test
+      run: ./test/run_phoenix_interop_local.sh
 
   lint:
     name: Lint

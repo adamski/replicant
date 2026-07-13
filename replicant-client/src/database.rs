@@ -3,7 +3,7 @@ use json_patch;
 use replicant_core::protocol::ChangeEventType;
 use replicant_core::{
     models::{Document, SyncStatus},
-    SyncResult,
+    SyncError, SyncResult,
 };
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 use uuid::Uuid;
@@ -62,7 +62,7 @@ impl ClientDatabase {
     pub async fn ensure_user_config_with_identifier(
         &self,
         server_url: &str,
-        user_identifier: &str,
+        _user_identifier: &str,
     ) -> SyncResult<()> {
         // Check if user_config already exists
         let exists = sqlx::query("SELECT COUNT(*) as count FROM user_config")
@@ -72,12 +72,12 @@ impl ClientDatabase {
         let count: i64 = exists.try_get("count")?;
 
         if count == 0 {
-            // No user config exists, create with deterministic user ID
-            let user_id = Self::generate_deterministic_user_id(user_identifier);
+            // Provisional random id; the server's canonical id is adopted on first contact.
+            let user_id = Uuid::new_v4();
             let client_id = Uuid::new_v4(); // Client ID should always be unique per instance
 
             sqlx::query(
-                "INSERT INTO user_config (user_id, client_id, server_url) VALUES (?1, ?2, ?3)",
+                "INSERT INTO user_config (user_id, client_id, server_url, identity_adopted) VALUES (?1, ?2, ?3, 0)",
             )
             .bind(user_id.to_string())
             .bind(client_id.to_string())
@@ -89,17 +89,6 @@ impl ClientDatabase {
         Ok(())
     }
 
-    /// FROZEN — must match replicant-server Auth (namespace + email
-    /// normalization). The crate's only identity derivation; call this
-    /// instead of re-implementing it.
-    pub fn generate_deterministic_user_id(user_identifier: &str) -> Uuid {
-        const APP_ID: &str = "com.nodeaudio.entonal";
-
-        let normalized = user_identifier.trim().to_lowercase();
-        let app_namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, APP_ID.as_bytes());
-        Uuid::new_v5(&app_namespace, normalized.as_bytes())
-    }
-
     pub async fn get_user_id(&self) -> SyncResult<Uuid> {
         let row = sqlx::query(Queries::GET_USER_ID)
             .fetch_one(&self.pool)
@@ -107,6 +96,14 @@ impl ClientDatabase {
 
         let user_id: String = row.try_get("user_id")?;
         Ok(Uuid::parse_str(&user_id)?)
+    }
+
+    pub async fn is_identity_adopted(&self) -> SyncResult<bool> {
+        let row = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&self.pool)
+            .await?;
+        let adopted: i64 = row.try_get("identity_adopted")?;
+        Ok(adopted != 0)
     }
 
     pub async fn get_client_id(&self) -> SyncResult<Uuid> {
@@ -126,6 +123,53 @@ impl ClientDatabase {
         let user_id: String = row.try_get("user_id")?;
         let client_id: String = row.try_get("client_id")?;
         Ok((Uuid::parse_str(&user_id)?, Uuid::parse_str(&client_id)?))
+    }
+
+    /// Atomically adopt the server's canonical id: re-stamp local documents
+    /// owned by `old_id` and flip `user_config` to `canonical_id` with
+    /// `identity_adopted = 1`. A crash mid-adoption leaves the old id intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::InvalidOperation`] if `canonical_id` is nil, equals
+    /// `old_id`, the identity was already adopted, or no `user_config` row
+    /// matches `old_id`; database failures surface as the underlying error.
+    pub async fn adopt_identity(&self, old_id: Uuid, canonical_id: Uuid) -> SyncResult<()> {
+        if canonical_id.is_nil() || old_id == canonical_id {
+            return Err(SyncError::InvalidOperation(
+                "adopt_identity: canonical_id must be non-nil and differ from old_id".to_string(),
+            ));
+        }
+        if self.is_identity_adopted().await? {
+            return Err(SyncError::InvalidOperation(
+                "adopt_identity: identity has already been adopted".to_string(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(Queries::RESTAMP_DOCUMENTS_USER_ID)
+            .bind(canonical_id.to_string())
+            .bind(old_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        let result = sqlx::query(Queries::ADOPT_USER_CONFIG_IDENTITY)
+            .bind(canonical_id.to_string())
+            .bind(old_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        if result.rows_affected() != 1 {
+            return Err(SyncError::InvalidOperation(format!(
+                "adopt_identity: expected to update 1 user_config row for old_id {}, got {}",
+                old_id,
+                result.rows_affected()
+            )));
+        }
+
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn get_document(&self, id: &Uuid) -> SyncResult<Document> {
@@ -577,26 +621,143 @@ impl ClientDatabase {
 }
 
 #[cfg(test)]
-mod identity_freeze_tests {
+mod identity_tests {
     use super::*;
 
-    #[test]
-    fn deterministic_user_id_matches_frozen_vectors() {
-        assert_eq!(
-            ClientDatabase::generate_deterministic_user_id("test@example.com").to_string(),
-            "71b2b712-7878-56ee-8323-43809b8198a5"
-        );
-        assert_eq!(
-            ClientDatabase::generate_deterministic_user_id("alice@example.com").to_string(),
-            "af665bed-e8e7-5b1f-ba4f-9343fefde4bb"
-        );
+    async fn fresh_db() -> ClientDatabase {
+        let db = ClientDatabase::new(":memory:").await.unwrap();
+        db.run_migrations().await.unwrap();
+        db
     }
 
-    #[test]
-    fn normalization_makes_case_and_whitespace_irrelevant() {
-        assert_eq!(
-            ClientDatabase::generate_deterministic_user_id("  Alice@Example.COM ").to_string(),
-            "af665bed-e8e7-5b1f-ba4f-9343fefde4bb"
-        );
+    #[tokio::test]
+    async fn user_config_has_identity_adopted_defaulting_to_zero() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+
+        let row = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let adopted: i64 = row.try_get("identity_adopted").unwrap();
+        assert_eq!(adopted, 0);
+    }
+
+    #[tokio::test]
+    async fn ensure_user_config_with_identifier_generates_random_v4_id() {
+        let db = fresh_db().await;
+        db.ensure_user_config_with_identifier("ws://localhost/ws", "test@example.com")
+            .await
+            .unwrap();
+
+        let user_id = db.get_user_id().await.unwrap();
+        // No longer derived from the email.
+        assert_ne!(user_id.to_string(), "71b2b712-7878-56ee-8323-43809b8198a5");
+        assert_eq!(user_id.get_version(), Some(uuid::Version::Random));
+
+        let row = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let adopted: i64 = row.try_get("identity_adopted").unwrap();
+        assert_eq!(adopted, 0);
+    }
+
+    async fn seed_document(db: &ClientDatabase, owner: Option<Uuid>) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO documents (id, user_id, content) VALUES (?1, ?2, ?3)")
+            .bind(id.to_string())
+            .bind(owner.map(|u| u.to_string()))
+            .bind("{}")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn count_docs_for(db: &ClientDatabase, owner: Uuid) -> i64 {
+        sqlx::query("SELECT COUNT(*) as c FROM documents WHERE user_id = ?1")
+            .bind(owner.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("c")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn adopt_identity_restamps_docs_and_flips_flag() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+        let provisional = db.get_user_id().await.unwrap();
+        let canonical = Uuid::new_v4();
+
+        seed_document(&db, Some(provisional)).await;
+        seed_document(&db, Some(provisional)).await;
+        let public_id = seed_document(&db, None).await;
+
+        db.adopt_identity(provisional, canonical).await.unwrap();
+
+        // Identity flipped in user_config.
+        assert_eq!(db.get_user_id().await.unwrap(), canonical);
+        let adopted: i64 = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("identity_adopted")
+            .unwrap();
+        assert_eq!(adopted, 1);
+
+        // Owned documents re-stamped; none remain under the provisional id.
+        assert_eq!(count_docs_for(&db, canonical).await, 2);
+        assert_eq!(count_docs_for(&db, provisional).await, 0);
+
+        // Public (null-owner) document untouched.
+        let pub_null: i64 =
+            sqlx::query("SELECT COUNT(*) as c FROM documents WHERE id = ?1 AND user_id IS NULL")
+                .bind(public_id.to_string())
+                .fetch_one(&db.pool)
+                .await
+                .unwrap()
+                .try_get("c")
+                .unwrap();
+        assert_eq!(pub_null, 1);
+    }
+
+    #[tokio::test]
+    async fn adopt_identity_with_no_documents_still_flips_flag() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+        let provisional = db.get_user_id().await.unwrap();
+        let canonical = Uuid::new_v4();
+
+        db.adopt_identity(provisional, canonical).await.unwrap();
+
+        assert_eq!(db.get_user_id().await.unwrap(), canonical);
+        let adopted: i64 = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("identity_adopted")
+            .unwrap();
+        assert_eq!(adopted, 1);
+    }
+
+    #[tokio::test]
+    async fn adopt_identity_rejects_nil_canonical_id() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+        let provisional = db.get_user_id().await.unwrap();
+        assert!(db.adopt_identity(provisional, Uuid::nil()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn adopt_identity_rejects_second_adoption() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+        let provisional = db.get_user_id().await.unwrap();
+        let canonical = Uuid::new_v4();
+        db.adopt_identity(provisional, canonical).await.unwrap();
+        assert!(db.adopt_identity(canonical, Uuid::new_v4()).await.is_err());
     }
 }

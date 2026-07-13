@@ -41,6 +41,12 @@ struct Args {
     #[arg(long, env = "REPLICANT_API_SECRET")]
     api_secret: String,
 
+    /// Canonical user id bound to the credential at enrollment. Required for
+    /// sync: without an adopted identity the client stays local-only and
+    /// pushes nothing.
+    #[arg(long, env = "REPLICANT_USER_ID")]
+    user_id: uuid::Uuid,
+
     /// Directory containing the JSON documents to push (recursively).
     #[arg(long)]
     json_dir: PathBuf,
@@ -198,7 +204,7 @@ async fn main() -> Result<()> {
         &args.user,
         &args.api_key,
         &args.api_secret,
-        None,
+        Some(args.user_id),
     )
     .await
     .map_err(|e| anyhow!("Replicant connect failed: {}", e))?;

@@ -128,6 +128,12 @@ impl ClientDatabase {
     /// Atomically adopt the server's canonical id: re-stamp local documents
     /// owned by `old_id` and flip `user_config` to `canonical_id` with
     /// `identity_adopted = 1`. A crash mid-adoption leaves the old id intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::InvalidOperation`] if `canonical_id` is nil, equals
+    /// `old_id`, the identity was already adopted, or no `user_config` row
+    /// matches `old_id`; database failures surface as the underlying error.
     pub async fn adopt_identity(&self, old_id: Uuid, canonical_id: Uuid) -> SyncResult<()> {
         if canonical_id.is_nil() || old_id == canonical_id {
             return Err(SyncError::InvalidOperation(

@@ -61,6 +61,7 @@ warn() { echo -e "${YELLOW}[$(date +'%H:%M:%S')] WARN: $1${NC}"; }
 err()  { echo -e "${RED}[$(date +'%H:%M:%S')] ERROR: $1${NC}"; }
 
 SERVER_PID=""
+BOOT_SCRIPT=""
 cleanup() {
     if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
         log "Stopping server (PID $SERVER_PID)"
@@ -71,6 +72,7 @@ cleanup() {
     local pids
     pids="$(lsof -ti :"$SERVER_PORT" 2>/dev/null || true)"
     [ -n "$pids" ] && kill -9 $pids 2>/dev/null || true
+    [ -n "$BOOT_SCRIPT" ] && rm -f "$BOOT_SCRIPT"
 }
 trap cleanup EXIT INT TERM
 
@@ -124,7 +126,8 @@ export DATABASE_URL
 # --- Seed credentials --------------------------------------------------------
 # One enrolled user+credential (bound user_id) via the enrollment flow, and one
 # legacy nil-user credential via create_credential/1 for the negative test.
-log "Seeding enrolled + legacy credentials for $TEST_EMAIL"
+log "Seeding enrolled + legacy credentials for $TEST_EMAIL (stderr: $SERVER_LOG)"
+: > "$SERVER_LOG"
 SEED_LINE="$( cd "$SERVER_DIR" && TEST_EMAIL="$TEST_EMAIL" mix run -e '
   Ecto.Adapters.SQL.Sandbox.mode(ReplicantServer.Repo, :auto)
   email = System.get_env("TEST_EMAIL")
@@ -132,11 +135,11 @@ SEED_LINE="$( cd "$SERVER_DIR" && TEST_EMAIL="$TEST_EMAIL" mix run -e '
   {:ok, creds} = ReplicantServer.Auth.claim_enrollment(email, token)
   {:ok, legacy} = ReplicantServer.Auth.create_credential("interop-legacy-shared")
   IO.puts("SEED #{creds.api_key} #{creds.secret} #{creds.user_id} #{legacy.api_key} #{legacy.secret}")
-' 2>/dev/null | grep '^SEED ' )"
+' 2>>"$SERVER_LOG" | grep '^SEED ' )"
 read -r _ API_KEY API_SECRET TEST_USER_ID LEGACY_API_KEY LEGACY_API_SECRET <<<"$SEED_LINE"
 [ -n "$API_KEY" ] && [ -n "$API_SECRET" ] && [ -n "$TEST_USER_ID" ] && \
 [ -n "$LEGACY_API_KEY" ] && [ -n "$LEGACY_API_SECRET" ] || {
-    err "Failed to seed credentials"; echo "$SEED_LINE"; exit 1; }
+    err "Failed to seed credentials"; echo "$SEED_LINE"; tail -30 "$SERVER_LOG"; exit 1; }
 log "Enrolled user_id=$TEST_USER_ID"
 
 # --- Start server (minimal endpoint mounting the sync socket) ----------------
@@ -154,10 +157,8 @@ Ecto.Adapters.SQL.Sandbox.mode(ReplicantServer.Repo, :auto)
 IO.puts("ENDPOINT_STARTED")
 Process.sleep(:infinity)
 EOF
-trap 'rm -f "$BOOT_SCRIPT"' EXIT
 
 log "Starting minimal endpoint on port $SERVER_PORT (log: $SERVER_LOG)"
-: > "$SERVER_LOG"
 ( cd "$SERVER_DIR" && exec mix run --no-halt "$BOOT_SCRIPT" ) >> "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 

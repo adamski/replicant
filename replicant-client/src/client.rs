@@ -10,7 +10,7 @@ use sqlx::Row;
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, RwLock,
+    Arc,
 };
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, Notify};
@@ -35,7 +35,7 @@ enum UploadType {
 pub struct Client {
     db: Arc<ClientDatabase>,
     ws_client: Arc<Mutex<Option<WebSocketClient>>>,
-    user_id: Arc<RwLock<Uuid>>,
+    user_id: Uuid,
     client_id: Uuid,
     message_rx: Option<mpsc::Receiver<ServerMessage>>,
     event_dispatcher: Arc<EventDispatcher>,
@@ -168,7 +168,7 @@ impl Client {
         let mut engine = Self {
             db: db.clone(),
             ws_client: Arc::new(Mutex::new(ws_client)),
-            user_id: Arc::new(RwLock::new(user_id)),
+            user_id,
             client_id,
             message_rx: Some(rx),
             event_dispatcher: event_dispatcher.clone(),
@@ -406,10 +406,11 @@ impl Client {
         self.create_document_with_id(Uuid::new_v4(), content).await
     }
 
-    /// Current server-authoritative user id. Interior-mutable so identity
-    /// adoption updates every subsequent local write and reconnect.
+    /// Server-authoritative user id, fixed for the client's lifetime.
+    /// Identity adoption runs in `Client::new` before this is read;
+    /// enrolling afterwards recreates the client.
     pub fn user_id(&self) -> Uuid {
-        *self.user_id.read().expect("user_id lock poisoned")
+        self.user_id
     }
 
     pub async fn create_document_with_id(
@@ -1689,7 +1690,7 @@ impl Client {
         let api_key = self.api_key.clone();
         let api_secret = self.api_secret.clone();
         let client_id = self.client_id;
-        let user_id = self.user_id.clone();
+        let user_id = self.user_id;
         let event_dispatcher = self.event_dispatcher.clone();
         let db = self.db.clone();
         let pending_uploads = self.pending_uploads.clone();
@@ -1720,15 +1721,12 @@ impl Client {
                         server_url
                     );
 
-                    // Copy the id out so no lock guard is held across the await.
-                    let current_user_id = *user_id.read().expect("user_id lock poisoned");
-
                     // Try to connect
                     match WebSocketClient::connect(
                         &server_url,
                         &email,
                         client_id,
-                        current_user_id,
+                        user_id,
                         &api_key,
                         &api_secret,
                         Some(event_dispatcher.clone()),

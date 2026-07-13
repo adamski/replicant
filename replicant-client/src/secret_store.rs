@@ -18,21 +18,29 @@ pub struct Credentials {
     pub user_id: uuid::Uuid,
 }
 
-fn load_or_create_key(dir: &Path) -> io::Result<[u8; 32]> {
+/// Reads the at-rest key if present. Never creates one — callers that must
+/// mint a key when absent use [`load_or_create_key`].
+fn read_key(dir: &Path) -> io::Result<Option<[u8; 32]>> {
     let path = dir.join(KEY_FILE);
-    if path.exists() {
-        let bytes = std::fs::read(&path)?;
-        let arr: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| Error::new(ErrorKind::InvalidData, "bad key length"))?;
-        Ok(arr)
-    } else {
-        let mut key = [0u8; 32];
-        OsRng.fill_bytes(&mut key);
-        std::fs::create_dir_all(dir)?;
-        write_private(&path, &key)?;
-        Ok(key)
+    if !path.exists() {
+        return Ok(None);
     }
+    let bytes = std::fs::read(&path)?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| Error::new(ErrorKind::InvalidData, "bad key length"))?;
+    Ok(Some(arr))
+}
+
+fn load_or_create_key(dir: &Path) -> io::Result<[u8; 32]> {
+    if let Some(key) = read_key(dir)? {
+        return Ok(key);
+    }
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    std::fs::create_dir_all(dir)?;
+    write_private(&dir.join(KEY_FILE), &key)?;
+    Ok(key)
 }
 
 #[cfg(unix)]
@@ -77,7 +85,12 @@ pub fn load(dir: &Path) -> io::Result<Option<Credentials>> {
     if !path.exists() {
         return Ok(None);
     }
-    let key = load_or_create_key(dir)?;
+    // Never mint a key on the read path: an existing credentials file
+    // without a key is a broken/tampered state, not a "first run".
+    let key = match read_key(dir)? {
+        Some(key) => key,
+        None => return Ok(None),
+    };
     let cipher = ChaCha20Poly1305::new((&key).into());
 
     let bytes = std::fs::read(&path)?;
@@ -95,9 +108,13 @@ pub fn load(dir: &Path) -> io::Result<Option<Credentials>> {
 }
 
 pub fn clear(dir: &Path) -> io::Result<()> {
-    let p = dir.join(CRED_FILE);
-    if p.exists() {
-        std::fs::remove_file(p)?;
+    let cred_path = dir.join(CRED_FILE);
+    if cred_path.exists() {
+        std::fs::remove_file(cred_path)?;
+    }
+    let key_path = dir.join(KEY_FILE);
+    if key_path.exists() {
+        std::fs::remove_file(key_path)?;
     }
     Ok(())
 }
@@ -126,6 +143,38 @@ mod tests {
 
         clear(dir.path()).unwrap();
         assert!(load(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn clear_removes_both_key_and_credentials_files() {
+        let dir = tempfile::tempdir().unwrap();
+        store(
+            dir.path(),
+            &Credentials {
+                api_key: "rpa_x".into(),
+                secret: "rps_y".into(),
+                user_id: uuid::Uuid::new_v4(),
+            },
+        )
+        .unwrap();
+        assert!(dir.path().join(KEY_FILE).exists());
+        assert!(dir.path().join(CRED_FILE).exists());
+
+        clear(dir.path()).unwrap();
+
+        assert!(!dir.path().join(KEY_FILE).exists());
+        assert!(!dir.path().join(CRED_FILE).exists());
+    }
+
+    #[test]
+    fn load_on_empty_dir_returns_none_and_mints_no_key() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load(dir.path()).unwrap().is_none());
+        assert!(
+            !dir.path().join(KEY_FILE).exists(),
+            "load() must never mint a key"
+        );
+        assert!(!dir.path().join(CRED_FILE).exists());
     }
 
     #[test]

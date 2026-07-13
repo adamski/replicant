@@ -74,3 +74,101 @@ async fn constructor_same_id_after_adoption_is_noop() {
     let client = open_offline(&db_url, Some(canonical)).await.unwrap();
     assert_eq!(client.user_id(), canonical);
 }
+
+/// Empty credentials must yield a fully usable local-only client: no
+/// WebSocket connect attempt, no reconnect loop, full CRUD over the local
+/// DB, and a clean drop with no hung background task.
+#[tokio::test]
+async fn open_without_credentials_is_local_only_and_usable() {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let db_url = temp_db_url();
+        let client = Client::new(&db_url, DEAD_SERVER, "offline@test.com", "", "", None)
+            .await
+            .unwrap();
+
+        assert!(!client.is_connected(), "no credentials must mean offline");
+
+        let doc = client
+            .create_document(serde_json::json!({"title": "offline-only"}))
+            .await
+            .unwrap();
+
+        let docs = client.get_all_documents().await.unwrap();
+        assert!(docs.iter().any(|d| d.id == doc.id));
+
+        client
+            .update_document(doc.id, serde_json::json!({"title": "offline-only-edited"}))
+            .await
+            .unwrap();
+        let docs = client.get_all_documents().await.unwrap();
+        let updated = docs.iter().find(|d| d.id == doc.id).unwrap();
+        assert_eq!(updated.content["title"], "offline-only-edited");
+
+        client.delete_document(doc.id).await.unwrap();
+        let docs = client.get_all_documents().await.unwrap();
+        assert!(!docs.iter().any(|d| d.id == doc.id));
+
+        assert!(
+            !client.is_connected(),
+            "still offline after local CRUD activity"
+        );
+
+        drop(client);
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "client with no credentials hung instead of completing/dropping cleanly"
+    );
+}
+
+/// Reviewer-flagged gap (Task-3 decision row 5): credentials are present but
+/// the identity has never been adopted (canonical_user_id = None, never
+/// adopted before). Sync must stay disabled — no reconnect-loop spam — even
+/// though api_key/api_secret are non-empty. Uses the dead-server URL so even
+/// a wrongly-attempted connection cannot succeed.
+#[tokio::test]
+async fn open_with_credentials_but_unadopted_identity_stays_local() {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let db_url = temp_db_url();
+        let client = Client::new(
+            &db_url,
+            DEAD_SERVER,
+            "unadopted@test.com",
+            "some-api-key",
+            "some-api-secret",
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !client.is_connected(),
+            "unadopted identity must not connect even with credentials present"
+        );
+
+        let doc = client
+            .create_document(serde_json::json!({"title": "unadopted-but-local"}))
+            .await
+            .unwrap();
+        let docs = client.get_all_documents().await.unwrap();
+        assert!(docs.iter().any(|d| d.id == doc.id));
+
+        // Give a hypothetical reconnect loop time to spin and misbehave; it
+        // must not, since sync_enabled requires an adopted identity.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert!(
+            !client.is_connected(),
+            "reconnection loop must not have connected/spammed while identity is unadopted"
+        );
+
+        drop(client);
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "client with unadopted identity hung instead of completing/dropping cleanly"
+    );
+}

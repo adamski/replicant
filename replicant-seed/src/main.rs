@@ -198,6 +198,7 @@ async fn main() -> Result<()> {
         &args.user,
         &args.api_key,
         &args.api_secret,
+        None,
     )
     .await
     .map_err(|e| anyhow!("Replicant connect failed: {}", e))?;

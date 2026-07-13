@@ -33,19 +33,15 @@ fn validate(creds: &Credentials) -> Result<(), EnrollError> {
 /// Requires `https://`, except `http://localhost` / `http://127.0.0.1`
 /// (any port) for tests and local dev.
 fn validate_url(base_url: &str) -> Result<(), EnrollError> {
-    if base_url.starts_with("https://") {
-        return Ok(());
+    let parsed = url::Url::parse(base_url).map_err(|_| EnrollError::InsecureUrl)?;
+    match parsed.scheme().to_ascii_lowercase().as_str() {
+        "https" => Ok(()),
+        "http" => match parsed.host_str() {
+            Some("localhost") | Some("127.0.0.1") => Ok(()),
+            _ => Err(EnrollError::InsecureUrl),
+        },
+        _ => Err(EnrollError::InsecureUrl),
     }
-    if let Ok(parsed) = url::Url::parse(base_url) {
-        if parsed.scheme() == "http" {
-            if let Some(host) = parsed.host_str() {
-                if host == "localhost" || host == "127.0.0.1" {
-                    return Ok(());
-                }
-            }
-        }
-    }
-    Err(EnrollError::InsecureUrl)
 }
 
 fn build_client(connect_timeout: Duration, timeout: Duration) -> reqwest::Client {
@@ -54,6 +50,18 @@ fn build_client(connect_timeout: Duration, timeout: Duration) -> reqwest::Client
         .timeout(timeout)
         .build()
         .expect("reqwest client config is always valid")
+}
+
+/// reqwest's `Display` for a timed-out request doesn't mention "timeout"
+/// (e.g. "error sending request for url (...)"); surface it explicitly via
+/// `is_timeout()` so callers can distinguish timeouts from other transport
+/// failures without string-matching reqwest's undocumented wording.
+fn map_request_error(e: reqwest::Error) -> EnrollError {
+    if e.is_timeout() {
+        EnrollError::Http(format!("request timed out: {e}"))
+    } else {
+        EnrollError::Http(e.to_string())
+    }
 }
 
 pub async fn request(base_url: &str, email: &str) -> Result<(), EnrollError> {
@@ -72,7 +80,7 @@ async fn request_with_timeouts(
         .json(&serde_json::json!({ "email": email }))
         .send()
         .await
-        .map_err(|e| EnrollError::Http(e.to_string()))?;
+        .map_err(map_request_error)?;
 
     if resp.status().as_u16() == 202 {
         Ok(())
@@ -98,7 +106,7 @@ async fn claim_with_timeouts(
         .json(&serde_json::json!({ "email": email, "token": token }))
         .send()
         .await
-        .map_err(|e| EnrollError::Http(e.to_string()))?;
+        .map_err(map_request_error)?;
 
     match resp.status().as_u16() {
         200 => {
@@ -290,6 +298,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validate_url_accepts_uppercase_https_scheme() {
+        assert!(validate_url("HTTPS://example.com").is_ok());
+        assert!(validate_url("HTTP://example.com").is_err());
+        assert!(validate_url("HTTP://localhost").is_ok());
+    }
+
+    #[tokio::test]
     async fn request_times_out() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -307,7 +322,10 @@ mod tests {
             std::time::Duration::from_millis(50),
         )
         .await;
-        assert!(matches!(result, Err(EnrollError::Http(_))));
+        assert!(
+            matches!(&result, Err(EnrollError::Http(msg)) if msg.to_lowercase().contains("time")),
+            "expected a timeout-flavored Http error, got {result:?}"
+        );
     }
 
     #[tokio::test]

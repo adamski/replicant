@@ -1549,4 +1549,34 @@ mod tests {
         assert!(!unsafe { write_cstr_buf(buf.as_mut_ptr() as *mut c_char, 0, "") });
         assert_eq!(buf[0], 1, "zero-cap buffer must not be touched");
     }
+
+    #[tokio::test]
+    async fn enroll_ffi_is_callable_from_within_a_runtime() {
+        // Pre-guard code panicked here ("Cannot start a runtime from within a
+        // runtime"); the OS-thread hop makes this safe. The insecure URL makes
+        // the call fail fast without any network traffic.
+        let url = CString::new("http://example.com").unwrap();
+        let email = CString::new("rt@test.com").unwrap();
+        let result = unsafe { replicant_enroll_request(url.as_ptr(), email.as_ptr()) };
+        assert_ne!(result, SyncResult::Success);
+
+        let token = CString::new("TOK").unwrap();
+        let mut key = [0i8; 129];
+        let mut secret = [0i8; 129];
+        let mut uid = [0i8; 37];
+        let result = unsafe {
+            replicant_enroll_claim(
+                url.as_ptr(),
+                email.as_ptr(),
+                token.as_ptr(),
+                key.as_mut_ptr() as *mut c_char,
+                key.len(),
+                secret.as_mut_ptr() as *mut c_char,
+                secret.len(),
+                uid.as_mut_ptr() as *mut c_char,
+                uid.len(),
+            )
+        };
+        assert_ne!(result, SyncResult::Success);
+    }
 }

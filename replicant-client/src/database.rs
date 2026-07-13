@@ -3,7 +3,7 @@ use json_patch;
 use replicant_core::protocol::ChangeEventType;
 use replicant_core::{
     models::{Document, SyncStatus},
-    SyncResult,
+    SyncError, SyncResult,
 };
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 use uuid::Uuid;
@@ -129,6 +129,17 @@ impl ClientDatabase {
     /// owned by `old_id` and flip `user_config` to `canonical_id` with
     /// `identity_adopted = 1`. A crash mid-adoption leaves the old id intact.
     pub async fn adopt_identity(&self, old_id: Uuid, canonical_id: Uuid) -> SyncResult<()> {
+        if canonical_id.is_nil() || old_id == canonical_id {
+            return Err(SyncError::InvalidOperation(
+                "adopt_identity: canonical_id must be non-nil and differ from old_id".to_string(),
+            ));
+        }
+        if self.is_identity_adopted().await? {
+            return Err(SyncError::InvalidOperation(
+                "adopt_identity: identity has already been adopted".to_string(),
+            ));
+        }
+
         let mut tx = self.pool.begin().await?;
 
         sqlx::query(Queries::RESTAMP_DOCUMENTS_USER_ID)
@@ -137,10 +148,19 @@ impl ClientDatabase {
             .execute(&mut *tx)
             .await?;
 
-        sqlx::query(Queries::ADOPT_USER_CONFIG_IDENTITY)
+        let result = sqlx::query(Queries::ADOPT_USER_CONFIG_IDENTITY)
             .bind(canonical_id.to_string())
+            .bind(old_id.to_string())
             .execute(&mut *tx)
             .await?;
+
+        if result.rows_affected() != 1 {
+            return Err(SyncError::InvalidOperation(format!(
+                "adopt_identity: expected to update 1 user_config row for old_id {}, got {}",
+                old_id,
+                result.rows_affected()
+            )));
+        }
 
         tx.commit().await?;
         Ok(())
@@ -715,5 +735,23 @@ mod identity_tests {
             .try_get("identity_adopted")
             .unwrap();
         assert_eq!(adopted, 1);
+    }
+
+    #[tokio::test]
+    async fn adopt_identity_rejects_nil_canonical_id() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+        let provisional = db.get_user_id().await.unwrap();
+        assert!(db.adopt_identity(provisional, Uuid::nil()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn adopt_identity_rejects_second_adoption() {
+        let db = fresh_db().await;
+        db.ensure_user_config("ws://localhost/ws").await.unwrap();
+        let provisional = db.get_user_id().await.unwrap();
+        let canonical = Uuid::new_v4();
+        db.adopt_identity(provisional, canonical).await.unwrap();
+        assert!(db.adopt_identity(canonical, Uuid::new_v4()).await.is_err());
     }
 }

@@ -86,7 +86,7 @@ impl Queries {
         "UPDATE documents SET user_id = ?1 WHERE user_id = ?2";
 
     pub const ADOPT_USER_CONFIG_IDENTITY: &'static str =
-        "UPDATE user_config SET user_id = ?1, identity_adopted = 1";
+        "UPDATE user_config SET user_id = ?1, identity_adopted = 1 WHERE user_id = ?2";
 
     // Document queries
     pub const GET_DOCUMENT: &'static str = r#"

@@ -72,20 +72,26 @@ public:
      * @param email User email address for identification
      * @param api_key Application API key (rpa_ prefix)
      * @param api_secret Application API secret (rps_ prefix)
+     * @param user_id Canonical user id from stored credentials (UUID string);
+     *                empty when no enrolled identity exists (offline/local-only).
+     *                Adoption of this id happens during construction, before
+     *                any sync connection.
      * @throws SyncException if creation fails
      */
     Client(const std::string& database_url,
            const std::string& server_url,
            const std::string& email,
            const std::string& api_key,
-           const std::string& api_secret)
+           const std::string& api_secret,
+           const std::string& user_id = {})
     {
         Replicant* raw_handle = replicant_create(
             database_url.c_str(),
             server_url.c_str(),
             email.c_str(),
             api_key.c_str(),
-            api_secret.c_str()
+            api_secret.c_str(),
+            user_id.empty() ? nullptr : user_id.c_str()
         );
 
         if (!raw_handle)
@@ -368,6 +374,22 @@ public:
     }
 
     /**
+     * Register a callback for identity changes (provisional id adopted into
+     * the canonical one). Consumers caching the user id must refresh it —
+     * and any owner-filtered views — when this fires.
+     *
+     * @param callback Function to call with (event_type, old_user_id,
+     *                 new_user_id, email, context)
+     * @param context User-defined context pointer passed to callback
+     * @throws SyncException if registration fails
+     */
+    void register_identity_callback(IdentityEventCallback callback, void* context)
+    {
+        SyncResult result = replicant_register_identity_callback(handle.get(), callback, context);
+        check_result(result);
+    }
+
+    /**
      * Register a callback for connection events (Lost, Attempted, Succeeded)
      *
      * @param callback Function to call for connection events
@@ -415,5 +437,78 @@ public:
     Client(Client&&) = default;
     Client& operator=(Client&&) = default;
 };
+
+//==============================================================================
+// Enrollment + credential storage
+//
+// Standalone helpers (no Client instance): a device exchanges an emailed,
+// one-time token for its own per-user credential, stored encrypted at rest.
+
+struct Credentials
+{
+    std::string api_key;
+    std::string secret;
+    std::string user_id; ///< Canonical user id (UUID) delivered by enrollment claim.
+};
+
+/** Requests an enrollment token be emailed to `email`. Returns true if the
+    server accepted the request (HTTP 202). */
+inline bool request_enrollment(const std::string& base_url, const std::string& email)
+{
+    return replicant_enroll_request(base_url.c_str(), email.c_str()) == Success;
+}
+
+/** Exchanges a one-time token for a per-user credential. On success fills `out`
+    (including the canonical user id) and returns true; returns false if the
+    token is invalid/expired or the request failed. */
+inline bool claim_enrollment(const std::string& base_url, const std::string& email,
+                             const std::string& token, Credentials& out)
+{
+    char api_key[129] = {0};
+    char secret[129] = {0};
+    char user_id[37] = {0};
+    if (replicant_enroll_claim(base_url.c_str(), email.c_str(), token.c_str(), api_key,
+                               sizeof(api_key), secret, sizeof(secret), user_id, sizeof(user_id))
+        != Success)
+        return false;
+
+    out.api_key = api_key;
+    out.secret = secret;
+    out.user_id = user_id;
+    return true;
+}
+
+/** Loads the stored credential from `data_dir`. On success fills `out` and
+    returns true; returns false if none is stored / it is unreadable. */
+inline bool load_credentials(const std::string& data_dir, Credentials& out)
+{
+    char api_key[129] = {0};
+    char secret[129] = {0};
+    char user_id[37] = {0};
+    if (replicant_load_credentials(data_dir.c_str(), api_key, sizeof(api_key), secret,
+                                   sizeof(secret), user_id, sizeof(user_id))
+        != Success)
+        return false;
+
+    out.api_key = api_key;
+    out.secret = secret;
+    out.user_id = user_id;
+    return true;
+}
+
+/** Stores a credential in `data_dir`, encrypted at rest. `creds.user_id` must
+    be a real (non-nil) UUID string. Returns true on success. */
+inline bool store_credentials(const std::string& data_dir, const Credentials& creds)
+{
+    return replicant_store_credentials(data_dir.c_str(), creds.api_key.c_str(),
+                                       creds.secret.c_str(), creds.user_id.c_str())
+           == Success;
+}
+
+/** Clears any stored credential in `data_dir`. Returns true on success. */
+inline bool clear_credentials(const std::string& data_dir)
+{
+    return replicant_clear_credentials(data_dir.c_str()) == Success;
+}
 
 } // namespace replicant

@@ -1,6 +1,8 @@
 use crate::events::EventDispatcher;
 use hmac::{Hmac, Mac};
-use phoenix_channels_client::{Channel, Event, Payload, Socket, Topic};
+use phoenix_channels_client::{
+    Channel, ChannelStatus, Event, Payload, Socket, StatusesError, Topic,
+};
 use replicant_core::{
     errors::ClientError,
     models::{Document, DocumentPatch},
@@ -143,7 +145,16 @@ impl WebSocketClient {
 
         let (tx, rx) = mpsc::channel::<ServerMessage>(100);
         Self::setup_broadcast_handlers(&channel, tx.clone(), is_connected.clone());
-        Self::setup_broadcast_handlers(&public_channel, tx.clone(), is_connected);
+        Self::setup_broadcast_handlers(&public_channel, tx.clone(), is_connected.clone());
+
+        // The phoenix client freezes the join payload (and its timestamp) at
+        // channel creation and replays it on every auto-rejoin; once the stamp
+        // is older than the server's clock-skew window every rejoin is rejected
+        // forever. A channel-level rejoin never flips is_connected, so watch the
+        // channel status and hand off to our own reconnect loop (which mints a
+        // fresh timestamp) when the library gets stuck rejoining.
+        Self::setup_status_watcher(&channel, is_connected.clone());
+        Self::setup_status_watcher(&public_channel, is_connected);
 
         // Emit auth success
         let _ = tx
@@ -200,6 +211,33 @@ impl WebSocketClient {
                 )),
             },
         }
+    }
+
+    /// Whether a channel status means the phoenix client is stuck rejoining
+    /// with its frozen (stale-timestamp) payload and our reconnect loop should
+    /// take over.
+    fn should_reconnect_on_status(status: &ChannelStatus) -> bool {
+        matches!(status, ChannelStatus::WaitingToRejoin { .. })
+    }
+
+    fn setup_status_watcher(channel: &Arc<Channel>, is_connected: Arc<AtomicBool>) {
+        let statuses = channel.statuses();
+
+        tokio::spawn(async move {
+            loop {
+                match statuses.status().await {
+                    Ok(status) => {
+                        if Self::should_reconnect_on_status(&status) {
+                            is_connected.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    // Only a closed status channel ends the watch; a lagged
+                    // receiver just skips ahead to the next status.
+                    Err(StatusesError::NoMoreStatuses) => break,
+                    Err(_) => continue,
+                }
+            }
+        });
     }
 
     fn to_websocket_url(server_url: &str) -> SyncResult<String> {
@@ -683,5 +721,27 @@ mod tests {
         let local = Uuid::new_v4();
         let reply = serde_json::json!({ "user_id": "not-a-uuid" });
         assert!(WebSocketClient::verify_reply_identity(local, &reply).is_err());
+    }
+
+    #[test]
+    fn should_reconnect_on_waiting_to_rejoin() {
+        let status = ChannelStatus::WaitingToRejoin {
+            until: std::time::SystemTime::now(),
+        };
+        assert!(WebSocketClient::should_reconnect_on_status(&status));
+    }
+
+    #[test]
+    fn should_not_reconnect_on_steady_statuses() {
+        for status in [
+            ChannelStatus::Joined,
+            ChannelStatus::Joining,
+            ChannelStatus::WaitingToJoin,
+            ChannelStatus::WaitingForSocketToConnect,
+            ChannelStatus::Leaving,
+            ChannelStatus::Left,
+        ] {
+            assert!(!WebSocketClient::should_reconnect_on_status(&status));
+        }
     }
 }

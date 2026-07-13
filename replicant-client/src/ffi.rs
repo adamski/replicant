@@ -67,6 +67,7 @@ pub unsafe extern "C" fn replicant_create(
     email: *const c_char,
     api_key: *const c_char,
     api_secret: *const c_char,
+    user_id: *const c_char,
 ) -> *mut Replicant {
     if database_url.is_null()
         || server_url.is_null()
@@ -76,6 +77,21 @@ pub unsafe extern "C" fn replicant_create(
     {
         return ptr::null_mut();
     }
+
+    // Canonical user id from stored credentials; null means no enrolled
+    // identity (offline/local-only). A non-null id must be a real UUID.
+    let canonical_user_id = if user_id.is_null() {
+        None
+    } else {
+        match CStr::from_ptr(user_id)
+            .to_str()
+            .ok()
+            .and_then(|s| Uuid::parse_str(s).ok())
+        {
+            Some(id) if !id.is_nil() => Some(id),
+            _ => return ptr::null_mut(),
+        }
+    };
 
     let database_url = match CStr::from_ptr(database_url).to_str() {
         Ok(s) => s,
@@ -150,9 +166,7 @@ pub unsafe extern "C" fn replicant_create(
             &email,
             &api_key,
             &api_secret,
-            // Canonical id plumbed through the C ABI in a follow-up change;
-            // until then adoption never triggers via FFI construction.
-            None,
+            canonical_user_id,
             Some(event_dispatcher_clone.clone()),
         )
         .await
@@ -1242,5 +1256,329 @@ pub unsafe extern "C" fn replicant_rebuild_search_index(engine: *mut Replicant) 
     {
         Ok(_) => SyncResult::Success,
         Err(_) => SyncResult::ErrorDatabase,
+    }
+}
+
+// ============================================================================
+// Enrollment + credential storage
+// ============================================================================
+
+/// Copies `s` plus a NUL terminator into `out` iff it fits within `cap`
+/// bytes. Returns `false` — writing an empty C string when `cap > 0` — when
+/// it does not fit; never writes past `cap`. On a multi-buffer call that
+/// fails partway, earlier out buffers may already be populated — callers
+/// must not read any out buffer unless the call returned success. Bytes of
+/// `s` are copied verbatim, so an embedded NUL makes C readers see the
+/// string truncated at that NUL.
+///
+/// # Safety
+/// `out` must point to a writable buffer of at least `cap` bytes.
+unsafe fn write_cstr_buf(out: *mut c_char, cap: usize, s: &str) -> bool {
+    if cap == 0 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    if bytes.len() + 1 > cap {
+        out.write(0);
+        return false;
+    }
+    ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+    out.add(bytes.len()).write(0);
+    true
+}
+
+/// Requests an enrollment token be emailed to `email`. Standalone HTTP call
+/// (no engine handle); runs on a dedicated thread with its own short-lived
+/// runtime so this is safe to call even from inside an async runtime context.
+///
+/// # Safety
+/// `base_url` and `email` must be valid, non-null C strings.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_enroll_request(
+    base_url: *const c_char,
+    email: *const c_char,
+) -> SyncResult {
+    if base_url.is_null() || email.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let base_url = match CStr::from_ptr(base_url).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let email = match CStr::from_ptr(email).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let join_result = std::thread::spawn(move || {
+        let runtime = Runtime::new().map_err(|_| SyncResult::ErrorUnknown)?;
+        match runtime.block_on(crate::enrollment::request(&base_url, &email)) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(SyncResult::ErrorConnection),
+        }
+    })
+    .join();
+
+    match join_result {
+        Ok(Ok(())) => SyncResult::Success,
+        Ok(Err(err)) => err,
+        Err(_) => SyncResult::ErrorUnknown,
+    }
+}
+
+/// Exchanges an enrollment token for a per-user credential. On success writes
+/// the api_key, secret, and canonical user id (36-char UUID string) into the
+/// out buffers; each `*_cap` is the writable size of its buffer in bytes and
+/// the call fails (without overflowing) when a value does not fit.
+///
+/// # Safety
+/// All string pointers must be valid, non-null C strings; each out pointer
+/// must reference a writable buffer of at least its stated capacity.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_enroll_claim(
+    base_url: *const c_char,
+    email: *const c_char,
+    token: *const c_char,
+    out_api_key: *mut c_char,
+    api_key_cap: usize,
+    out_secret: *mut c_char,
+    secret_cap: usize,
+    out_user_id: *mut c_char,
+    user_id_cap: usize,
+) -> SyncResult {
+    if base_url.is_null()
+        || email.is_null()
+        || token.is_null()
+        || out_api_key.is_null()
+        || out_secret.is_null()
+        || out_user_id.is_null()
+    {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let base_url = match CStr::from_ptr(base_url).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let email = match CStr::from_ptr(email).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let token = match CStr::from_ptr(token).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    let join_result = std::thread::spawn(move || {
+        let runtime = Runtime::new().map_err(|_| SyncResult::ErrorUnknown)?;
+        runtime
+            .block_on(crate::enrollment::claim(&base_url, &email, &token))
+            .map_err(|e| match e {
+                crate::enrollment::EnrollError::InvalidToken => SyncResult::ErrorInvalidInput,
+                _ => SyncResult::ErrorConnection,
+            })
+    })
+    .join();
+
+    match join_result {
+        Ok(Ok(creds)) => {
+            if write_cstr_buf(out_api_key, api_key_cap, &creds.api_key)
+                && write_cstr_buf(out_secret, secret_cap, &creds.secret)
+                && write_cstr_buf(out_user_id, user_id_cap, &creds.user_id.to_string())
+            {
+                SyncResult::Success
+            } else {
+                SyncResult::ErrorInvalidInput
+            }
+        }
+        Ok(Err(err)) => err,
+        Err(_) => SyncResult::ErrorUnknown,
+    }
+}
+
+/// Loads stored credentials from `data_dir`. Returns Success and fills the
+/// out buffers (api_key, secret, canonical user id), or ErrorDatabase if none
+/// are stored / unreadable. Each `*_cap` is the writable size of its buffer;
+/// the call fails (without overflowing) when a value does not fit.
+///
+/// # Safety
+/// `data_dir` must be a valid, non-null C string; each out pointer must
+/// reference a writable buffer of at least its stated capacity.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_load_credentials(
+    data_dir: *const c_char,
+    out_api_key: *mut c_char,
+    api_key_cap: usize,
+    out_secret: *mut c_char,
+    secret_cap: usize,
+    out_user_id: *mut c_char,
+    user_id_cap: usize,
+) -> SyncResult {
+    if data_dir.is_null() || out_api_key.is_null() || out_secret.is_null() || out_user_id.is_null()
+    {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let data_dir = match CStr::from_ptr(data_dir).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    match crate::secret_store::load(std::path::Path::new(data_dir)) {
+        Ok(Some(creds)) => {
+            if write_cstr_buf(out_api_key, api_key_cap, &creds.api_key)
+                && write_cstr_buf(out_secret, secret_cap, &creds.secret)
+                && write_cstr_buf(out_user_id, user_id_cap, &creds.user_id.to_string())
+            {
+                SyncResult::Success
+            } else {
+                SyncResult::ErrorInvalidInput
+            }
+        }
+        Ok(None) | Err(_) => SyncResult::ErrorDatabase,
+    }
+}
+
+/// Stores credentials to `data_dir` (encrypted at rest). `user_id` is the
+/// canonical id delivered by enrollment claim (36-char UUID string); a nil or
+/// unparseable id is rejected — credentials are never stored without a real
+/// identity.
+///
+/// # Safety
+/// All pointers must be valid, non-null C strings.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_store_credentials(
+    data_dir: *const c_char,
+    api_key: *const c_char,
+    secret: *const c_char,
+    user_id: *const c_char,
+) -> SyncResult {
+    if data_dir.is_null() || api_key.is_null() || secret.is_null() || user_id.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let data_dir = match CStr::from_ptr(data_dir).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let api_key = match CStr::from_ptr(api_key).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let secret = match CStr::from_ptr(secret).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+    let user_id = match CStr::from_ptr(user_id)
+        .to_str()
+        .ok()
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        Some(id) if !id.is_nil() => id,
+        _ => return SyncResult::ErrorInvalidInput,
+    };
+
+    let creds = crate::secret_store::Credentials {
+        api_key: api_key.to_string(),
+        secret: secret.to_string(),
+        user_id,
+    };
+
+    match crate::secret_store::store(std::path::Path::new(data_dir), &creds) {
+        Ok(()) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorDatabase,
+    }
+}
+
+/// Clears any stored credentials in `data_dir`.
+///
+/// # Safety
+/// `data_dir` must be a valid, non-null C string.
+#[no_mangle]
+pub unsafe extern "C" fn replicant_clear_credentials(data_dir: *const c_char) -> SyncResult {
+    if data_dir.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let data_dir = match CStr::from_ptr(data_dir).to_str() {
+        Ok(s) => s,
+        Err(_) => return SyncResult::ErrorInvalidInput,
+    };
+
+    match crate::secret_store::clear(std::path::Path::new(data_dir)) {
+        Ok(()) => SyncResult::Success,
+        Err(_) => SyncResult::ErrorDatabase,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_cstr_buf_refuses_oversized_strings() {
+        let mut small = [1i8; 8];
+        let fitted = unsafe {
+            write_cstr_buf(
+                small.as_mut_ptr() as *mut c_char,
+                small.len(),
+                "too-long-for-8",
+            )
+        };
+        assert!(!fitted);
+        assert_eq!(small[0], 0, "refused write must leave an empty C string");
+
+        let mut big = [1i8; 32];
+        let fitted = unsafe { write_cstr_buf(big.as_mut_ptr() as *mut c_char, big.len(), "fits") };
+        assert!(fitted);
+        assert_eq!(big[4], 0, "NUL terminator after the copied bytes");
+    }
+
+    #[test]
+    fn write_cstr_buf_exact_fit_boundary() {
+        // len + 1 == cap fits exactly; len == cap does not.
+        let mut buf = [1i8; 5];
+        assert!(unsafe { write_cstr_buf(buf.as_mut_ptr() as *mut c_char, buf.len(), "four") });
+        assert_eq!(buf[4], 0);
+        assert!(!unsafe { write_cstr_buf(buf.as_mut_ptr() as *mut c_char, buf.len(), "five!") });
+        assert_eq!(buf[0], 0, "refused write must leave an empty C string");
+    }
+
+    #[test]
+    fn write_cstr_buf_zero_capacity_is_refused() {
+        let mut buf = [1i8; 1];
+        assert!(!unsafe { write_cstr_buf(buf.as_mut_ptr() as *mut c_char, 0, "") });
+        assert_eq!(buf[0], 1, "zero-cap buffer must not be touched");
+    }
+
+    #[tokio::test]
+    async fn enroll_ffi_is_callable_from_within_a_runtime() {
+        // Pre-guard code panicked here ("Cannot start a runtime from within a
+        // runtime"); the OS-thread hop makes this safe. The insecure URL makes
+        // the call fail fast without any network traffic.
+        let url = CString::new("http://example.com").unwrap();
+        let email = CString::new("rt@test.com").unwrap();
+        let result = unsafe { replicant_enroll_request(url.as_ptr(), email.as_ptr()) };
+        assert_ne!(result, SyncResult::Success);
+
+        let token = CString::new("TOK").unwrap();
+        let mut key = [0i8; 129];
+        let mut secret = [0i8; 129];
+        let mut uid = [0i8; 37];
+        let result = unsafe {
+            replicant_enroll_claim(
+                url.as_ptr(),
+                email.as_ptr(),
+                token.as_ptr(),
+                key.as_mut_ptr() as *mut c_char,
+                key.len(),
+                secret.as_mut_ptr() as *mut c_char,
+                secret.len(),
+                uid.as_mut_ptr() as *mut c_char,
+                uid.len(),
+            )
+        };
+        assert_ne!(result, SyncResult::Success);
     }
 }

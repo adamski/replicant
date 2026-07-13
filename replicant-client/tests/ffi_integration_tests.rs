@@ -204,6 +204,7 @@ unsafe fn create_test_engine() -> *mut Replicant {
         email.as_ptr(),
         api_key.as_ptr(),
         api_secret.as_ptr(),
+        std::ptr::null(),
     )
 }
 

@@ -211,7 +211,8 @@ struct Replicant *replicant_create(const char *database_url,
                                    const char *server_url,
                                    const char *email,
                                    const char *api_key,
-                                   const char *api_secret);
+                                   const char *api_secret,
+                                   const char *user_id);
 
 /**
  * Destroy a sync engine instance and free memory
@@ -621,38 +622,55 @@ enum ReplicantSyncResult replicant_enroll_request(const char *base_url, const ch
 
 /**
  * Exchanges an enrollment token for a per-user credential. On success writes
- * the api_key and secret into the out buffers (each must hold >= 69 bytes).
+ * the api_key, secret, and canonical user id (36-char UUID string) into the
+ * out buffers; each `*_cap` is the writable size of its buffer in bytes and
+ * the call fails (without overflowing) when a value does not fit.
  *
  * # Safety
- * All string pointers must be valid, non-null C strings; `out_api_key` and
- * `out_secret` must each point to a writable buffer of at least 69 bytes.
+ * All string pointers must be valid, non-null C strings; each out pointer
+ * must reference a writable buffer of at least its stated capacity.
  */
 enum ReplicantSyncResult replicant_enroll_claim(const char *base_url,
                                                 const char *email,
                                                 const char *token,
                                                 char *out_api_key,
-                                                char *out_secret);
+                                                uintptr_t api_key_cap,
+                                                char *out_secret,
+                                                uintptr_t secret_cap,
+                                                char *out_user_id,
+                                                uintptr_t user_id_cap);
 
 /**
- * Loads stored credentials from `data_dir`. Returns Success and fills the out
- * buffers, or ErrorDatabase if none are stored / unreadable.
+ * Loads stored credentials from `data_dir`. Returns Success and fills the
+ * out buffers (api_key, secret, canonical user id), or ErrorDatabase if none
+ * are stored / unreadable. Each `*_cap` is the writable size of its buffer;
+ * the call fails (without overflowing) when a value does not fit.
  *
  * # Safety
- * `data_dir` must be a valid, non-null C string; out buffers each >= 69 bytes.
+ * `data_dir` must be a valid, non-null C string; each out pointer must
+ * reference a writable buffer of at least its stated capacity.
  */
 enum ReplicantSyncResult replicant_load_credentials(const char *data_dir,
                                                     char *out_api_key,
-                                                    char *out_secret);
+                                                    uintptr_t api_key_cap,
+                                                    char *out_secret,
+                                                    uintptr_t secret_cap,
+                                                    char *out_user_id,
+                                                    uintptr_t user_id_cap);
 
 /**
- * Stores credentials to `data_dir` (encrypted at rest).
+ * Stores credentials to `data_dir` (encrypted at rest). `user_id` is the
+ * canonical id delivered by enrollment claim (36-char UUID string); a nil or
+ * unparseable id is rejected — credentials are never stored without a real
+ * identity.
  *
  * # Safety
  * All pointers must be valid, non-null C strings.
  */
 enum ReplicantSyncResult replicant_store_credentials(const char *data_dir,
                                                      const char *api_key,
-                                                     const char *secret);
+                                                     const char *secret,
+                                                     const char *user_id);
 
 /**
  * Clears any stored credentials in `data_dir`.

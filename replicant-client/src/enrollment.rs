@@ -50,6 +50,8 @@ pub async fn claim(base_url: &str, email: &str, token: &str) -> Result<Credentia
 
     match resp.status().as_u16() {
         200 => {
+            // Any undecodable 200 body (missing/unparseable fields, non-JSON)
+            // is an invalid enrollment response, not a transport error.
             let creds = resp
                 .json::<Credentials>()
                 .await
@@ -157,6 +159,49 @@ mod tests {
             .await;
         assert!(matches!(
             claim(&oversized.uri(), "a@b.com", "TOK").await,
+            Err(EnrollError::InvalidResponse)
+        ));
+
+        let bad_secret_prefix = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "api_key": "rpa_x", "secret": "xxx_bad", "user_id": user_id
+            })))
+            .mount(&bad_secret_prefix)
+            .await;
+        assert!(matches!(
+            claim(&bad_secret_prefix.uri(), "a@b.com", "TOK").await,
+            Err(EnrollError::InvalidResponse)
+        ));
+
+        let oversized_secret = MockServer::start().await;
+        let oversized_secret_value = format!("rps_{}", "a".repeat(200));
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "api_key": "rpa_x", "secret": oversized_secret_value, "user_id": user_id
+            })))
+            .mount(&oversized_secret)
+            .await;
+        assert!(matches!(
+            claim(&oversized_secret.uri(), "a@b.com", "TOK").await,
+            Err(EnrollError::InvalidResponse)
+        ));
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_unparseable_user_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "api_key": "rpa_x", "secret": "rps_y", "user_id": "not-a-uuid"
+            })))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            claim(&server.uri(), "a@b.com", "TOK").await,
             Err(EnrollError::InvalidResponse)
         ));
     }

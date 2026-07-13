@@ -45,7 +45,11 @@ fn validate_url(base_url: &str) -> Result<(), EnrollError> {
 }
 
 fn build_client(connect_timeout: Duration, timeout: Duration) -> reqwest::Client {
+    // Never follow redirects: a redirect to another host (or an https→http
+    // downgrade) would re-send the email and token to a URL we never
+    // validated.
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect_timeout)
         .timeout(timeout)
         .build()
@@ -157,6 +161,37 @@ mod tests {
         let creds = claim(&server.uri(), "a@b.com", "TOK").await.unwrap();
         assert_eq!(creds.api_key, "rpa_x");
         assert_eq!(creds.user_id, user_id);
+    }
+
+    #[tokio::test]
+    async fn claim_never_follows_redirects() {
+        // A 307 re-sends the POST body (email + token) to the Location
+        // target — possibly a different host or a plain-http downgrade. The
+        // client must surface the redirect status instead of following it.
+        let attacker = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "api_key": "rpa_x", "secret": "rps_y", "user_id": uuid::Uuid::new_v4()
+            })))
+            .expect(0)
+            .mount(&attacker)
+            .await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(307).insert_header(
+                "location",
+                format!("{}/api/enroll/claim", attacker.uri()).as_str(),
+            ))
+            .mount(&server)
+            .await;
+
+        assert!(matches!(
+            claim(&server.uri(), "a@b.com", "TOK").await,
+            Err(EnrollError::Http(s)) if s.contains("307")
+        ));
     }
 
     #[tokio::test]

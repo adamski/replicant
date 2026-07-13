@@ -1,6 +1,8 @@
 use crate::events::EventDispatcher;
 use hmac::{Hmac, Mac};
-use phoenix_channels_client::{Channel, ChannelStatus, Event, Payload, Socket, Topic};
+use phoenix_channels_client::{
+    Channel, ChannelStatus, Event, Payload, Socket, StatusesError, Topic,
+};
 use replicant_core::{
     errors::ClientError,
     models::{Document, DocumentPatch},
@@ -229,7 +231,10 @@ impl WebSocketClient {
                             is_connected.store(false, Ordering::Relaxed);
                         }
                     }
-                    Err(_) => break,
+                    // Only a closed status channel ends the watch; a lagged
+                    // receiver just skips ahead to the next status.
+                    Err(StatusesError::NoMoreStatuses) => break,
+                    Err(_) => continue,
                 }
             }
         });

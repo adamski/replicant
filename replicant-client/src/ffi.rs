@@ -1267,7 +1267,9 @@ pub unsafe extern "C" fn replicant_rebuild_search_index(engine: *mut Replicant) 
 /// bytes. Returns `false` — writing an empty C string when `cap > 0` — when
 /// it does not fit; never writes past `cap`. On a multi-buffer call that
 /// fails partway, earlier out buffers may already be populated — callers
-/// must not read any out buffer unless the call returned success.
+/// must not read any out buffer unless the call returned success. Bytes of
+/// `s` are copied verbatim, so an embedded NUL makes C readers see the
+/// string truncated at that NUL.
 ///
 /// # Safety
 /// `out` must point to a writable buffer of at least `cap` bytes.

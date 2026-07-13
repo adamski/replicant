@@ -150,6 +150,9 @@ pub unsafe extern "C" fn replicant_create(
             &email,
             &api_key,
             &api_secret,
+            // Canonical id plumbed through the C ABI in a follow-up change;
+            // until then adoption never triggers via FFI construction.
+            None,
             Some(event_dispatcher_clone.clone()),
         )
         .await

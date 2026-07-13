@@ -1,17 +1,27 @@
-//! End-to-end identity adoption against a live server.
+//! End-to-end claim-time identity adoption against a live server.
 //!
 //! Pre-seeds a provisional (random v4) identity plus a document owned by it,
-//! then constructs the real `Client` pointed at the deployed server. Connecting
-//! runs the join-reply → adoption path, which must re-stamp the document to the
-//! server's canonical id, flip `identity_adopted`, and update the in-memory id.
+//! then constructs the real `Client` with the canonical user id (as delivered
+//! by enrollment claim; in CI it is seeded and exported alongside the API
+//! credentials). Construction must adopt BEFORE connecting: re-stamp the
+//! document, flip `identity_adopted`, switch the in-memory id — and then join
+//! `sync:user:<canonical>` successfully, passing the join-reply drift check.
 //!
 //! Gated behind `RUN_INTEGRATION_TESTS` (see `skip_if_no_server`); needs
-//! `SYNC_SERVER_URL`, `REPLICANT_API_KEY`, `REPLICANT_API_SECRET`.
+//! `SYNC_SERVER_URL`, `REPLICANT_API_KEY`, `REPLICANT_API_SECRET`, and
+//! `REPLICANT_TEST_USER_ID` (the canonical id bound to those credentials).
 
 use super::{serial, server_url, skip_if_no_server, test_api_key, test_api_secret, TEST_EMAIL};
 use replicant_client::{Client, ClientDatabase};
 use sqlx::Row;
+use std::time::Duration;
 use uuid::Uuid;
+
+fn canonical_user_id_from_env() -> Option<Uuid> {
+    std::env::var("REPLICANT_TEST_USER_ID")
+        .ok()
+        .and_then(|s| Uuid::parse_str(&s).ok())
+}
 
 fn temp_db_path() -> String {
     let nanos = std::time::SystemTime::now()
@@ -27,11 +37,14 @@ fn temp_db_path() -> String {
 
 #[tokio::test]
 #[serial]
-async fn adoption_restamps_document_and_flips_flag_against_live_server() {
+async fn claim_time_adoption_restamps_and_connects_to_canonical_topic() {
     if skip_if_no_server() {
         eprintln!("skipping identity adoption test: RUN_INTEGRATION_TESTS not set");
         return;
     }
+    let Some(canonical) = canonical_user_id_from_env() else {
+        panic!("RUN_INTEGRATION_TESTS is set but REPLICANT_TEST_USER_ID is missing/invalid");
+    };
 
     std::fs::create_dir_all("databases").ok();
     let db_file = temp_db_path();
@@ -51,6 +64,7 @@ async fn adoption_restamps_document_and_flips_flag_against_live_server() {
             Some(uuid::Version::Random),
             "seeded id should be a random v4 provisional id"
         );
+        assert_ne!(provisional, canonical);
 
         sqlx::query("INSERT INTO documents (id, user_id, content) VALUES (?1, ?2, ?3)")
             .bind(doc_id.to_string())
@@ -61,27 +75,35 @@ async fn adoption_restamps_document_and_flips_flag_against_live_server() {
             .unwrap();
     }
 
-    // 2. Construct the real client on the same db, pointed at the live server.
-    //    Adoption runs synchronously inside construction, on first join reply.
+    // 2. Construct the real client with the canonical id (claim-time adoption).
+    //    Adoption runs inside construction, before any WebSocket work.
     let client = Client::with_event_dispatcher(
         &db_url,
         &server_url(),
         TEST_EMAIL,
         &test_api_key(),
         &test_api_secret(),
+        Some(canonical),
         None,
     )
     .await
-    .expect("client should connect to the live server");
+    .expect("client should adopt and connect to the live server");
 
-    // 3. The in-memory id switched to the server's canonical id.
-    let canonical = client.user_id();
-    assert_ne!(
-        canonical, provisional,
-        "client should have adopted the server's canonical id"
-    );
+    // 3. The in-memory id switched to the canonical id.
+    assert_eq!(client.user_id(), canonical);
 
-    // 4. The DB reflects the adoption and the pre-existing doc was re-stamped.
+    // 4. The join to sync:user:<canonical> succeeded (drift check passed).
+    let mut connected = client.is_connected();
+    for _ in 0..50 {
+        if connected {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        connected = client.is_connected();
+    }
+    assert!(connected, "client should join sync:user:<canonical>");
+
+    // 5. The DB reflects the adoption and the pre-existing doc was re-stamped.
     let db = ClientDatabase::new(&db_url).await.unwrap();
     let adopted: i64 = sqlx::query("SELECT identity_adopted FROM user_config LIMIT 1")
         .fetch_one(&db.pool)

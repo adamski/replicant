@@ -541,6 +541,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &user_email,
         &cli.api_key,
         &cli.api_secret,
+        None,
     )
     .await
     {

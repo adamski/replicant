@@ -53,6 +53,9 @@ pub struct Client {
     reconnect_sync_rx: Option<mpsc::Receiver<()>>,
     // Queue for deferred sync messages during upload protection
     deferred_messages: Arc<Mutex<Vec<ServerMessage>>>,
+    // Sync is possible for this instance (credentials + adopted identity).
+    // Immutable for the client's lifetime: enrollment recreates the client.
+    sync_enabled: bool,
 }
 
 impl Client {
@@ -62,9 +65,18 @@ impl Client {
         email: &str,
         api_key: &str,
         api_secret: &str,
+        canonical_user_id: Option<Uuid>,
     ) -> SyncResult<Self> {
-        Self::with_event_dispatcher(database_url, server_url, email, api_key, api_secret, None)
-            .await
+        Self::with_event_dispatcher(
+            database_url,
+            server_url,
+            email,
+            api_key,
+            api_secret,
+            canonical_user_id,
+            None,
+        )
+        .await
     }
 
     pub async fn with_event_dispatcher(
@@ -73,6 +85,7 @@ impl Client {
         email: &str,
         api_key: &str,
         api_secret: &str,
+        canonical_user_id: Option<Uuid>,
         event_dispatcher: Option<Arc<EventDispatcher>>,
     ) -> SyncResult<Self> {
         let db = Arc::new(ClientDatabase::new(database_url).await?);
@@ -93,45 +106,63 @@ impl Client {
         let (reconnect_sync_tx, reconnect_sync_rx) = mpsc::channel(10);
 
         let is_connected = Arc::new(AtomicBool::new(false));
-        let identity_adopted = db.is_identity_adopted().await.unwrap_or(false);
-        // Try to connect to WebSocket, but don't fail if offline
-        let (ws_client, initial_ping_time, adoption) = match WebSocketClient::connect(
-            server_url,
-            email,
-            client_id,
-            user_id,
-            api_key,
-            api_secret,
-            Some(event_dispatcher.clone()),
-            is_connected.clone(),
-            identity_adopted,
-        )
-        .await
-        {
-            Ok((client, receiver, adoption)) => {
-                // Start forwarding WebSocket messages to our channel
-                tokio::spawn(async move {
-                    if let Err(e) = receiver.forward_to(tx).await {
-                        tracing::error!("WebSocket receiver error: {}", e);
-                    }
-                });
-                (Some(client), Some(Instant::now()), adoption)
-            }
-            Err(e) => {
-                eprintln!("Failed to connect to server (will retry): {}", e);
-                (None, None, None)
-            }
-        };
 
-        // Adopt the server's canonical id on first contact: re-stamp local docs
-        // and switch our in-memory identity to it.
-        let user_id = if let Some(a) = adoption {
-            db.adopt_identity(a.old_user_id, a.canonical_user_id)
-                .await?;
-            event_dispatcher.emit_identity_changed(&a.old_user_id, &a.canonical_user_id, &a.email);
-            a.canonical_user_id
+        // Adopt the canonical identity (from stored credentials) BEFORE any
+        // WebSocket work: no live sync exists yet and the handle hasn't been
+        // returned, so adoption cannot race document creation.
+        let identity_adopted = db.is_identity_adopted().await.unwrap_or(false);
+        match (canonical_user_id, identity_adopted) {
+            (Some(canonical), false) => {
+                db.adopt_identity(user_id, canonical).await?;
+                event_dispatcher.emit_identity_changed(&user_id, &canonical, email);
+            }
+            (Some(canonical), true) if canonical != user_id => {
+                return Err(replicant_core::errors::SyncError::InvalidOperation(
+                    format!(
+                        "account switch not supported: credentials belong to user {} but this \
+                     database is owned by user {}; reset local data to enroll a different account",
+                        canonical, user_id
+                    ),
+                ));
+            }
+            _ => {}
+        }
+        let user_id = db.get_user_id().await?;
+
+        // Sync requires credentials and an adopted (server-confirmed)
+        // identity; otherwise stay local-only and never join a sync topic.
+        let sync_enabled = !api_key.is_empty() && db.is_identity_adopted().await.unwrap_or(false);
+
+        let (ws_client, initial_ping_time) = if sync_enabled {
+            // Try to connect to WebSocket, but don't fail if offline
+            match WebSocketClient::connect(
+                server_url,
+                email,
+                client_id,
+                user_id,
+                api_key,
+                api_secret,
+                Some(event_dispatcher.clone()),
+                is_connected.clone(),
+            )
+            .await
+            {
+                Ok((client, receiver)) => {
+                    // Start forwarding WebSocket messages to our channel
+                    tokio::spawn(async move {
+                        if let Err(e) = receiver.forward_to(tx).await {
+                            tracing::error!("WebSocket receiver error: {}", e);
+                        }
+                    });
+                    (Some(client), Some(Instant::now()))
+                }
+                Err(e) => {
+                    eprintln!("Failed to connect to server (will retry): {}", e);
+                    (None, None)
+                }
+            }
         } else {
-            user_id
+            (None, None)
         };
 
         let mut engine = Self {
@@ -153,6 +184,7 @@ impl Client {
             reconnect_sync_tx,
             reconnect_sync_rx: Some(reconnect_sync_rx),
             deferred_messages: Arc::new(Mutex::new(Vec::new())),
+            sync_enabled,
         };
 
         // Automatically start background tasks
@@ -1642,6 +1674,14 @@ impl Client {
 
     /// Start the reconnection loop if not already running
     fn start_reconnection_loop(&self) {
+        if !self.sync_enabled {
+            tracing::info!(
+                "CLIENT {}: sync disabled (no credentials or identity not adopted) — \
+                 skipping reconnection monitor",
+                self.client_id
+            );
+            return;
+        }
         let is_connected = self.is_connected.clone();
         let ws_client = self.ws_client.clone();
         let server_url = self.server_url.clone();
@@ -1680,10 +1720,8 @@ impl Client {
                         server_url
                     );
 
-                    // Read the current (possibly just-adopted) id; copy out so no
-                    // lock guard is held across the await.
+                    // Copy the id out so no lock guard is held across the await.
                     let current_user_id = *user_id.read().expect("user_id lock poisoned");
-                    let identity_adopted = db.is_identity_adopted().await.unwrap_or(false);
 
                     // Try to connect
                     match WebSocketClient::connect(
@@ -1695,34 +1733,16 @@ impl Client {
                         &api_secret,
                         Some(event_dispatcher.clone()),
                         is_connected.clone(),
-                        identity_adopted,
                     )
                     .await
                     {
-                        Ok((new_client, receiver, adoption)) => {
+                        Ok((new_client, receiver)) => {
                             tracing::info!(
                                 "✅ CLIENT {}: Reconnection successful after {} attempts!",
                                 client_id,
                                 connection_attempts
                             );
                             connection_attempts = 0;
-
-                            // Adopt the server's canonical id if it differs.
-                            if let Some(a) = adoption {
-                                if let Err(e) =
-                                    db.adopt_identity(a.old_user_id, a.canonical_user_id).await
-                                {
-                                    tracing::error!("Identity adoption failed: {}", e);
-                                } else {
-                                    *user_id.write().expect("user_id lock poisoned") =
-                                        a.canonical_user_id;
-                                    event_dispatcher.emit_identity_changed(
-                                        &a.old_user_id,
-                                        &a.canonical_user_id,
-                                        &a.email,
-                                    );
-                                }
-                            }
 
                             // Update the client
                             *ws_client.lock().await = Some(new_client);

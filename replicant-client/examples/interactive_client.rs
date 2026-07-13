@@ -93,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &cli.email,
         &cli.api_key,
         &cli.api_secret,
+        None,
     )
     .await
     {

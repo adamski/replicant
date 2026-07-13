@@ -527,7 +527,14 @@ fn json_to_document(j: &Value) -> Option<Document> {
     // The server always carries ownership in the sync envelope: a string
     // user_id (owned doc) or null (public doc). A payload missing the key
     // entirely is malformed — reject it rather than guess an owner.
-    let user_id = match j.get("user_id")? {
+    let Some(uid_value) = j.get("user_id") else {
+        tracing::warn!(
+            "dropping document payload without ownership envelope (id: {:?})",
+            j.get("id")
+        );
+        return None;
+    };
+    let user_id = match uid_value {
         Value::Null => None,
         uid_value => Some(Uuid::parse_str(uid_value.as_str()?).ok()?),
     };

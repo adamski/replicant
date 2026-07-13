@@ -1286,7 +1286,8 @@ unsafe fn write_cstr_buf(out: *mut c_char, cap: usize, s: &str) -> bool {
 }
 
 /// Requests an enrollment token be emailed to `email`. Standalone HTTP call
-/// (no engine handle); spins a short-lived runtime to drive the async request.
+/// (no engine handle); runs on a dedicated thread with its own short-lived
+/// runtime so this is safe to call even from inside an async runtime context.
 ///
 /// # Safety
 /// `base_url` and `email` must be valid, non-null C strings.
@@ -1300,22 +1301,27 @@ pub unsafe extern "C" fn replicant_enroll_request(
     }
 
     let base_url = match CStr::from_ptr(base_url).to_str() {
-        Ok(s) => s,
+        Ok(s) => s.to_string(),
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
     let email = match CStr::from_ptr(email).to_str() {
-        Ok(s) => s,
+        Ok(s) => s.to_string(),
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
-    let runtime = match Runtime::new() {
-        Ok(r) => r,
-        Err(_) => return SyncResult::ErrorUnknown,
-    };
+    let join_result = std::thread::spawn(move || {
+        let runtime = Runtime::new().map_err(|_| SyncResult::ErrorUnknown)?;
+        match runtime.block_on(crate::enrollment::request(&base_url, &email)) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(SyncResult::ErrorConnection),
+        }
+    })
+    .join();
 
-    match runtime.block_on(crate::enrollment::request(base_url, email)) {
-        Ok(()) => SyncResult::Success,
-        Err(_) => SyncResult::ErrorConnection,
+    match join_result {
+        Ok(Ok(())) => SyncResult::Success,
+        Ok(Err(err)) => err,
+        Err(_) => SyncResult::ErrorUnknown,
     }
 }
 
@@ -1350,25 +1356,31 @@ pub unsafe extern "C" fn replicant_enroll_claim(
     }
 
     let base_url = match CStr::from_ptr(base_url).to_str() {
-        Ok(s) => s,
+        Ok(s) => s.to_string(),
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
     let email = match CStr::from_ptr(email).to_str() {
-        Ok(s) => s,
+        Ok(s) => s.to_string(),
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
     let token = match CStr::from_ptr(token).to_str() {
-        Ok(s) => s,
+        Ok(s) => s.to_string(),
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
-    let runtime = match Runtime::new() {
-        Ok(r) => r,
-        Err(_) => return SyncResult::ErrorUnknown,
-    };
+    let join_result = std::thread::spawn(move || {
+        let runtime = Runtime::new().map_err(|_| SyncResult::ErrorUnknown)?;
+        runtime
+            .block_on(crate::enrollment::claim(&base_url, &email, &token))
+            .map_err(|e| match e {
+                crate::enrollment::EnrollError::InvalidToken => SyncResult::ErrorInvalidInput,
+                _ => SyncResult::ErrorConnection,
+            })
+    })
+    .join();
 
-    match runtime.block_on(crate::enrollment::claim(base_url, email, token)) {
-        Ok(creds) => {
+    match join_result {
+        Ok(Ok(creds)) => {
             if write_cstr_buf(out_api_key, api_key_cap, &creds.api_key)
                 && write_cstr_buf(out_secret, secret_cap, &creds.secret)
                 && write_cstr_buf(out_user_id, user_id_cap, &creds.user_id.to_string())
@@ -1378,8 +1390,8 @@ pub unsafe extern "C" fn replicant_enroll_claim(
                 SyncResult::ErrorInvalidInput
             }
         }
-        Err(crate::enrollment::EnrollError::InvalidToken) => SyncResult::ErrorInvalidInput,
-        Err(_) => SyncResult::ErrorConnection,
+        Ok(Err(err)) => err,
+        Err(_) => SyncResult::ErrorUnknown,
     }
 }
 

@@ -1,5 +1,6 @@
 //! HTTP client for the plugin-initiated enrollment flow.
 use crate::secret_store::Credentials;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EnrollError {
@@ -9,9 +10,13 @@ pub enum EnrollError {
     Http(String),
     #[error("enrollment response invalid or incomplete")]
     InvalidResponse,
+    #[error("insecure base_url: https:// is required (localhost/127.0.0.1 excepted)")]
+    InsecureUrl,
 }
 
 const MAX_CRED_LEN: usize = 128;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn validate(creds: &Credentials) -> Result<(), EnrollError> {
     if creds.user_id.is_nil()
@@ -25,8 +30,44 @@ fn validate(creds: &Credentials) -> Result<(), EnrollError> {
     Ok(())
 }
 
+/// Requires `https://`, except `http://localhost` / `http://127.0.0.1`
+/// (any port) for tests and local dev.
+fn validate_url(base_url: &str) -> Result<(), EnrollError> {
+    if base_url.starts_with("https://") {
+        return Ok(());
+    }
+    if let Ok(parsed) = url::Url::parse(base_url) {
+        if parsed.scheme() == "http" {
+            if let Some(host) = parsed.host_str() {
+                if host == "localhost" || host == "127.0.0.1" {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Err(EnrollError::InsecureUrl)
+}
+
+fn build_client(connect_timeout: Duration, timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(timeout)
+        .build()
+        .expect("reqwest client config is always valid")
+}
+
 pub async fn request(base_url: &str, email: &str) -> Result<(), EnrollError> {
-    let resp = reqwest::Client::new()
+    request_with_timeouts(base_url, email, CONNECT_TIMEOUT, REQUEST_TIMEOUT).await
+}
+
+async fn request_with_timeouts(
+    base_url: &str,
+    email: &str,
+    connect_timeout: Duration,
+    timeout: Duration,
+) -> Result<(), EnrollError> {
+    validate_url(base_url)?;
+    let resp = build_client(connect_timeout, timeout)
         .post(format!("{base_url}/api/enroll/request"))
         .json(&serde_json::json!({ "email": email }))
         .send()
@@ -41,7 +82,18 @@ pub async fn request(base_url: &str, email: &str) -> Result<(), EnrollError> {
 }
 
 pub async fn claim(base_url: &str, email: &str, token: &str) -> Result<Credentials, EnrollError> {
-    let resp = reqwest::Client::new()
+    claim_with_timeouts(base_url, email, token, CONNECT_TIMEOUT, REQUEST_TIMEOUT).await
+}
+
+async fn claim_with_timeouts(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    connect_timeout: Duration,
+    timeout: Duration,
+) -> Result<Credentials, EnrollError> {
+    validate_url(base_url)?;
+    let resp = build_client(connect_timeout, timeout)
         .post(format!("{base_url}/api/enroll/claim"))
         .json(&serde_json::json!({ "email": email, "token": token }))
         .send()
@@ -204,6 +256,58 @@ mod tests {
             claim(&server.uri(), "a@b.com", "TOK").await,
             Err(EnrollError::InvalidResponse)
         ));
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_plain_http_base_url() {
+        // No wiremock server needed: rejection happens before any HTTP call.
+        assert!(matches!(
+            claim("http://example.com", "a@b.com", "TOK").await,
+            Err(EnrollError::InsecureUrl)
+        ));
+        assert!(matches!(
+            request("http://example.com", "a@b.com").await,
+            Err(EnrollError::InsecureUrl)
+        ));
+    }
+
+    #[tokio::test]
+    async fn claim_allows_localhost_and_127_0_0_1_over_http() {
+        // wiremock's server.uri() is http://127.0.0.1:<port>; the existing
+        // wiremock-backed tests above only pass because this is allowed.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/request"))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        assert!(request(&server.uri(), "a@b.com").await.is_ok());
+
+        assert!(validate_url("http://localhost").is_ok());
+        assert!(validate_url("http://localhost:8080").is_ok());
+        assert!(validate_url("http://127.0.0.1:9999").is_ok());
+        assert!(validate_url("https://example.com").is_ok());
+    }
+
+    #[tokio::test]
+    async fn request_times_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/request"))
+            .respond_with(
+                ResponseTemplate::new(202).set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+
+        let result = request_with_timeouts(
+            &server.uri(),
+            "a@b.com",
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+        assert!(matches!(result, Err(EnrollError::Http(_))));
     }
 
     #[tokio::test]

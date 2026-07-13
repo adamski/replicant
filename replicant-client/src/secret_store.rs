@@ -15,6 +15,7 @@ const CRED_FILE: &str = "credentials.enc";
 pub struct Credentials {
     pub api_key: String,
     pub secret: String,
+    pub user_id: uuid::Uuid,
 }
 
 fn load_or_create_key(dir: &Path) -> io::Result<[u8; 32]> {
@@ -110,15 +111,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(load(dir.path()).unwrap().is_none());
 
+        let user_id = uuid::Uuid::new_v4();
         let creds = Credentials {
             api_key: "rpa_x".into(),
             secret: "rps_y".into(),
+            user_id,
         };
         store(dir.path(), &creds).unwrap();
 
         let loaded = load(dir.path()).unwrap().unwrap();
         assert_eq!(loaded.api_key, "rpa_x");
         assert_eq!(loaded.secret, "rps_y");
+        assert_eq!(loaded.user_id, user_id);
 
         clear(dir.path()).unwrap();
         assert!(load(dir.path()).unwrap().is_none());
@@ -132,6 +136,7 @@ mod tests {
             &Credentials {
                 api_key: "a".into(),
                 secret: "b".into(),
+                user_id: uuid::Uuid::new_v4(),
             },
         )
         .unwrap();

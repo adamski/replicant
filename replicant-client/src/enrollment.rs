@@ -7,6 +7,22 @@ pub enum EnrollError {
     InvalidToken,
     #[error("enrollment request failed: {0}")]
     Http(String),
+    #[error("enrollment response invalid or incomplete")]
+    InvalidResponse,
+}
+
+const MAX_CRED_LEN: usize = 128;
+
+fn validate(creds: &Credentials) -> Result<(), EnrollError> {
+    if creds.user_id.is_nil()
+        || !creds.api_key.starts_with("rpa_")
+        || creds.api_key.len() > MAX_CRED_LEN
+        || !creds.secret.starts_with("rps_")
+        || creds.secret.len() > MAX_CRED_LEN
+    {
+        return Err(EnrollError::InvalidResponse);
+    }
+    Ok(())
 }
 
 pub async fn request(base_url: &str, email: &str) -> Result<(), EnrollError> {
@@ -33,10 +49,14 @@ pub async fn claim(base_url: &str, email: &str, token: &str) -> Result<Credentia
         .map_err(|e| EnrollError::Http(e.to_string()))?;
 
     match resp.status().as_u16() {
-        200 => resp
-            .json::<Credentials>()
-            .await
-            .map_err(|e| EnrollError::Http(e.to_string())),
+        200 => {
+            let creds = resp
+                .json::<Credentials>()
+                .await
+                .map_err(|_| EnrollError::InvalidResponse)?;
+            validate(&creds)?;
+            Ok(creds)
+        }
         401 => Err(EnrollError::InvalidToken),
         s => Err(EnrollError::Http(format!("status {s}"))),
     }
@@ -63,17 +83,82 @@ mod tests {
     #[tokio::test]
     async fn claim_returns_credentials_on_200() {
         let server = MockServer::start().await;
+        let user_id = uuid::Uuid::new_v4();
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "api_key": "rpa_x", "secret": "rps_y", "user_id": user_id
+            })))
+            .mount(&server)
+            .await;
+
+        let creds = claim(&server.uri(), "a@b.com", "TOK").await.unwrap();
+        assert_eq!(creds.api_key, "rpa_x");
+        assert_eq!(creds.user_id, user_id);
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_missing_or_nil_user_id() {
+        let missing = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/enroll/claim"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({"api_key":"rpa_x","secret":"rps_y"})),
             )
-            .mount(&server)
+            .mount(&missing)
             .await;
+        assert!(matches!(
+            claim(&missing.uri(), "a@b.com", "TOK").await,
+            Err(EnrollError::InvalidResponse)
+        ));
 
-        let creds = claim(&server.uri(), "a@b.com", "TOK").await.unwrap();
-        assert_eq!(creds.api_key, "rpa_x");
+        let nil = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "api_key": "rpa_x",
+                "secret": "rps_y",
+                "user_id": "00000000-0000-0000-0000-000000000000"
+            })))
+            .mount(&nil)
+            .await;
+        assert!(matches!(
+            claim(&nil.uri(), "a@b.com", "TOK").await,
+            Err(EnrollError::InvalidResponse)
+        ));
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_bad_prefix_or_oversized_fields() {
+        let user_id = uuid::Uuid::new_v4();
+
+        let bad_prefix = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "api_key": "xxx_bad", "secret": "rps_y", "user_id": user_id
+            })))
+            .mount(&bad_prefix)
+            .await;
+        assert!(matches!(
+            claim(&bad_prefix.uri(), "a@b.com", "TOK").await,
+            Err(EnrollError::InvalidResponse)
+        ));
+
+        let oversized = MockServer::start().await;
+        let oversized_key = format!("rpa_{}", "a".repeat(200));
+        Mock::given(method("POST"))
+            .and(path("/api/enroll/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "api_key": oversized_key, "secret": "rps_y", "user_id": user_id
+            })))
+            .mount(&oversized)
+            .await;
+        assert!(matches!(
+            claim(&oversized.uri(), "a@b.com", "TOK").await,
+            Err(EnrollError::InvalidResponse)
+        ));
     }
 
     #[tokio::test]

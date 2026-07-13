@@ -1402,9 +1402,12 @@ pub unsafe extern "C" fn replicant_store_credentials(
         Err(_) => return SyncResult::ErrorInvalidInput,
     };
 
+    // The C ABI for this call doesn't carry user_id yet (Task 7); store a nil
+    // placeholder so the encrypted-at-rest struct still round-trips.
     let creds = crate::secret_store::Credentials {
         api_key: api_key.to_string(),
         secret: secret.to_string(),
+        user_id: Uuid::nil(),
     };
 
     match crate::secret_store::store(std::path::Path::new(data_dir), &creds) {

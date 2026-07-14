@@ -1388,6 +1388,10 @@ pub unsafe extern "C" fn replicant_enroll_claim(
             .block_on(crate::enrollment::claim(&base_url, &email, &token))
             .map_err(|e| match e {
                 crate::enrollment::EnrollError::InvalidToken => SyncResult::ErrorInvalidInput,
+                // A malformed/incomplete 200 is a bad response, not a transport
+                // failure — keep it distinct from network errors so callers can
+                // tell "your code is wrong" from "the server misbehaved".
+                crate::enrollment::EnrollError::InvalidResponse => SyncResult::ErrorSerialization,
                 _ => SyncResult::ErrorConnection,
             })
     })

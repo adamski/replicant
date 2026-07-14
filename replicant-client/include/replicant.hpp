@@ -461,21 +461,26 @@ inline bool request_enrollment(const std::string& base_url, const std::string& e
 /** Exchanges a one-time token for a per-user credential. On success fills `out`
     (including the canonical user id) and returns true; returns false if the
     token is invalid/expired or the request failed. */
-inline bool claim_enrollment(const std::string& base_url, const std::string& email,
-                             const std::string& token, Credentials& out)
+// Returns Success and fills `out` on success; otherwise returns the specific
+// SyncResult (ErrorInvalidInput for a bad/expired token, ErrorSerialization for
+// a malformed response, ErrorConnection for transport failures) so callers can
+// give a precise error rather than a single catch-all.
+inline SyncResult claim_enrollment(const std::string& base_url, const std::string& email,
+                                   const std::string& token, Credentials& out)
 {
     char api_key[129] = {0};
     char secret[129] = {0};
     char user_id[37] = {0};
-    if (replicant_enroll_claim(base_url.c_str(), email.c_str(), token.c_str(), api_key,
-                               sizeof(api_key), secret, sizeof(secret), user_id, sizeof(user_id))
-        != Success)
-        return false;
+    SyncResult result =
+        replicant_enroll_claim(base_url.c_str(), email.c_str(), token.c_str(), api_key,
+                               sizeof(api_key), secret, sizeof(secret), user_id, sizeof(user_id));
+    if (result != Success)
+        return result;
 
     out.api_key = api_key;
     out.secret = secret;
     out.user_id = user_id;
-    return true;
+    return Success;
 }
 
 /** Loads the stored credential from `data_dir`. On success fills `out` and

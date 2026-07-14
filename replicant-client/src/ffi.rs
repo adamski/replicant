@@ -1295,6 +1295,10 @@ unsafe fn write_cstr_buf(out: *mut c_char, cap: usize, s: &str) -> bool {
 /// (no engine handle); runs on a dedicated thread with its own short-lived
 /// runtime so this is safe to call even from inside an async runtime context.
 ///
+/// BLOCKING: waits for the HTTP round-trip (connect ~10s / request ~30s
+/// timeouts). TODO(#40): add a completion-callback async variant
+/// (`replicant_enroll_request_async`) so consumers don't block a caller thread.
+///
 /// # Safety
 /// `base_url` and `email` must be valid, non-null C strings.
 #[no_mangle]
@@ -1335,6 +1339,10 @@ pub unsafe extern "C" fn replicant_enroll_request(
 /// the api_key, secret, and canonical user id (36-char UUID string) into the
 /// out buffers; each `*_cap` is the writable size of its buffer in bytes and
 /// the call fails (without overflowing) when a value does not fit.
+///
+/// BLOCKING: waits for the HTTP round-trip (connect ~10s / request ~30s
+/// timeouts). TODO(#40): add a completion-callback async variant
+/// (`replicant_enroll_claim_async`) so consumers don't block a caller thread.
 ///
 /// # Safety
 /// All string pointers must be valid, non-null C strings; each out pointer

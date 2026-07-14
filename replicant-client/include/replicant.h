@@ -69,6 +69,81 @@ typedef enum ReplicantEventType {
 } ReplicantEventType;
 
 /**
+ * Structured error code carried by every `SyncError` event.
+ *
+ * The numeric values are STABLE and exported to C via cbindgen. They are
+ * banded by the action a consumer should take:
+ *
+ * - `0` — unknown / uncategorized.
+ * - `1xxx` — **credential rejected**: the stored credential is bad. The
+ *   consumer should clear it and re-enroll. See [`is_credential_rejection`].
+ * - `2xxx` — **transient**: retry later; NEVER clear credentials. This band
+ *   includes the timestamp reasons (`2101`, `2102`), which are client/server
+ *   clock skew — not a bad credential — and so must never trigger a clear.
+ * - `3xxx` — **protocol**: the exchange was malformed or violated the contract.
+ * - `4xxx` — **identity drift**: the local identity diverged from the account;
+ *   refuse to sync, but do NOT clear credentials.
+ */
+enum ReplicantErrorCode
+#ifdef __cplusplus
+  : int32_t
+#endif // __cplusplus
+ {
+  /**
+   * Unknown or uncategorized error.
+   */
+  Unknown = 0,
+  /**
+   * The API key is not recognized by the server.
+   */
+  InvalidApiKey = 1001,
+  /**
+   * The HMAC signature did not verify.
+   */
+  InvalidSignature = 1002,
+  /**
+   * The credential authenticated but is not bound to an enrolled user.
+   */
+  CredentialNotEnrolled = 1003,
+  /**
+   * The socket/transport failed to connect.
+   */
+  ConnectionFailed = 2001,
+  /**
+   * A join or call timed out.
+   */
+  Timeout = 2002,
+  /**
+   * The signed timestamp was outside the server's acceptance window
+   * (client/server clock skew, not a bad credential).
+   */
+  TimestampExpired = 2101,
+  /**
+   * The timestamp field was malformed or unparseable (treated as clock skew).
+   */
+  InvalidTimestamp = 2102,
+  /**
+   * A required join parameter was missing.
+   */
+  MissingParams = 3001,
+  /**
+   * The join topic's user id did not match the credential's user.
+   */
+  TopicUserMismatch = 3002,
+  /**
+   * Generic malformed or unexpected server reply.
+   */
+  ProtocolError = 3003,
+  /**
+   * The server-reported user id diverged from the local identity.
+   */
+  IdentityDrift = 4001,
+};
+#ifndef __cplusplus
+typedef int32_t ReplicantErrorCode;
+#endif // __cplusplus
+
+/**
  * Result codes for C API functions
  */
 typedef enum ReplicantSyncResult {
@@ -124,10 +199,14 @@ typedef void (*SyncEventCallback)(enum ReplicantEventType event_type,
  *
  * # Parameters
  * * `event_type` - Always SyncError
+ * * `error_code` - Stable `ReplicantErrorCode` value; use
+ *   `replicant_error_is_credential_rejection` to decide whether to clear the
+ *   stored credential
  * * `error` - Error message (always non-null)
  * * `context` - User-defined context pointer
  */
 typedef void (*ErrorEventCallback)(enum ReplicantEventType event_type,
+                                   int32_t error_code,
                                    const char *error,
                                    void *context);
 
@@ -190,6 +269,18 @@ typedef struct Document {
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+/**
+ * Band check exposed over FFI: `true` iff `code` is a credential rejection.
+ *
+ * Bindings should treat a `true` result as "clear the stored credential and
+ * re-enroll". Implemented once here so consumers do not re-implement the band
+ * logic against the raw numeric values.
+ *
+ * # Safety
+ * This function is pure and takes the code by value; it is always safe to call.
+ */
+bool replicant_error_is_credential_rejection(int32_t code);
 
 /**
  * Create a new sync engine instance
@@ -613,7 +704,8 @@ enum ReplicantSyncResult replicant_rebuild_search_index(struct Replicant *engine
 
 /**
  * Requests an enrollment token be emailed to `email`. Standalone HTTP call
- * (no engine handle); spins a short-lived runtime to drive the async request.
+ * (no engine handle); runs on a dedicated thread with its own short-lived
+ * runtime so this is safe to call even from inside an async runtime context.
  *
  * # Safety
  * `base_url` and `email` must be valid, non-null C strings.

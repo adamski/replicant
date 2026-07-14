@@ -588,7 +588,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             app_state.last_sync = Some(Instant::now());
                             app_state.needs_refresh = true;
                         }
-                        SyncEvent::SyncError { message } => {
+                        SyncEvent::SyncError { message, .. } => {
                             app_state.add_activity(
                                 format!("Sync error: {}", message),
                                 ActivityType::Error,

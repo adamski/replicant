@@ -3,6 +3,7 @@
 //! This module provides test-only C-compatible functions for development and testing.
 //! These functions are only available in debug builds.
 
+use crate::error_code::ReplicantErrorCode;
 use crate::ffi::{Replicant, SyncResult};
 use uuid::Uuid;
 
@@ -62,9 +63,10 @@ pub unsafe extern "C" fn replicant_emit_test_event(
         }
         3 => engine.event_dispatcher.emit_sync_started(),
         4 => engine.event_dispatcher.emit_sync_completed(5),
-        5 => engine
-            .event_dispatcher
-            .emit_sync_error("Test error message from replicant_emit_test_event"),
+        5 => engine.event_dispatcher.emit_sync_error(
+            ReplicantErrorCode::Unknown,
+            "Test error message from replicant_emit_test_event",
+        ),
         6 => {
             let test_id = Uuid::new_v4();
             engine.event_dispatcher.emit_conflict_detected(&test_id);

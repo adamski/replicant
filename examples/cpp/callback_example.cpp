@@ -152,6 +152,7 @@ void sync_event_callback(
 // Error callback - receives error message
 void error_event_callback(
     EventType event_type,
+    int32_t error_code,
     const char* error,
     void* context)
 {

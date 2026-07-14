@@ -174,8 +174,14 @@ public:
     /** Called when the connection state changes. */
     std::function<void(bool connected)> onConnectionChanged;
 
-    /** Called when a sync error occurs. */
-    std::function<void(const std::string& message)> onSyncError;
+    /** Called when a sync error occurs.
+
+        @param errorCode  Stable ReplicantErrorCode value. Use
+                          replicant_error_is_credential_rejection() to decide
+                          whether to clear the stored credential and re-enroll.
+        @param message    Human-readable error message.
+    */
+    std::function<void(int32_t errorCode, const std::string& message)> onSyncError;
 
 private:
     void timerCallback() override;
@@ -186,7 +192,8 @@ private:
                                   const char* visibility, void* context);
     static void connectionCallback(EventType eventType, bool isConnected,
                                     uint32_t attemptNumber, void* context);
-    static void errorCallback(EventType eventType, const char* errorMessage, void* context);
+    static void errorCallback(EventType eventType, int32_t errorCode,
+                               const char* errorMessage, void* context);
 
     replicant::Client client;
 

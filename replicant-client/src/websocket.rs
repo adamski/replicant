@@ -1,7 +1,8 @@
+use crate::error_code::{error_code_for_reason, ReplicantErrorCode};
 use crate::events::EventDispatcher;
 use hmac::{Hmac, Mac};
 use phoenix_channels_client::{
-    Channel, ChannelStatus, Event, Payload, Socket, StatusesError, Topic,
+    Channel, ChannelJoinError, ChannelStatus, Event, Payload, Socket, StatusesError, Topic,
 };
 use replicant_core::{
     errors::ClientError,
@@ -83,7 +84,10 @@ impl WebSocketClient {
 
         socket.connect(CONNECT_TIMEOUT).await.map_err(|e| {
             if let Some(ref d) = event_dispatcher {
-                d.emit_sync_error(&format!("Connection failed: {:?}", e));
+                d.emit_sync_error(
+                    ReplicantErrorCode::ConnectionFailed,
+                    &format!("Connection failed: {:?}", e),
+                );
             }
             ws_err(format!("Connect failed: {:?}", e))
         })?;
@@ -105,7 +109,10 @@ impl WebSocketClient {
 
         let join_reply = channel.join(JOIN_TIMEOUT).await.map_err(|e| {
             if let Some(ref d) = event_dispatcher {
-                d.emit_sync_error(&format!("Join failed: {:?}", e));
+                d.emit_sync_error(
+                    error_code_for_join_reject(&e),
+                    &format!("Join failed: {:?}", e),
+                );
             }
             ws_err(format!("Join failed: {:?}", e))
         })?;
@@ -116,7 +123,7 @@ impl WebSocketClient {
         let reply_value = payload_to_value(&join_reply).unwrap_or_else(|| json!({}));
         if let Err(msg) = Self::verify_reply_identity(user_id, &reply_value) {
             if let Some(ref d) = event_dispatcher {
-                d.emit_sync_error(&msg);
+                d.emit_sync_error(ReplicantErrorCode::IdentityDrift, &msg);
             }
             let _ = channel.leave().await;
             return Err(ws_err(msg));
@@ -133,7 +140,10 @@ impl WebSocketClient {
 
         public_channel.join(JOIN_TIMEOUT).await.map_err(|e| {
             if let Some(ref d) = event_dispatcher {
-                d.emit_sync_error(&format!("Public channel join failed: {:?}", e));
+                d.emit_sync_error(
+                    error_code_for_join_reject(&e),
+                    &format!("Public channel join failed: {:?}", e),
+                );
             }
             ws_err(format!("Public channel join failed: {:?}", e))
         })?;
@@ -558,6 +568,26 @@ fn payload_to_value(p: &Payload) -> Option<Value> {
     match p {
         Payload::JSONPayload { json } => Some(Value::from(json.clone())),
         Payload::Binary { .. } => None,
+    }
+}
+
+/// Derive a structured [`ReplicantErrorCode`] from a phoenix channel-join error.
+///
+/// A server rejection carries a JSON payload `{"reason": "<atom>"}` (see
+/// `replicant_server` `Sync.Channel`); the reason is mapped through
+/// [`error_code_for_reason`]. A rejection with no `reason` field is `Unknown`.
+/// Join timeouts map to [`ReplicantErrorCode::Timeout`] and every other
+/// transport/socket failure to [`ReplicantErrorCode::ConnectionFailed`].
+pub fn error_code_for_join_reject(err: &ChannelJoinError) -> ReplicantErrorCode {
+    match err {
+        ChannelJoinError::Rejected { rejection } => payload_to_value(rejection)
+            .as_ref()
+            .and_then(|v| v.get("reason"))
+            .and_then(|r| r.as_str())
+            .map(error_code_for_reason)
+            .unwrap_or(ReplicantErrorCode::Unknown),
+        ChannelJoinError::Timeout => ReplicantErrorCode::Timeout,
+        _ => ReplicantErrorCode::ConnectionFailed,
     }
 }
 

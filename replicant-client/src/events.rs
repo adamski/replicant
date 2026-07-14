@@ -31,6 +31,7 @@
 //!
 //! This design eliminates the need for complex synchronization in user code.
 
+use crate::error_code::ReplicantErrorCode;
 use replicant_core::{errors::ClientError, SyncResult};
 use std::ffi::{c_char, c_void, CString};
 use std::sync::{mpsc, Mutex};
@@ -120,7 +121,10 @@ pub enum SyncEvent {
     /// Synchronization completed
     SyncCompleted { document_count: u64 },
     /// A sync error occurred
-    SyncError { message: String },
+    SyncError {
+        code: ReplicantErrorCode,
+        message: String,
+    },
     /// A conflict was detected
     ConflictDetected {
         document_id: String,
@@ -200,6 +204,7 @@ impl SyncEvent {
                 document_count: event.numeric_data,
             },
             EventType::SyncError => SyncEvent::SyncError {
+                code: event.error_code,
                 message: event
                     .error
                     .clone()
@@ -267,10 +272,17 @@ pub type SyncEventCallback =
 ///
 /// # Parameters
 /// * `event_type` - Always SyncError
+/// * `error_code` - Stable `ReplicantErrorCode` value; use
+///   `replicant_error_is_credential_rejection` to decide whether to clear the
+///   stored credential
 /// * `error` - Error message (always non-null)
 /// * `context` - User-defined context pointer
-pub type ErrorEventCallback =
-    extern "C" fn(event_type: EventType, error: *const c_char, context: *mut c_void);
+pub type ErrorEventCallback = extern "C" fn(
+    event_type: EventType,
+    error_code: i32,
+    error: *const c_char,
+    context: *mut c_void,
+);
 
 /// Connection event callback for ConnectionLost, ConnectionAttempted, ConnectionSucceeded
 ///
@@ -383,6 +395,7 @@ pub struct QueuedEvent {
     title: Option<String>,
     content: Option<String>,
     error: Option<String>,
+    error_code: ReplicantErrorCode,
     numeric_data: u64,
     boolean_data: bool,
     user_id: Option<String>,
@@ -801,19 +814,27 @@ impl EventDispatcher {
         );
     }
 
-    pub fn emit_sync_error(&self, error_message: &str) {
-        self.queue_event(
-            EventType::SyncError,
-            None,
-            None,
-            None,
-            Some(error_message),
-            0,
-            false,
-            None,
-            None,
-            None,
-        );
+    pub fn emit_sync_error(&self, code: ReplicantErrorCode, error_message: &str) {
+        // SyncError is the only event that carries a structured code, so it
+        // bypasses the shared `queue_event` (whose other callers have no code)
+        // and builds the queued event directly.
+        let queued_event = QueuedEvent {
+            event_type: EventType::SyncError,
+            document_id: None,
+            title: None,
+            content: None,
+            error: Some(error_message.to_string()),
+            error_code: code,
+            numeric_data: 0,
+            boolean_data: false,
+            user_id: None,
+            author_name: None,
+            visibility: None,
+        };
+
+        if self.event_sender.send(queued_event).is_err() {
+            tracing::error!("Failed to queue event - receiver may have been dropped");
+        }
     }
 
     pub fn emit_conflict_detected(&self, document_id: &Uuid) {
@@ -913,6 +934,7 @@ impl EventDispatcher {
             title: title.map(|t| t.to_string()),
             content: content.map(|c| serde_json::to_string(c).unwrap_or_else(|_| "{}".to_string())),
             error: error.map(|e| e.to_string()),
+            error_code: ReplicantErrorCode::Unknown,
             numeric_data,
             boolean_data,
             user_id,
@@ -1135,8 +1157,14 @@ impl EventDispatcher {
 
                 EventType::SyncError => {
                     let error_ptr = error_cstr.unwrap_or(std::ptr::null());
+                    let error_code = queued_event.error_code as i32;
                     for entry in error_callbacks.iter() {
-                        (entry.callback)(queued_event.event_type, error_ptr, entry.context);
+                        (entry.callback)(
+                            queued_event.event_type,
+                            error_code,
+                            error_ptr,
+                            entry.context,
+                        );
                     }
                 }
 
@@ -1494,6 +1522,7 @@ mod tests {
 
         extern "C" fn error_callback(
             _event_type: EventType,
+            _error_code: i32,
             _error: *const c_char,
             context: *mut c_void,
         ) {
@@ -1508,7 +1537,7 @@ mod tests {
             )
             .unwrap();
 
-        dispatcher.emit_sync_error("Test error");
+        dispatcher.emit_sync_error(ReplicantErrorCode::Unknown, "Test error");
 
         let processed = dispatcher.process_events().unwrap();
         assert_eq!(processed, 1);

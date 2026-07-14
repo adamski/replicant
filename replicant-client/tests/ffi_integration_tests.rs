@@ -153,6 +153,7 @@ extern "C" fn sync_capture_callback(
 
 extern "C" fn error_capture_callback(
     _event_type: EventType,
+    _error_code: i32,
     error: *const c_char,
     context: *mut c_void,
 ) {

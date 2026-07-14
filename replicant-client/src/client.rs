@@ -1,4 +1,7 @@
-use crate::{database::ClientDatabase, events::EventDispatcher, websocket::WebSocketClient};
+use crate::{
+    database::ClientDatabase, error_code::ReplicantErrorCode, events::EventDispatcher,
+    websocket::WebSocketClient,
+};
 use replicant_core::{
     errors::ClientError,
     models::{Document, SyncStatus},
@@ -1364,10 +1367,10 @@ impl Client {
                         error.as_deref().unwrap_or("unknown error")
                     );
                     // Could emit an error event here
-                    event_dispatcher.emit_sync_error(&format!(
-                        "Create failed: {}",
-                        error.as_deref().unwrap_or("unknown")
-                    ));
+                    event_dispatcher.emit_sync_error(
+                        ReplicantErrorCode::Unknown,
+                        &format!("Create failed: {}", error.as_deref().unwrap_or("unknown")),
+                    );
                 }
             }
 
@@ -1408,10 +1411,10 @@ impl Client {
                         document_id,
                         error.as_deref().unwrap_or("unknown error")
                     );
-                    event_dispatcher.emit_sync_error(&format!(
-                        "Update failed: {}",
-                        error.as_deref().unwrap_or("unknown")
-                    ));
+                    event_dispatcher.emit_sync_error(
+                        ReplicantErrorCode::Unknown,
+                        &format!("Update failed: {}", error.as_deref().unwrap_or("unknown")),
+                    );
                 }
             }
 
@@ -1436,10 +1439,10 @@ impl Client {
                         document_id,
                         error.as_deref().unwrap_or("unknown error")
                     );
-                    event_dispatcher.emit_sync_error(&format!(
-                        "Delete failed: {}",
-                        error.as_deref().unwrap_or("unknown")
-                    ));
+                    event_dispatcher.emit_sync_error(
+                        ReplicantErrorCode::Unknown,
+                        &format!("Delete failed: {}", error.as_deref().unwrap_or("unknown")),
+                    );
                 }
             }
 

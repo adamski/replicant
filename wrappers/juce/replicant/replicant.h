@@ -118,6 +118,11 @@ public:
         @throws replicant::SyncException on failure */
     std::string getAllDocuments();
 
+    /** Gets all document ids as a JSON array.
+        @param includeDeleted If true, include tombstoned (deleted) documents.
+        @throws replicant::SyncException on failure */
+    std::string getAllDocumentIds(bool includeDeleted);
+
     //==============================================================================
     /** Returns true if connected to the sync server. */
     bool isConnected();

@@ -121,6 +121,11 @@ std::string Replicant::getAllDocuments()
     return client.get_all_documents();
 }
 
+std::string Replicant::getAllDocumentIds(bool includeDeleted)
+{
+    return client.get_all_document_ids(includeDeleted);
+}
+
 //==============================================================================
 bool Replicant::isConnected()
 {

@@ -670,6 +670,16 @@ impl Client {
         Ok(docs)
     }
 
+    pub async fn get_all_document_ids(&self, include_deleted: bool) -> SyncResult<Vec<Uuid>> {
+        let ids = self.db.get_all_document_ids(include_deleted).await?;
+        tracing::info!(
+            "CLIENT: get_all_document_ids({}) returning {} ids",
+            include_deleted,
+            ids.len()
+        );
+        Ok(ids)
+    }
+
     pub async fn count_documents(&self) -> SyncResult<usize> {
         let docs = self.db.get_all_documents().await?;
         Ok(docs.len())

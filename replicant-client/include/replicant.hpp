@@ -264,6 +264,29 @@ public:
     }
 
     /**
+     * Get all document ids as a JSON array
+     *
+     * @param include_deleted If true, include tombstoned (deleted) documents
+     * @return JSON array of id strings (empty array [] if no documents)
+     * @throws SyncException if retrieval fails
+     */
+    std::string get_all_document_ids(bool include_deleted)
+    {
+        char* ids = nullptr;
+        SyncResult result = replicant_get_all_document_ids(
+            handle.get(),
+            include_deleted,
+            &ids
+        );
+
+        check_result(result);
+
+        std::string all_ids(ids);
+        replicant_string_free(ids);
+        return all_ids;
+    }
+
+    /**
      * Get the count of local documents
      *
      * @return Number of documents in local database

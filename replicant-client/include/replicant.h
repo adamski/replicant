@@ -588,6 +588,24 @@ enum ReplicantSyncResult replicant_get_all_documents(struct Replicant *engine,
                                                      char **out_documents);
 
 /**
+ * Get all document ids as a JSON array
+ *
+ * # Arguments
+ * * `engine` - Sync engine instance
+ * * `include_deleted` - If true, include tombstoned (deleted) documents
+ * * `out_ids` - Output pointer for JSON array of id strings (caller must free with replicant_string_free)
+ *
+ * # Returns
+ * * SyncResult::Success with JSON array (empty array [] if no documents)
+ *
+ * # Safety
+ * Caller must ensure engine is valid and out_ids is a valid pointer
+ */
+enum ReplicantSyncResult replicant_get_all_document_ids(struct Replicant *engine,
+                                                        bool include_deleted,
+                                                        char **out_ids);
+
+/**
  * Get the count of local documents
  *
  * # Arguments

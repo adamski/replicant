@@ -190,6 +190,48 @@ async fn test_count_documents_excludes_deleted() {
 }
 
 #[tokio::test]
+async fn test_get_all_document_ids_include_deleted() {
+    let db = setup_test_db().await;
+    let user_id = Uuid::new_v4();
+
+    // Create 3 documents
+    let doc1 = make_document(user_id, "Document 1", "Content 1", 1);
+    let doc2 = make_document(user_id, "Document 2", "Content 2", 1);
+    let doc3 = make_document(user_id, "Document 3", "Content 3", 1);
+
+    db.save_document(&doc1).await.unwrap();
+    db.save_document(&doc2).await.unwrap();
+    db.save_document(&doc3).await.unwrap();
+
+    // Delete one document
+    db.delete_document(&doc2.id).await.unwrap();
+
+    let live_ids = db.get_all_document_ids(false).await.unwrap();
+    assert_eq!(
+        live_ids.len(),
+        2,
+        "Live ids should exclude the deleted document"
+    );
+    assert!(live_ids.contains(&doc1.id));
+    assert!(live_ids.contains(&doc3.id));
+    assert!(
+        !live_ids.contains(&doc2.id),
+        "Deleted document should not be included when include_deleted is false"
+    );
+
+    let all_ids = db.get_all_document_ids(true).await.unwrap();
+    assert_eq!(
+        all_ids.len(),
+        3,
+        "All ids should include the deleted document"
+    );
+    assert!(
+        all_ids.contains(&doc2.id),
+        "Deleted document should be included when include_deleted is true"
+    );
+}
+
+#[tokio::test]
 async fn test_attribution_persists_across_save_and_load() {
     let db = setup_test_db().await;
     let mut doc = make_document(Uuid::new_v4(), "Attributed", "body", 1);

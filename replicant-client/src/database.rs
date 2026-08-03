@@ -359,6 +359,24 @@ impl ClientDatabase {
             .map(|row| DbHelpers::parse_document(&row))
             .collect()
     }
+
+    pub async fn get_all_document_ids(&self, include_deleted: bool) -> SyncResult<Vec<Uuid>> {
+        let query = if include_deleted {
+            "SELECT id FROM documents"
+        } else {
+            "SELECT id FROM documents WHERE deleted_at IS NULL"
+        };
+
+        let rows = sqlx::query(query).fetch_all(&self.pool).await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let id: String = row.get("id");
+                Ok(Uuid::parse_str(&id)?)
+            })
+            .collect()
+    }
+
     pub async fn count_documents(&self) -> SyncResult<i64> {
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE deleted_at IS NULL")

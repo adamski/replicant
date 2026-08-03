@@ -1009,6 +1009,53 @@ pub unsafe extern "C" fn replicant_get_all_documents(
     }
 }
 
+/// Get all document ids as a JSON array
+///
+/// # Arguments
+/// * `engine` - Sync engine instance
+/// * `include_deleted` - If true, include tombstoned (deleted) documents
+/// * `out_ids` - Output pointer for JSON array of id strings (caller must free with replicant_string_free)
+///
+/// # Returns
+/// * SyncResult::Success with JSON array (empty array [] if no documents)
+///
+/// # Safety
+/// Caller must ensure engine is valid and out_ids is a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn replicant_get_all_document_ids(
+    engine: *mut Replicant,
+    include_deleted: bool,
+    out_ids: *mut *mut c_char,
+) -> SyncResult {
+    if engine.is_null() || out_ids.is_null() {
+        return SyncResult::ErrorInvalidInput;
+    }
+
+    let engine = &*engine;
+
+    let ids = match engine
+        .runtime
+        .block_on(async { engine.database.get_all_document_ids(include_deleted).await })
+    {
+        Ok(d) => d,
+        Err(_) => return SyncResult::ErrorDatabase,
+    };
+
+    // Serialize ids array to JSON
+    let json = match serde_json::to_string(&ids) {
+        Ok(j) => j,
+        Err(_) => return SyncResult::ErrorSerialization,
+    };
+
+    match CString::new(json) {
+        Ok(c_str) => {
+            *out_ids = c_str.into_raw();
+            SyncResult::Success
+        }
+        Err(_) => SyncResult::ErrorSerialization,
+    }
+}
+
 /// Get the count of local documents
 ///
 /// # Arguments

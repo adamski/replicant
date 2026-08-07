@@ -174,7 +174,10 @@ for i in $(seq 1 60); do
 done
 
 # --- Run interop suite -------------------------------------------------------
-log "Running phoenix_integration suite against clean DB"
+# INTEROP_TEST_CMD lets a consumer suite (e.g. entonal-common's
+# TonalDBSyncIntegrationTest) run under this harness's boot/seed/teardown in
+# place of the cargo suite. It runs with the same seeded-credential env.
+log "Running ${INTEROP_TEST_CMD:-phoenix_integration suite} against clean DB"
 set +e
 ( cd "$CLIENT_CRATE" && \
   RUN_INTEGRATION_TESTS=1 \
@@ -184,7 +187,7 @@ set +e
   REPLICANT_LEGACY_API_KEY="$LEGACY_API_KEY" \
   REPLICANT_LEGACY_API_SECRET="$LEGACY_API_SECRET" \
   SYNC_SERVER_URL="ws://localhost:$SERVER_PORT/socket/websocket" \
-  cargo test --test integration ${1:+"$1"} -- --test-threads=1 )
+  bash -c "${INTEROP_TEST_CMD:-cargo test --test integration ${1:+\"$1\"} -- --test-threads=1}" )
 test_exit=$?
 set -e
 

@@ -292,10 +292,18 @@ impl WebSocketClient {
                                 }
                             }
                             "document_updated" => {
-                                if let Some(patch) = payload_json.as_ref().and_then(json_to_patch) {
-                                    let _ = tx_clone
-                                        .send(ServerMessage::DocumentUpdated { patch })
-                                        .await;
+                                match payload_json.as_ref().and_then(json_to_patch) {
+                                    Some(patch) => {
+                                        let _ = tx_clone
+                                            .send(ServerMessage::DocumentUpdated { patch })
+                                            .await;
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            "dropping malformed document_updated payload: {:?}",
+                                            payload_json
+                                        );
+                                    }
                                 }
                             }
                             "document_deleted" => {
@@ -791,12 +799,8 @@ fn json_to_patch(j: &Value) -> Option<ServerDocumentPatch> {
     Some(ServerDocumentPatch {
         document_id: Uuid::parse_str(id_str).ok()?,
         patch,
-        sync_revision: j.get("sync_revision").and_then(|v| v.as_i64()).unwrap_or(0),
-        content_hash: j
-            .get("content_hash")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_default(),
+        sync_revision: j.get("sync_revision")?.as_i64()?,
+        content_hash: j.get("content_hash")?.as_str().map(String::from)?,
     })
 }
 
@@ -875,6 +879,26 @@ mod tests {
         );
         assert_eq!(patch.sync_revision, 7);
         assert_eq!(patch.content_hash, "abc123");
+    }
+
+    #[test]
+    fn json_to_patch_missing_sync_revision_is_none() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "content_hash": "abc123"
+        });
+        assert!(json_to_patch(&j).is_none());
+    }
+
+    #[test]
+    fn json_to_patch_missing_content_hash_is_none() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "sync_revision": 7
+        });
+        assert!(json_to_patch(&j).is_none());
     }
 
     #[test]

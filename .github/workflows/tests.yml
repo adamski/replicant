@@ -102,7 +102,7 @@ jobs:
     # checkout/credential/health steps are needed here.
     - name: Boot stripped server + run integration suite
       env:
-        REPLICANT_SERVER_REF: '332a8ba'  # origin/main (PR #7 merged: claim -> user_id)
+        REPLICANT_SERVER_REF: 'ef335c2'  # origin/main (PR #8 merged: canonical hash + get_document)
         REPLICANT_SERVER_DIR: /tmp/replicant-server-interop
         INTEROP_DB_HOST: localhost
         INTEROP_DB_USER: postgres

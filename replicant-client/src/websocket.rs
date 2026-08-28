@@ -406,6 +406,10 @@ impl WebSocketClient {
                 success,
                 error,
                 sync_revision,
+                reason: None,
+                current_revision: None,
+                current_content: None,
+                current_hash: None,
             })
             .await;
         Ok(())

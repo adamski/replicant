@@ -24,6 +24,13 @@ use uuid::Uuid;
 // Ping intervals for heartbeat detection
 const PING_INTERVAL: Duration = Duration::from_secs(10); // Send ping every 10 seconds
 
+/// Rebase rounds a single document may spend on `hash_mismatch` in one session.
+///
+/// Two clients writing to the same document in a tight loop can reject each
+/// other indefinitely; the budget turns that live-lock into a `Conflict` the
+/// user can see.
+const MAX_REBASE_ATTEMPTS: u32 = 3;
+
 #[derive(Debug, Clone)]
 struct PendingUpload {
     operation_type: UploadType,
@@ -1944,6 +1951,7 @@ impl Client {
                 success,
                 error,
                 sync_revision,
+                ..
             } => {
                 if success {
                     tracing::info!(
@@ -2694,6 +2702,7 @@ impl Client {
 #[cfg(test)]
 mod broadcast_guard_tests {
     use super::*;
+    use crate::events::SyncEvent;
     use replicant_core::models::ServerDocumentPatch;
     use replicant_core::patches::calculate_checksum;
     use replicant_core::protocol::ErrorCode;
@@ -2729,6 +2738,67 @@ mod broadcast_guard_tests {
     fn retry_probe() -> (UploadRetry, mpsc::Receiver<()>) {
         let (tx, rx) = mpsc::channel(10);
         (UploadRetry::new(tx), rx)
+    }
+
+    /// A rejected update ack. `current` carries the server's state at rejection
+    /// time, which the server only sends for `hash_mismatch`.
+    fn update_rejected(
+        document_id: Uuid,
+        reason: &str,
+        current: Option<(i64, Value, String)>,
+    ) -> ServerMessage {
+        let (current_revision, current_content, current_hash) = match current {
+            Some((revision, content, hash)) => (Some(revision), Some(content), Some(hash)),
+            None => (None, None, None),
+        };
+        ServerMessage::DocumentUpdatedResponse {
+            document_id,
+            success: false,
+            error: Some(format!("server rejected update: {}", reason)),
+            sync_revision: None,
+            reason: Some(reason.to_string()),
+            current_revision,
+            current_content,
+            current_hash,
+        }
+    }
+
+    /// Deliver an upload ack through the tracking handler with the document's
+    /// upload in flight, exactly as the message loop would.
+    async fn deliver_ack(
+        db: &Arc<ClientDatabase>,
+        events: &Arc<EventDispatcher>,
+        upload_retry: &UploadRetry,
+        id: Uuid,
+        ack: ServerMessage,
+    ) {
+        let (pending_uploads, deferred_messages, notifier, protection) = tracking_args();
+        pending_uploads.lock().await.insert(id, in_flight_upload());
+        let (source, _canned) = recording_source();
+
+        Client::handle_server_message_with_tracking(
+            ack,
+            db,
+            Uuid::new_v4(),
+            events,
+            &pending_uploads,
+            &notifier,
+            &protection,
+            &deferred_messages,
+            upload_retry,
+            &source,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            pending_uploads.lock().await.is_empty(),
+            "an ack must settle the upload before anything is resent"
+        );
+    }
+
+    async fn queued_base_hash(db: &Arc<ClientDatabase>, id: &Uuid) -> Option<String> {
+        db.get_queued_patch(id).await.unwrap().and_then(|(_, h)| h)
     }
 
     async fn resync_attempts(canned: &Arc<CannedResync>) -> Vec<Uuid> {
@@ -3106,12 +3176,7 @@ mod broadcast_guard_tests {
         db.mark_synced(&id).await.unwrap();
         let (upload_retry, mut retry_rx) = retry_probe();
         Client::handle_server_message_with_tracking(
-            ServerMessage::DocumentUpdatedResponse {
-                document_id: id,
-                success: false,
-                error: Some("rejected".to_string()),
-                sync_revision: None,
-            },
+            update_rejected(id, "server_error", None),
             &db,
             Uuid::new_v4(),
             &dispatcher(),
@@ -3705,5 +3770,249 @@ mod broadcast_guard_tests {
         .unwrap();
 
         assert!(deleted_at(&db, &id).await.is_some());
+    }
+
+    // ---------------------------------------------------------------------
+    // hash_mismatch -> rebase and resend (Task 5)
+    // ---------------------------------------------------------------------
+
+    /// Collect emitted events. Emission is queued to the dispatcher's callback
+    /// thread, so readers must poll rather than read once.
+    fn event_probe(events: &Arc<EventDispatcher>) -> Arc<std::sync::Mutex<Vec<SyncEvent>>> {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        events
+            .register_rust_callback(move |event| sink.lock().unwrap().push(event))
+            .unwrap();
+        seen
+    }
+
+    async fn wait_for_event(
+        seen: &Arc<std::sync::Mutex<Vec<SyncEvent>>>,
+        matches: impl Fn(&SyncEvent) -> bool,
+    ) -> bool {
+        for _ in 0..100 {
+            if seen.lock().unwrap().iter().any(&matches) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    fn base_content() -> Value {
+        json!({"title": "base", "referenceFrequency": 440.0})
+    }
+
+    #[tokio::test]
+    async fn hash_mismatch_rebases_the_queued_patch_onto_the_server_content() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        // This client edited referenceFrequency; the winner edited title.
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+
+        let server = json!({"title": "winner", "referenceFrequency": 440.0});
+        let server_hash = calculate_checksum(&server);
+        let (upload_retry, mut retry_rx) = retry_probe();
+
+        deliver_ack(
+            &db,
+            &dispatcher(),
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((2, server.clone(), server_hash.clone())),
+            ),
+        )
+        .await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(
+            doc.content,
+            json!({"title": "winner", "referenceFrequency": 441.0}),
+            "the rebase must carry BOTH edits, not overwrite the winner's"
+        );
+        assert_eq!(
+            doc.sync_revision, 2,
+            "the server's revision must be adopted"
+        );
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending),
+            "the rebased edit is still unsent"
+        );
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            1,
+            "the rebase must replace the queue row, not add to it"
+        );
+        assert_eq!(
+            queued_base_hash(&db, &id).await.as_deref(),
+            Some(server_hash.as_str()),
+            "the resend must be locked to the server's current hash"
+        );
+        assert!(
+            retry_rx.try_recv().is_ok(),
+            "a successful rebase must trigger the resend"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_patch_that_no_longer_applies_settles_as_a_conflict() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+
+        // The winner removed the very field this client edited, so the queued
+        // `replace /referenceFrequency` can no longer apply.
+        let server = json!({"title": "winner"});
+        let events = dispatcher();
+        let seen = event_probe(&events);
+        let (upload_retry, mut retry_rx) = retry_probe();
+
+        deliver_ack(
+            &db,
+            &events,
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((2, server.clone(), calculate_checksum(&server))),
+            ),
+        )
+        .await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, server, "the server's copy becomes local truth");
+        assert_eq!(doc.sync_revision, 2);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Conflict)
+        );
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            0,
+            "an unresolvable patch must not stay queued"
+        );
+        assert!(
+            retry_rx.try_recv().is_err(),
+            "a conflict must not schedule a resend"
+        );
+        assert!(
+            wait_for_event(&seen, |e| matches!(e, SyncEvent::ConflictDetected { .. })).await,
+            "the host app must be told about the conflict"
+        );
+        assert!(
+            wait_for_event(&seen, |e| matches!(
+                e,
+                SyncEvent::SyncError {
+                    code: ReplicantErrorCode::UpdateConflict,
+                    ..
+                }
+            ))
+            .await,
+            "the conflict must carry a structured error code"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebases_are_capped_then_the_document_conflicts() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+
+        // One shared UploadRetry: the attempt budget is per document per session.
+        let (upload_retry, _retry_rx) = retry_probe();
+        let events = dispatcher();
+
+        for round in 1..=MAX_REBASE_ATTEMPTS {
+            let server = json!({"title": format!("winner {}", round), "referenceFrequency": 440.0});
+            deliver_ack(
+                &db,
+                &events,
+                &upload_retry,
+                id,
+                update_rejected(
+                    id,
+                    "hash_mismatch",
+                    Some((
+                        1 + round as i64,
+                        server.clone(),
+                        calculate_checksum(&server),
+                    )),
+                ),
+            )
+            .await;
+            assert_eq!(
+                db.get_sync_status(&id).await.unwrap(),
+                Some(SyncStatus::Pending),
+                "round {} is within budget and must rebase",
+                round
+            );
+        }
+
+        let last = json!({"title": "winner last", "referenceFrequency": 440.0});
+        deliver_ack(
+            &db,
+            &events,
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((99, last.clone(), calculate_checksum(&last))),
+            ),
+        )
+        .await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Conflict),
+            "the budget must terminate the live-lock"
+        );
+        assert_eq!(doc.content, last, "the server's copy becomes local truth");
+        assert_eq!(doc.sync_revision, 99);
+    }
+
+    #[tokio::test]
+    async fn a_rejection_without_server_state_falls_back_to_a_plain_retry() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+
+        let (upload_retry, mut retry_rx) = retry_probe();
+
+        // A hash_mismatch whose current_* fields are missing cannot be rebased.
+        deliver_ack(
+            &db,
+            &dispatcher(),
+            &upload_retry,
+            id,
+            update_rejected(id, "hash_mismatch", None),
+        )
+        .await;
+
+        assert!(
+            retry_rx.try_recv().is_ok(),
+            "without server state there is nothing to rebase, so retry blindly"
+        );
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, local, "local state must be left alone");
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending)
+        );
     }
 }

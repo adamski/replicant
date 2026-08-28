@@ -102,6 +102,21 @@ pub enum ServerMessage {
         success: bool,
         error: Option<String>,
         sync_revision: Option<i64>,
+        /// Machine-readable rejection reason (`hash_mismatch`, `not_found`,
+        /// `missing_hash`, ...). Optional so a reply carrying only a free-form
+        /// `error` still parses.
+        #[serde(default)]
+        reason: Option<String>,
+        /// Server state at the moment the update was rejected. Sent with
+        /// `hash_mismatch` so the client can rebase its queued patch onto the
+        /// current content instead of dropping the edit. All three are absent
+        /// for every other reason.
+        #[serde(default)]
+        current_revision: Option<i64>,
+        #[serde(default)]
+        current_content: Option<serde_json::Value>,
+        #[serde(default)]
+        current_hash: Option<String>,
     },
     DocumentDeletedResponse {
         document_id: Uuid,

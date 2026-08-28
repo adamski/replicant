@@ -19,6 +19,8 @@
 /// - `3xxx` — **protocol**: the exchange was malformed or violated the contract.
 /// - `4xxx` — **identity drift**: the local identity diverged from the account;
 ///   refuse to sync, but do NOT clear credentials.
+/// - `5xxx` — **unresolved divergence**: a local edit could not be reconciled
+///   with the server's copy. Retrying cannot help; surface it to the user.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplicantErrorCode {
@@ -55,6 +57,11 @@ pub enum ReplicantErrorCode {
     // 4xxx — identity drift (refuse to sync; do NOT clear credentials)
     /// The server-reported user id diverged from the local identity.
     IdentityDrift = 4001,
+
+    // 5xxx — unresolved divergence (surface to the user; do NOT retry)
+    /// A local edit could not be rebased onto the server's current content.
+    /// The server's copy is now local truth and the edit was discarded.
+    UpdateConflict = 5001,
 }
 
 /// True iff `code` is in the credential-rejection band (`1xxx`).
@@ -177,6 +184,7 @@ mod tests {
         ));
         assert!(!is_credential_rejection(ReplicantErrorCode::ProtocolError));
         assert!(!is_credential_rejection(ReplicantErrorCode::IdentityDrift));
+        assert!(!is_credential_rejection(ReplicantErrorCode::UpdateConflict));
     }
 
     #[test]

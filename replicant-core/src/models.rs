@@ -147,6 +147,26 @@ mod tests {
         assert_eq!(patch.sync_revision, 7);
         assert_eq!(patch.content_hash, "abc123");
     }
+
+    #[test]
+    fn server_document_patch_tolerates_unknown_fields() {
+        // The server may add fields later; unrecognized keys must not break
+        // deserialization.
+        let json = r#"{
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "sync_revision": 7,
+            "content_hash": "abc123",
+            "future_field": {"nested": "data"}
+        }"#;
+        let patch: ServerDocumentPatch = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            patch.document_id.to_string(),
+            "71b2b712-7878-56ee-8323-43809b8198a5"
+        );
+        assert_eq!(patch.sync_revision, 7);
+        assert_eq!(patch.content_hash, "abc123");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

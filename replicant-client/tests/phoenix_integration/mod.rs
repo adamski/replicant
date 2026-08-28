@@ -121,6 +121,29 @@ pub async fn connect_subject(db_url: &str) -> replicant_client::Client {
     client
 }
 
+/// Open a real `Client` on an existing database with no reachable server, so
+/// local edits queue instead of uploading. Port 1 refuses immediately, which is
+/// as offline as a client can be while still running its full write path.
+pub async fn open_offline_subject(db_url: &str) -> replicant_client::Client {
+    let client = replicant_client::Client::with_event_dispatcher(
+        db_url,
+        "ws://127.0.0.1:1/socket/websocket",
+        TEST_EMAIL,
+        &test_api_key(),
+        &test_api_secret(),
+        Some(canonical_user_id()),
+        None,
+    )
+    .await
+    .expect("offline client should still open");
+
+    assert!(
+        !client.is_connected(),
+        "the offline client must not reach a server"
+    );
+    client
+}
+
 /// A broadcast event received from the server
 #[derive(Debug)]
 pub struct BroadcastEvent {

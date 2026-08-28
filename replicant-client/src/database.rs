@@ -1,5 +1,6 @@
 use crate::queries::{DbHelpers, Queries};
 use json_patch;
+use replicant_core::patches::{calculate_checksum, create_patch};
 use replicant_core::protocol::ChangeEventType;
 use replicant_core::{
     models::{Document, SyncStatus},
@@ -341,6 +342,11 @@ impl ClientDatabase {
     /// `hash_mismatch` rebase passes the merged result of replaying the queued
     /// patch onto the server's content.
     ///
+    /// `base_content` is the server content being rebased onto, and
+    /// `base_content_hash` its hash. The queued patch is the diff between them,
+    /// so it is derived here rather than passed in — the same base the row
+    /// stores for later regeneration by [`Self::get_queued_patch`].
+    ///
     /// Prior `update` rows for the document are deleted rather than added to.
     /// `get_queued_patch` reads exactly one row, so a leftover row with an
     /// outdated base hash would be retried — and rejected — forever.
@@ -357,7 +363,7 @@ impl ClientDatabase {
         document_id: &Uuid,
         new_content: &serde_json::Value,
         new_sync_revision: i64,
-        patch: &json_patch::Patch,
+        base_content: &serde_json::Value,
         base_content_hash: &str,
         new_status: SyncStatus,
         expected: &DocumentPreImage,
@@ -395,12 +401,13 @@ impl ClientDatabase {
             .await?;
 
         sqlx::query(
-            "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash) VALUES (?, ?, ?, ?)",
+            "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash, base_content) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(document_id.to_string())
         .bind(ChangeEventType::Update.to_string())
-        .bind(serde_json::to_string(patch)?)
+        .bind(serde_json::to_string(&create_patch(base_content, new_content)?)?)
         .bind(base_content_hash)
+        .bind(serde_json::to_string(base_content)?)
         .execute(&mut *tx)
         .await?;
 
@@ -669,14 +676,33 @@ impl ClientDatabase {
         Ok(())
     }
 
-    /// CRITICAL: Atomically save document and queue patch
-    /// This prevents data loss if app crashes between separate operations
+    /// Atomically save a document and queue the edit for upload, so a crash
+    /// between the two can never lose the edit.
+    ///
+    /// `base_content` is the content this edit was made against. A document
+    /// keeps exactly ONE queued `update` row, whose base is the last state the
+    /// server acknowledged: the first pending edit stores `base_content`, and
+    /// every later edit made before that row is sent keeps the base it already
+    /// has. Appending a row per edit instead would send the newest fragment
+    /// paired with a base the server never had, which the server rejects as a
+    /// `hash_mismatch`.
+    ///
+    /// The base only moves when the row is cleared (an ack) or rebased onto
+    /// fresh server content; see [`Self::rebase_pending_document_if_unchanged`].
+    ///
+    /// `patch` is stored as given only for rows with no base (`create` and
+    /// `delete`). For an update the stored patch is derived from the retained
+    /// base and `doc.content`, which is what [`Self::get_queued_patch`] serves.
+    ///
+    /// A pre-upgrade row with no `base_content` cannot be extended — its base is
+    /// unrecoverable — so it is replaced by a row based on this edit. The
+    /// earlier offline edit then resolves through the `hash_mismatch` rebase.
     pub async fn save_document_and_queue_patch(
         &self,
         doc: &Document,
         patch: &json_patch::Patch,
         operation_type: ChangeEventType,
-        old_content_hash: Option<String>,
+        base_content: Option<&serde_json::Value>,
     ) -> SyncResult<()> {
         // Start a transaction for atomicity
         let mut tx = self.pool.begin().await?;
@@ -698,24 +724,57 @@ impl ClientDatabase {
             .await?;
 
         // Queue sync operation (in transaction)
-        let patch_json = serde_json::to_string(patch)?;
-
-        // Store old_content_hash if provided (for update operations)
-        if let Some(hash) = old_content_hash {
-            sqlx::query(
-                "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash) VALUES (?, ?, ?, ?)"
+        if let Some(edit_base) = base_content {
+            // An update: collapse onto the single row, keeping whatever base it
+            // already carries.
+            let existing = sqlx::query(
+                "SELECT base_content, old_content_hash FROM sync_queue \
+                 WHERE document_id = ? AND operation_type = ? ORDER BY id ASC LIMIT 1",
             )
             .bind(doc.id.to_string())
             .bind(operation_type.to_string())
-            .bind(patch_json)
-            .bind(hash)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            let retained = match existing {
+                Some(row) => {
+                    let base_json: Option<String> = row.try_get("base_content")?;
+                    let hash: Option<String> = row.try_get("old_content_hash")?;
+                    base_json
+                        .map(|json| serde_json::from_str::<serde_json::Value>(&json))
+                        .transpose()?
+                        .map(|base| {
+                            let hash = hash.unwrap_or_else(|| calculate_checksum(&base));
+                            (base, hash)
+                        })
+                }
+                None => None,
+            };
+
+            let (base, base_hash) =
+                retained.unwrap_or_else(|| (edit_base.clone(), calculate_checksum(edit_base)));
+
+            sqlx::query("DELETE FROM sync_queue WHERE document_id = ? AND operation_type = ?")
+                .bind(doc.id.to_string())
+                .bind(operation_type.to_string())
+                .execute(&mut *tx)
+                .await?;
+
+            sqlx::query(
+                "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash, base_content) VALUES (?, ?, ?, ?, ?)"
+            )
+            .bind(doc.id.to_string())
+            .bind(operation_type.to_string())
+            .bind(serde_json::to_string(&create_patch(&base, &doc.content)?)?)
+            .bind(base_hash)
+            .bind(serde_json::to_string(&base)?)
             .execute(&mut *tx)
             .await?;
         } else {
             sqlx::query(Queries::INSERT_SYNC_QUEUE)
                 .bind(doc.id.to_string()) // document_id
                 .bind(operation_type.to_string()) // operation_type
-                .bind(patch_json) // patch
+                .bind(serde_json::to_string(patch)?) // patch
                 .execute(&mut *tx)
                 .await?;
         }
@@ -736,26 +795,60 @@ impl ClientDatabase {
         Ok(())
     }
 
+    /// The document's queued update as one cumulative diff, with the hash of the
+    /// base it applies to.
+    ///
+    /// The patch is regenerated here from the row's stored `base_content` and
+    /// the document's CURRENT content, so however many local edits accumulated
+    /// since the base was set, the upload is a single diff the server can apply
+    /// to the state it actually holds.
+    ///
+    /// `Ok(None)` means nothing is queued — the caller's signal that a pending
+    /// document is a create, not an update.
+    ///
+    /// A row written before `base_content` existed falls back to its stored
+    /// patch and hash, which is what a pre-upgrade client would have sent.
     pub async fn get_queued_patch(
         &self,
         document_id: &Uuid,
     ) -> SyncResult<Option<(json_patch::Patch, Option<String>)>> {
         let row = sqlx::query(
-            "SELECT patch, old_content_hash FROM sync_queue WHERE document_id = ? AND operation_type = 'update' ORDER BY created_at DESC, id DESC LIMIT 1"
+            "SELECT patch, old_content_hash, base_content FROM sync_queue WHERE document_id = ? AND operation_type = 'update' ORDER BY created_at DESC, id DESC LIMIT 1"
         )
         .bind(document_id.to_string())
         .fetch_optional(&self.pool)
         .await?;
 
-        match row {
-            Some(row) => {
-                let patch_json: Option<String> = row.try_get("patch")?;
-                let old_hash: Option<String> = row.try_get("old_content_hash").ok().flatten();
-                match patch_json {
-                    Some(json) => Ok(Some((serde_json::from_str(&json)?, old_hash))),
-                    None => Ok(None),
-                }
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let base_json: Option<String> = row.try_get("base_content").ok().flatten();
+        let old_hash: Option<String> = row.try_get("old_content_hash").ok().flatten();
+
+        if let Some(base_json) = base_json {
+            let base: serde_json::Value = serde_json::from_str(&base_json)?;
+            let current: Option<String> = sqlx::query("SELECT content FROM documents WHERE id = ?")
+                .bind(document_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|row| row.try_get("content"))
+                .transpose()?;
+
+            if let Some(current) = current {
+                let current: serde_json::Value = serde_json::from_str(&current)?;
+                let hash = old_hash.unwrap_or_else(|| calculate_checksum(&base));
+                return Ok(Some((create_patch(&base, &current)?, Some(hash))));
             }
+            tracing::warn!(
+                "DATABASE: Queued patch for {} has no document row, serving the stored patch",
+                document_id
+            );
+        }
+
+        let patch_json: Option<String> = row.try_get("patch")?;
+        match patch_json {
+            Some(json) => Ok(Some((serde_json::from_str(&json)?, old_hash))),
             None => Ok(None),
         }
     }
@@ -867,6 +960,209 @@ impl ClientDatabase {
         rows.into_iter()
             .map(|row| DbHelpers::parse_document(&row))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod sync_queue_tests {
+    use super::*;
+    use replicant_core::patches::apply_patch;
+    use serde_json::json;
+
+    async fn fresh_db() -> ClientDatabase {
+        let db = ClientDatabase::new(":memory:").await.unwrap();
+        db.run_migrations().await.unwrap();
+        db
+    }
+
+    fn doc_with(id: Uuid, content: serde_json::Value) -> Document {
+        Document {
+            id,
+            user_id: Some(Uuid::new_v4()),
+            content,
+            sync_revision: 1,
+            content_hash: None,
+            title: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
+        }
+    }
+
+    /// One local edit, exactly as `Client::update_document` performs it.
+    async fn edit(db: &ClientDatabase, id: Uuid, new_content: serde_json::Value) {
+        let mut doc = db.get_document(&id).await.unwrap();
+        let old_content = doc.content.clone();
+        let patch = create_patch(&old_content, &new_content).unwrap();
+        doc.content = new_content;
+        db.save_document_and_queue_patch(&doc, &patch, ChangeEventType::Update, Some(&old_content))
+            .await
+            .unwrap();
+    }
+
+    async fn update_rows(db: &ClientDatabase, id: Uuid) -> i64 {
+        sqlx::query(
+            "SELECT COUNT(*) as c FROM sync_queue WHERE document_id = ? AND operation_type = 'update'",
+        )
+        .bind(id.to_string())
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+        .try_get("c")
+        .unwrap()
+    }
+
+    async fn stored_base(db: &ClientDatabase, id: Uuid) -> Option<serde_json::Value> {
+        let raw: Option<String> = sqlx::query(
+            "SELECT base_content FROM sync_queue WHERE document_id = ? AND operation_type = 'update'",
+        )
+        .bind(id.to_string())
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+        .try_get("base_content")
+        .unwrap();
+        raw.map(|json| serde_json::from_str(&json).unwrap())
+    }
+
+    #[tokio::test]
+    async fn three_offline_edits_collapse_into_one_cumulative_patch() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        let base = json!({"title": "base", "n": 0});
+        db.save_document_with_status(&doc_with(id, base.clone()), Some(SyncStatus::Synced))
+            .await
+            .unwrap();
+
+        edit(&db, id, json!({"title": "base", "n": 1})).await;
+        edit(&db, id, json!({"title": "edited", "n": 1})).await;
+        let final_content = json!({"title": "edited", "n": 2});
+        edit(&db, id, final_content.clone()).await;
+
+        assert_eq!(
+            update_rows(&db, id).await,
+            1,
+            "offline edits must share one queue row"
+        );
+        assert_eq!(
+            stored_base(&db, id).await,
+            Some(base.clone()),
+            "the base must stay the last state the server acknowledged"
+        );
+
+        let (patch, hash) = db.get_queued_patch(&id).await.unwrap().unwrap();
+        assert_eq!(hash.as_deref(), Some(calculate_checksum(&base).as_str()));
+
+        let mut replayed = base;
+        apply_patch(&mut replayed, &patch).unwrap();
+        assert_eq!(
+            replayed, final_content,
+            "the queued patch must carry all three edits"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_row_without_a_base_falls_back_to_its_stored_patch() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        db.save_document_with_status(
+            &doc_with(id, json!({"title": "current"})),
+            Some(SyncStatus::Pending),
+        )
+        .await
+        .unwrap();
+
+        // A row as a pre-upgrade client wrote it: a patch and a hash, no base.
+        let legacy = create_patch(&json!({"title": "old"}), &json!({"title": "current"})).unwrap();
+        sqlx::query(
+            "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash) VALUES (?, 'update', ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(serde_json::to_string(&legacy).unwrap())
+        .bind("legacy-hash")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let (patch, hash) = db.get_queued_patch(&id).await.unwrap().unwrap();
+        assert_eq!(patch, legacy, "the stored patch must be served verbatim");
+        assert_eq!(hash.as_deref(), Some("legacy-hash"));
+    }
+
+    #[tokio::test]
+    async fn a_local_edit_after_a_rebase_keeps_the_server_base() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        let base = json!({"title": "base", "n": 0});
+        db.save_document_with_status(&doc_with(id, base.clone()), Some(SyncStatus::Synced))
+            .await
+            .unwrap();
+        edit(&db, id, json!({"title": "base", "n": 1})).await;
+
+        // A rebase moves the base forward to fresh server content.
+        let server = json!({"title": "server", "n": 0});
+        let rebased = json!({"title": "server", "n": 1});
+        let local = db.get_document(&id).await.unwrap();
+        let expected = DocumentPreImage {
+            sync_revision: local.sync_revision,
+            content: local.content.clone(),
+            sync_status: SyncStatus::Pending,
+        };
+        assert!(db
+            .rebase_pending_document_if_unchanged(
+                &id,
+                &rebased,
+                9,
+                &server,
+                &calculate_checksum(&server),
+                SyncStatus::Pending,
+                &expected,
+            )
+            .await
+            .unwrap());
+
+        // A later local edit extends that base; it does not reset it to the
+        // content the user happened to be looking at.
+        let final_content = json!({"title": "server", "n": 2});
+        edit(&db, id, final_content.clone()).await;
+
+        assert_eq!(update_rows(&db, id).await, 1);
+        assert_eq!(stored_base(&db, id).await, Some(server.clone()));
+
+        let (patch, hash) = db.get_queued_patch(&id).await.unwrap().unwrap();
+        assert_eq!(hash.as_deref(), Some(calculate_checksum(&server).as_str()));
+        let mut replayed = server;
+        apply_patch(&mut replayed, &patch).unwrap();
+        assert_eq!(replayed, final_content);
+    }
+
+    #[tokio::test]
+    async fn clearing_the_queue_rebases_the_next_edit_on_the_synced_content() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        let base = json!({"title": "base", "n": 0});
+        db.save_document_with_status(&doc_with(id, base.clone()), Some(SyncStatus::Synced))
+            .await
+            .unwrap();
+
+        let acked = json!({"title": "base", "n": 1});
+        edit(&db, id, acked.clone()).await;
+        // The ack clears the queue: the edit is now the server's state.
+        db.remove_from_sync_queue(&id).await.unwrap();
+        assert!(db.get_queued_patch(&id).await.unwrap().is_none());
+
+        let next = json!({"title": "base", "n": 2});
+        edit(&db, id, next.clone()).await;
+
+        assert_eq!(stored_base(&db, id).await, Some(acked.clone()));
+        let (patch, hash) = db.get_queued_patch(&id).await.unwrap().unwrap();
+        assert_eq!(hash.as_deref(), Some(calculate_checksum(&acked).as_str()));
+        let mut replayed = acked;
+        apply_patch(&mut replayed, &patch).unwrap();
+        assert_eq!(replayed, next);
     }
 }
 

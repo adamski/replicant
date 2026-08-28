@@ -673,23 +673,21 @@ impl Client {
 
         // CRITICAL: Atomically save document and queue patch
         // This prevents data loss if app crashes between operations
-        use replicant_core::patches::calculate_checksum;
         use replicant_core::protocol::ChangeEventType;
-
-        // Calculate hash of old content for optimistic locking
-        let old_content_hash = calculate_checksum(&old_content);
 
         tracing::info!(
             "CLIENT {}: 📋 Atomically saving document and queueing patch for doc {}",
             self.client_id,
             doc.id
         );
+        // The queue keeps the base of the FIRST unsent edit, so a run of offline
+        // edits uploads as one diff against the state the server holds.
         self.db
             .save_document_and_queue_patch(
                 &doc,
                 &patch,
                 ChangeEventType::Update,
-                Some(old_content_hash),
+                Some(&old_content),
             )
             .await?;
         tracing::info!(
@@ -1604,7 +1602,7 @@ impl Client {
                 &document_id,
                 &rebased,
                 server.current_revision,
-                &forward,
+                &server.current_content,
                 &server.current_hash,
                 SyncStatus::Pending,
                 &expected,
@@ -1963,13 +1961,12 @@ impl Client {
             // Keep the user's edits visible, but rebase them: the local copy now
             // sits on the server's revision, and the queued patch carries the
             // edits forward from the server's current content.
-            let rebased = create_patch(&content, &local_content)?;
             doc.content_hash = None;
             db.rebase_pending_document_if_unchanged(
                 &document_id,
                 &local_content,
                 sync_revision,
-                &rebased,
+                &content,
                 &content_hash,
                 expected.sync_status,
                 &expected,
@@ -3282,7 +3279,7 @@ mod broadcast_guard_tests {
             &doc,
             &create_patch(base, edited).unwrap(),
             replicant_core::protocol::ChangeEventType::Update,
-            Some(calculate_checksum(base)),
+            Some(base),
         )
         .await
         .unwrap();
@@ -4550,7 +4547,7 @@ mod broadcast_guard_tests {
             &doc,
             &create_patch(&previous, &resolved).unwrap(),
             replicant_core::protocol::ChangeEventType::Update,
-            Some(calculate_checksum(&previous)),
+            Some(&previous),
         )
         .await
         .unwrap();

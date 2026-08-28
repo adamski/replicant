@@ -1455,12 +1455,6 @@ impl Client {
         uploads.contains_key(document_id)
     }
 
-    /// Fetch the authoritative document from the server and reconcile it with
-    /// local state. Used whenever a broadcast patch cannot be trusted to apply
-    /// (unknown doc, revision gap, unsent local edits, diverged result).
-    ///
-    /// Offline, this is a no-op: the document simply stays unsynced until a
-    /// later resync.
     /// The server state a `hash_mismatch` rejection carries, or `None` for any
     /// other ack. All three fields are required: a partial reply cannot be
     /// rebased onto and falls back to the blind retry.
@@ -1776,6 +1770,12 @@ impl Client {
         Ok(())
     }
 
+    /// Fetch the authoritative document from the server and reconcile it with
+    /// local state. Used whenever a broadcast patch cannot be trusted to apply
+    /// (unknown doc, revision gap, unsent local edits, diverged result).
+    ///
+    /// Offline, this is a no-op: the document simply stays unsynced until a
+    /// later resync.
     async fn resync_document(
         db: &Arc<ClientDatabase>,
         source: &ResyncSource,

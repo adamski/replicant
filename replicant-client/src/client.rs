@@ -1,5 +1,7 @@
 use crate::{
-    database::ClientDatabase, error_code::ReplicantErrorCode, events::EventDispatcher,
+    database::{ClientDatabase, DocumentPreImage},
+    error_code::ReplicantErrorCode,
+    events::EventDispatcher,
     websocket::WebSocketClient,
 };
 use replicant_core::{
@@ -9,7 +11,6 @@ use replicant_core::{
     protocol::{ClientMessage, ErrorCode, ServerMessage},
     SyncResult,
 };
-use serde_json::Value;
 use sqlx::Row;
 use std::collections::HashMap;
 use std::sync::{
@@ -34,6 +35,48 @@ enum UploadType {
     Create,
     Update,
     Delete,
+}
+
+/// Where `resync_document` gets authoritative document state.
+///
+/// `Socket` is the production source. The socket handle is cloned out from
+/// under a short-lived guard so the 30s call is never made while holding the
+/// `ws_client` mutex, which reconnection and the heartbeat also need.
+pub(crate) enum ResyncSource {
+    Socket(Arc<Mutex<Option<WebSocketClient>>>),
+    /// Test-only: records every resync attempt and returns a canned reply, so
+    /// tests can assert that a resync was attempted rather than inferring it
+    /// from the absence of a write.
+    #[cfg(test)]
+    Canned(Arc<CannedResync>),
+}
+
+#[cfg(test)]
+pub(crate) struct CannedResync {
+    pub attempts: Mutex<Vec<Uuid>>,
+    pub reply: Option<ServerMessage>,
+}
+
+impl ResyncSource {
+    fn socket(ws_client: &Arc<Mutex<Option<WebSocketClient>>>) -> Self {
+        Self::Socket(ws_client.clone())
+    }
+
+    /// `None` means "no source available" (offline), which callers treat as
+    /// leave-it-unsynced rather than as an error.
+    async fn fetch(&self, document_id: Uuid) -> Option<ServerMessage> {
+        match self {
+            Self::Socket(ws_client) => {
+                let ws = ws_client.lock().await.clone()?;
+                Some(ws.fetch_document(document_id).await)
+            }
+            #[cfg(test)]
+            Self::Canned(canned) => {
+                canned.attempts.lock().await.push(document_id);
+                canned.reply.clone()
+            }
+        }
+    }
 }
 
 pub struct Client {
@@ -249,7 +292,7 @@ impl Client {
                     &upload_complete_notifier,
                     &sync_protection_mode,
                     &deferred_messages,
-                    &ws_client_for_handler,
+                    &ResyncSource::socket(&ws_client_for_handler),
                 )
                 .await
                 {
@@ -382,7 +425,7 @@ impl Client {
                 &self.db,
                 self.client_id,
                 &self.event_dispatcher,
-                &self.ws_client,
+                &ResyncSource::socket(&self.ws_client),
             )
             .await
             {
@@ -935,7 +978,7 @@ impl Client {
         upload_complete_notifier: &Arc<Notify>,
         sync_protection_mode: &Arc<AtomicBool>,
         deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
-        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
+        source: &ResyncSource,
     ) -> SyncResult<()> {
         match &msg {
             // Handle upload confirmations first
@@ -986,7 +1029,7 @@ impl Client {
                         db,
                         client_id,
                         event_dispatcher,
-                        ws_client,
+                        source,
                     )
                     .await
                     {
@@ -1005,14 +1048,35 @@ impl Client {
                 }
 
                 // Continue with normal processing
-                return Self::handle_server_message(
-                    msg,
-                    db,
-                    client_id,
-                    event_dispatcher,
-                    ws_client,
-                )
-                .await;
+                return Self::handle_server_message(msg, db, client_id, event_dispatcher, source)
+                    .await;
+            }
+
+            // A patch for a document we are still uploading is almost always
+            // our own broadcast echoed back (DEV-1038). Applying the guard now
+            // would see status=Pending and burn a resync round-trip on every
+            // local edit; deferring lets the ack land first, after which the
+            // echo hits the idempotency drop for free.
+            ServerMessage::DocumentUpdated { patch } => {
+                if Self::has_pending_upload(pending_uploads, &patch.document_id).await {
+                    tracing::info!(
+                        "CLIENT {}: Deferring patch for {} (upload in progress)",
+                        client_id,
+                        patch.document_id
+                    );
+                    Self::defer_message(
+                        deferred_messages,
+                        client_id,
+                        ServerMessage::DocumentUpdated {
+                            patch: patch.clone(),
+                        },
+                    )
+                    .await;
+                    return Ok(());
+                }
+
+                return Self::handle_server_message(msg, db, client_id, event_dispatcher, source)
+                    .await;
             }
 
             // Apply protection for sync messages during upload phase
@@ -1072,26 +1136,14 @@ impl Client {
                 }
 
                 // Safe to proceed with sync
-                return Self::handle_server_message(
-                    msg,
-                    db,
-                    client_id,
-                    event_dispatcher,
-                    ws_client,
-                )
-                .await;
+                return Self::handle_server_message(msg, db, client_id, event_dispatcher, source)
+                    .await;
             }
 
             _ => {
                 // For all other messages, use normal handling
-                return Self::handle_server_message(
-                    msg,
-                    db,
-                    client_id,
-                    event_dispatcher,
-                    ws_client,
-                )
-                .await;
+                return Self::handle_server_message(msg, db, client_id, event_dispatcher, source)
+                    .await;
             }
         }
     }
@@ -1102,7 +1154,7 @@ impl Client {
         db: &Arc<ClientDatabase>,
         client_id: Uuid,
         event_dispatcher: &Arc<EventDispatcher>,
-        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
+        source: &ResyncSource,
     ) -> SyncResult<()> {
         let mut messages = deferred_messages.lock().await;
         let count = messages.len();
@@ -1120,7 +1172,7 @@ impl Client {
         // Process all deferred messages in order
         for msg in messages.drain(..) {
             if let Err(e) =
-                Self::handle_server_message(msg, db, client_id, event_dispatcher, ws_client).await
+                Self::handle_server_message(msg, db, client_id, event_dispatcher, source).await
             {
                 tracing::error!(
                     "CLIENT {}: Error processing deferred message: {}",
@@ -1137,6 +1189,25 @@ impl Client {
         );
 
         Ok(())
+    }
+
+    /// Queue a message for replay once the in-flight upload completes.
+    async fn defer_message(
+        deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
+        client_id: Uuid,
+        msg: ServerMessage,
+    ) {
+        const MAX_DEFERRED_MESSAGES: usize = 100;
+        let mut queue = deferred_messages.lock().await;
+        if queue.len() >= MAX_DEFERRED_MESSAGES {
+            tracing::warn!(
+                "CLIENT {}: Deferred queue full ({} messages), dropping oldest",
+                client_id,
+                queue.len()
+            );
+            queue.remove(0);
+        }
+        queue.push(msg);
     }
 
     // Check if a document has an active upload in progress
@@ -1156,24 +1227,18 @@ impl Client {
     /// later resync.
     async fn resync_document(
         db: &Arc<ClientDatabase>,
-        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
+        source: &ResyncSource,
         client_id: Uuid,
         event_dispatcher: &Arc<EventDispatcher>,
         document_id: Uuid,
     ) -> SyncResult<()> {
-        let result = {
-            let guard = ws_client.lock().await;
-            match guard.as_ref() {
-                Some(ws) => ws.fetch_document(document_id).await,
-                None => {
-                    tracing::warn!(
-                        "CLIENT {}: Cannot resync {} while offline, leaving it unsynced",
-                        client_id,
-                        document_id
-                    );
-                    return Ok(());
-                }
-            }
+        let Some(result) = source.fetch(document_id).await else {
+            tracing::warn!(
+                "CLIENT {}: Cannot resync {} while offline, leaving it unsynced",
+                client_id,
+                document_id
+            );
+            return Ok(());
         };
 
         Self::apply_resync_result(db, client_id, event_dispatcher, document_id, result).await
@@ -1239,19 +1304,15 @@ impl Client {
 
         let local = db.get_document(&document_id).await.ok();
         let status = db.get_sync_status(&document_id).await?;
-        let has_local_edits = matches!(
-            status,
-            Some(SyncStatus::Pending) | Some(SyncStatus::Conflict)
-        );
 
-        let mut doc = match local {
-            Some(doc) => doc,
-            None => Document {
+        let Some(mut doc) = local else {
+            // Nothing local to protect: take the server's copy wholesale.
+            let doc = Document {
                 id: document_id,
                 user_id: None,
-                content: Value::Null,
-                sync_revision: 0,
-                content_hash: None,
+                content,
+                sync_revision,
+                content_hash: Some(content_hash),
                 title: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
@@ -1259,43 +1320,73 @@ impl Client {
                 author_name: None,
                 visibility: None,
                 provenance: None,
-            },
+            };
+            db.save_document_with_status(&doc, Some(SyncStatus::Synced))
+                .await?;
+            event_dispatcher.emit_document_updated_with_attribution(
+                &doc.id,
+                &doc.content,
+                doc.user_id.as_ref(),
+                doc.author_name.as_deref(),
+                doc.visibility.as_deref(),
+            );
+            return Ok(());
         };
+
+        // Everything below writes conditionally on the state just read, so a
+        // local edit landing between the read and the write loses the swap
+        // instead of being silently overwritten.
+        let expected = DocumentPreImage {
+            sync_revision: doc.sync_revision,
+            content: doc.content.clone(),
+            sync_status: status.unwrap_or(SyncStatus::Conflict),
+        };
+        let has_local_edits = matches!(
+            expected.sync_status,
+            SyncStatus::Pending | SyncStatus::Conflict
+        );
 
         let local_content = doc.content.clone();
         doc.sync_revision = sync_revision;
         doc.updated_at = chrono::Utc::now();
 
-        if has_local_edits {
+        let committed = if has_local_edits {
             // Keep the user's edits visible, but rebase them: the local copy now
             // sits on the server's revision, and the queued patch carries the
             // edits forward from the server's current content.
             let rebased = create_patch(&content, &local_content)?;
             doc.content_hash = None;
-            db.save_document_with_status(&doc, Some(SyncStatus::Pending))
-                .await?;
-            db.queue_update_patch(&document_id, &rebased, &content_hash)
-                .await?;
-
-            tracing::info!(
-                "CLIENT {}: Rebased local edits for {} onto server revision {}",
-                client_id,
-                document_id,
-                sync_revision
-            );
+            db.rebase_pending_document_if_unchanged(
+                &document_id,
+                sync_revision,
+                &rebased,
+                &content_hash,
+                &expected,
+            )
+            .await?
         } else {
             doc.content = content;
             doc.content_hash = Some(content_hash);
-            db.save_document_with_status(&doc, Some(SyncStatus::Synced))
-                .await?;
+            db.save_document_if_unchanged(&doc, SyncStatus::Synced, &expected)
+                .await?
+        };
 
-            tracing::info!(
-                "CLIENT {}: Resynced {} to server revision {}",
+        if !committed {
+            tracing::warn!(
+                "CLIENT {}: Resync of {} raced a local edit, leaving it for the next resync",
                 client_id,
-                document_id,
-                sync_revision
+                document_id
             );
+            return Ok(());
         }
+
+        tracing::info!(
+            "CLIENT {}: Resynced {} to server revision {} (rebased local edits: {})",
+            client_id,
+            document_id,
+            sync_revision,
+            has_local_edits
+        );
 
         event_dispatcher.emit_document_updated_with_attribution(
             &doc.id,
@@ -1313,7 +1404,7 @@ impl Client {
         db: &Arc<ClientDatabase>,
         client_id: Uuid,
         event_dispatcher: &Arc<EventDispatcher>,
-        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
+        source: &ResyncSource,
     ) -> SyncResult<()> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
@@ -1333,7 +1424,7 @@ impl Client {
                     );
                     return Self::resync_document(
                         db,
-                        ws_client,
+                        source,
                         client_id,
                         event_dispatcher,
                         document_id,
@@ -1370,7 +1461,7 @@ impl Client {
                     );
                     return Self::resync_document(
                         db,
-                        ws_client,
+                        source,
                         client_id,
                         event_dispatcher,
                         document_id,
@@ -1389,7 +1480,7 @@ impl Client {
                     );
                     return Self::resync_document(
                         db,
-                        ws_client,
+                        source,
                         client_id,
                         event_dispatcher,
                         document_id,
@@ -1397,13 +1488,37 @@ impl Client {
                     .await;
                 }
 
+                // Commit conditionally on the state the guard just verified: a
+                // local update landing since then must not be overwritten.
+                let expected = DocumentPreImage {
+                    sync_revision: doc.sync_revision,
+                    content: doc.content.clone(),
+                    sync_status: SyncStatus::Synced,
+                };
+
                 doc.content = new_content;
                 doc.sync_revision = patch.sync_revision;
                 doc.content_hash = Some(patch.content_hash);
                 doc.updated_at = chrono::Utc::now();
 
-                db.save_document_with_status(&doc, Some(SyncStatus::Synced))
-                    .await?;
+                if !db
+                    .save_document_if_unchanged(&doc, SyncStatus::Synced, &expected)
+                    .await?
+                {
+                    tracing::warn!(
+                        "CLIENT {}: Patch for {} raced a local edit, resyncing instead",
+                        client_id,
+                        document_id
+                    );
+                    return Self::resync_document(
+                        db,
+                        source,
+                        client_id,
+                        event_dispatcher,
+                        document_id,
+                    )
+                    .await;
+                }
 
                 event_dispatcher.emit_document_updated_with_attribution(
                     &doc.id,
@@ -2058,7 +2173,7 @@ impl Client {
                                         &upload_complete_notifier_clone,
                                         &sync_protection_mode_clone,
                                         &deferred_messages_clone,
-                                        &ws_client_for_handler,
+                                        &ResyncSource::socket(&ws_client_for_handler),
                                     )
                                     .await
                                     {
@@ -2362,10 +2477,19 @@ mod broadcast_guard_tests {
         Arc::new(EventDispatcher::new())
     }
 
-    /// No socket: resync must not be able to mutate local state, which is what
-    /// lets these tests assert "the guard refused to blind-apply".
-    fn no_socket() -> Arc<Mutex<Option<WebSocketClient>>> {
-        Arc::new(Mutex::new(None))
+    /// A resync source that records attempts and returns nothing, so a test can
+    /// assert a resync WAS attempted rather than inferring it from the absence
+    /// of a write.
+    fn recording_source() -> (ResyncSource, Arc<CannedResync>) {
+        let canned = Arc::new(CannedResync {
+            attempts: Mutex::new(Vec::new()),
+            reply: None,
+        });
+        (ResyncSource::Canned(canned.clone()), canned)
+    }
+
+    async fn resync_attempts(canned: &Arc<CannedResync>) -> Vec<Uuid> {
+        canned.attempts.lock().await.clone()
     }
 
     fn make_doc(id: Uuid, content: Value, sync_revision: i64) -> Document {
@@ -2389,6 +2513,44 @@ mod broadcast_guard_tests {
         db.save_document_with_status(doc, Some(status))
             .await
             .unwrap();
+    }
+
+    /// Seed a document the way a real local edit does: save it Pending AND
+    /// queue its patch, so the sync_queue is in its production shape.
+    async fn seed_pending_edit(
+        db: &Arc<ClientDatabase>,
+        id: Uuid,
+        base: &Value,
+        edited: &Value,
+        sync_revision: i64,
+    ) {
+        seed(
+            db,
+            &make_doc(id, base.clone(), sync_revision),
+            SyncStatus::Synced,
+        )
+        .await;
+        let doc = make_doc(id, edited.clone(), sync_revision);
+        db.save_document_and_queue_patch(
+            &doc,
+            &create_patch(base, edited).unwrap(),
+            replicant_core::protocol::ChangeEventType::Update,
+            Some(calculate_checksum(base)),
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn queued_update_rows(db: &Arc<ClientDatabase>, id: &Uuid) -> i64 {
+        sqlx::query(
+            "SELECT COUNT(*) as c FROM sync_queue WHERE document_id = ? AND operation_type = 'update'",
+        )
+        .bind(id.to_string())
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+        .try_get("c")
+        .unwrap()
     }
 
     async fn deleted_at(db: &Arc<ClientDatabase>, id: &Uuid) -> Option<String> {
@@ -2415,20 +2577,24 @@ mod broadcast_guard_tests {
         }
     }
 
+    /// Deliver a broadcast patch and report which documents the handler tried
+    /// to resync as a result.
     async fn deliver(
         db: &Arc<ClientDatabase>,
         events: &Arc<EventDispatcher>,
         patch: ServerDocumentPatch,
-    ) {
+    ) -> Vec<Uuid> {
+        let (source, canned) = recording_source();
         Client::handle_server_message(
             ServerMessage::DocumentUpdated { patch },
             db,
             Uuid::new_v4(),
             events,
-            &no_socket(),
+            &source,
         )
         .await
         .unwrap();
+        resync_attempts(&canned).await
     }
 
     #[tokio::test]
@@ -2439,8 +2605,9 @@ mod broadcast_guard_tests {
         let after = json!({"title": "B"});
         seed(&db, &make_doc(id, before.clone(), 5), SyncStatus::Synced).await;
 
-        deliver(&db, &dispatcher(), server_patch(id, &before, &after, 6)).await;
+        let resynced = deliver(&db, &dispatcher(), server_patch(id, &before, &after, 6)).await;
 
+        assert!(resynced.is_empty(), "a clean apply must not resync");
         let doc = db.get_document(&id).await.unwrap();
         assert_eq!(doc.content, after);
         assert_eq!(doc.sync_revision, 6);
@@ -2461,8 +2628,9 @@ mod broadcast_guard_tests {
 
         let patch = server_patch(id, &before, &after, 6);
         deliver(&db, &events, patch.clone()).await;
-        deliver(&db, &events, patch).await;
+        let resynced = deliver(&db, &events, patch).await;
 
+        assert!(resynced.is_empty(), "a duplicate must drop, not resync");
         let doc = db.get_document(&id).await.unwrap();
         assert_eq!(doc.content, after, "second delivery must not re-patch");
         assert_eq!(doc.sync_revision, 6);
@@ -2478,8 +2646,9 @@ mod broadcast_guard_tests {
         // server echoes our own broadcast back at 6.
         seed(&db, &make_doc(id, after.clone(), 6), SyncStatus::Synced).await;
 
-        deliver(&db, &dispatcher(), server_patch(id, &before, &after, 6)).await;
+        let resynced = deliver(&db, &dispatcher(), server_patch(id, &before, &after, 6)).await;
 
+        assert!(resynced.is_empty(), "a self-echo must drop, not resync");
         let doc = db.get_document(&id).await.unwrap();
         assert_eq!(doc.content, after);
         assert_eq!(doc.sync_revision, 6);
@@ -2494,13 +2663,14 @@ mod broadcast_guard_tests {
 
         // u1 was missed; only u2's broadcast (revision 7) arrives.
         let skipped_base = json!({"title": "B"});
-        deliver(
+        let resynced = deliver(
             &db,
             &dispatcher(),
             server_patch(id, &skipped_base, &json!({"title": "C"}), 7),
         )
         .await;
 
+        assert_eq!(resynced, vec![id], "the gap must trigger a resync");
         let doc = db.get_document(&id).await.unwrap();
         assert_eq!(doc.content, local, "gap must resync, never frankenpatch");
         assert_eq!(doc.sync_revision, 5);
@@ -2513,13 +2683,18 @@ mod broadcast_guard_tests {
         let local = json!({"title": "local edit"});
         seed(&db, &make_doc(id, local.clone(), 5), SyncStatus::Pending).await;
 
-        deliver(
+        let resynced = deliver(
             &db,
             &dispatcher(),
             server_patch(id, &json!({"title": "A"}), &json!({"title": "B"}), 6),
         )
         .await;
 
+        assert_eq!(
+            resynced,
+            vec![id],
+            "pending local edits must trigger a resync"
+        );
         let doc = db.get_document(&id).await.unwrap();
         assert_eq!(doc.content, local);
         assert_eq!(
@@ -2587,7 +2762,9 @@ mod broadcast_guard_tests {
         let db = test_db().await;
         let id = Uuid::new_v4();
         let local = json!({"title": "stale", "mine": true});
-        seed(&db, &make_doc(id, local.clone(), 5), SyncStatus::Pending).await;
+        // Seed the way production does: a local edit saves the document AND
+        // queues its patch, so the rebase below has a prior row to replace.
+        seed_pending_edit(&db, id, &json!({"title": "stale"}), &local, 5).await;
 
         let fresh = json!({"title": "fresh"});
         let fresh_hash = calculate_checksum(&fresh);
@@ -2615,11 +2792,150 @@ mod broadcast_guard_tests {
             Some(SyncStatus::Pending)
         );
 
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            1,
+            "the rebase must replace the queued patch, not append a second row"
+        );
         let (patch, base_hash) = db.get_queued_patch(&id).await.unwrap().unwrap();
         assert_eq!(base_hash.as_deref(), Some(fresh_hash.as_str()));
         let mut replayed = fresh;
         apply_patch(&mut replayed, &patch).unwrap();
         assert_eq!(replayed, local, "queued patch must rebuild local content");
+    }
+
+    #[tokio::test]
+    async fn compare_and_swap_refuses_to_clobber_a_concurrent_local_edit() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = json!({"title": "A"});
+        seed(&db, &make_doc(id, base.clone(), 5), SyncStatus::Synced).await;
+
+        // What the guard verified before deciding to write.
+        let expected = DocumentPreImage {
+            sync_revision: 5,
+            content: base.clone(),
+            sync_status: SyncStatus::Synced,
+        };
+
+        // A local edit lands in the read-check-write window.
+        let local = json!({"title": "local edit"});
+        seed_pending_edit(&db, id, &base, &local, 5).await;
+
+        let committed = db
+            .save_document_if_unchanged(
+                &make_doc(id, json!({"title": "B"}), 6),
+                SyncStatus::Synced,
+                &expected,
+            )
+            .await
+            .unwrap();
+
+        assert!(!committed, "the swap must lose to the concurrent edit");
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, local, "the local edit must survive");
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending)
+        );
+    }
+
+    #[tokio::test]
+    async fn unparseable_sync_status_fails_closed_as_conflict() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        seed(&db, &make_doc(id, json!({}), 1), SyncStatus::Synced).await;
+        // The CHECK constraint blocks a garbage status today; bypass it so the
+        // read path's fallback is exercised against schema drift.
+        // The PRAGMA is per-connection, so both statements share one.
+        let mut conn = db.pool.acquire().await.unwrap();
+        sqlx::query("PRAGMA ignore_check_constraints = ON")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE documents SET sync_status = 'banana' WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Conflict),
+            "an unknown status must never read back as Synced"
+        );
+    }
+
+    #[tokio::test]
+    async fn echo_during_an_in_flight_upload_is_deferred_not_resynced() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+        let after = json!({"title": "B"});
+        seed_pending_edit(&db, id, &before, &after, 5).await;
+
+        let pending_uploads = Arc::new(Mutex::new(HashMap::from([(
+            id,
+            PendingUpload {
+                operation_type: UploadType::Update,
+                sent_at: Instant::now(),
+            },
+        )])));
+        let deferred_messages = Arc::new(Mutex::new(Vec::new()));
+        let (source, canned) = recording_source();
+
+        Client::handle_server_message_with_tracking(
+            ServerMessage::DocumentUpdated {
+                patch: server_patch(id, &before, &after, 6),
+            },
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            &pending_uploads,
+            &Arc::new(Notify::new()),
+            &Arc::new(AtomicBool::new(false)),
+            &deferred_messages,
+            &source,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            resync_attempts(&canned).await.is_empty(),
+            "an echo for an in-flight upload must not cost a resync"
+        );
+        assert_eq!(
+            deferred_messages.lock().await.len(),
+            1,
+            "the echo must be deferred until the ack lands"
+        );
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            1,
+            "deferring must not add a queue row"
+        );
+
+        // After the ack, the deferred echo replays and hits the idempotency drop.
+        db.update_sync_revision(&id, 6).await.unwrap();
+        db.mark_synced(&id).await.unwrap();
+        Client::process_deferred_messages(
+            &deferred_messages,
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            &source,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            resync_attempts(&canned).await.is_empty(),
+            "the replayed echo must drop as a duplicate"
+        );
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, after);
+        assert_eq!(doc.sync_revision, 6);
     }
 
     #[tokio::test]
@@ -2758,7 +3074,7 @@ mod broadcast_guard_tests {
             &db,
             Uuid::new_v4(),
             &dispatcher(),
-            &no_socket(),
+            &recording_source().0,
         )
         .await
         .unwrap();

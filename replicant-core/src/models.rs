@@ -111,6 +111,42 @@ mod tests {
         let doc: Document = serde_json::from_str(legacy).unwrap();
         assert_eq!(doc.author_name, None);
     }
+
+    #[test]
+    fn server_document_patch_round_trips_with_document_id_key() {
+        let json = r#"{
+            "document_id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "sync_revision": 7,
+            "content_hash": "abc123"
+        }"#;
+        let patch: ServerDocumentPatch = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            patch.document_id.to_string(),
+            "71b2b712-7878-56ee-8323-43809b8198a5"
+        );
+        assert_eq!(patch.sync_revision, 7);
+        assert_eq!(patch.content_hash, "abc123");
+    }
+
+    #[test]
+    fn server_document_patch_round_trips_with_id_key() {
+        // Wire shape actually sent by the server (channel.ex / documents.ex
+        // both use "id" for the document_updated broadcast).
+        let json = r#"{
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "sync_revision": 7,
+            "content_hash": "abc123"
+        }"#;
+        let patch: ServerDocumentPatch = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            patch.document_id.to_string(),
+            "71b2b712-7878-56ee-8323-43809b8198a5"
+        );
+        assert_eq!(patch.sync_revision, 7);
+        assert_eq!(patch.content_hash, "abc123");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +154,21 @@ pub struct DocumentPatch {
     pub document_id: Uuid,
     pub patch: json_patch::Patch,
     pub content_hash: String, // SHA256 hash for integrity verification
+}
+
+/// Server broadcast of an applied patch. Unlike [`DocumentPatch`] (a
+/// client→server request carrying a pre-update hash), `content_hash` here is
+/// the hash of the content AFTER the patch was applied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerDocumentPatch {
+    #[serde(alias = "document_id", alias = "id")]
+    pub document_id: Uuid,
+    pub patch: json_patch::Patch,
+    /// Revision AFTER this patch was applied on the server.
+    pub sync_revision: i64,
+    /// Hash of the content AFTER this patch (NOT a base hash — unlike
+    /// client→server DocumentPatch.content_hash).
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Display, EnumString)]

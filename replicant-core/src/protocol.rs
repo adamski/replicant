@@ -1,4 +1,4 @@
-use crate::models::{Document, DocumentPatch};
+use crate::models::{Document, DocumentPatch, ServerDocumentPatch};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
 use uuid::Uuid;
@@ -44,6 +44,11 @@ pub enum ClientMessage {
         up_to_sequence: u64, // Client confirms it processed up to this sequence
     },
 
+    // Full-document fetch (used to resync a document off of a broadcast gap)
+    GetDocument {
+        id: Uuid,
+    },
+
     // Heartbeat
     Ping,
 }
@@ -65,10 +70,19 @@ pub enum ServerMessage {
         document: Document,
     },
     DocumentUpdated {
-        patch: DocumentPatch,
+        patch: ServerDocumentPatch,
     },
     DocumentDeleted {
         document_id: Uuid,
+    },
+
+    // Full-document fetch response
+    GetDocumentResponse {
+        id: Uuid,
+        content: serde_json::Value,
+        sync_revision: i64,
+        content_hash: String,
+        deleted: bool,
     },
 
     // Document operation confirmations

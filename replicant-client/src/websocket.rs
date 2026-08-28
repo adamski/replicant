@@ -6,7 +6,7 @@ use phoenix_channels_client::{
 };
 use replicant_core::{
     errors::ClientError,
-    models::{Document, DocumentPatch},
+    models::{Document, DocumentPatch, ServerDocumentPatch},
     protocol::{ChangeEvent, ChangeEventType, ClientMessage, ErrorCode, ServerMessage},
     SyncResult,
 };
@@ -341,6 +341,7 @@ impl WebSocketClient {
                 limit,
             } => self.get_changes_since(last_sequence, limit).await,
             ClientMessage::AckChanges { .. } => Ok(()),
+            ClientMessage::GetDocument { id } => self.get_document(id).await,
             ClientMessage::Ping => {
                 let _ = self.tx.send(ServerMessage::Pong).await;
                 Ok(())
@@ -457,6 +458,45 @@ impl WebSocketClient {
                     .send(ServerMessage::Error {
                         code: ErrorCode::ServerError,
                         message: format!("Full sync failed: {:?}", e),
+                    })
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_document(&self, id: Uuid) -> SyncResult<()> {
+        let resp = self
+            .call("get_document", &json!({"id": id.to_string()}))
+            .await;
+
+        match resp {
+            Ok(j) => {
+                let _ = self
+                    .tx
+                    .send(ServerMessage::GetDocumentResponse {
+                        id: j
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| Uuid::parse_str(s).ok())
+                            .unwrap_or(id),
+                        content: j.get("content").cloned().unwrap_or(Value::Null),
+                        sync_revision: j.get("sync_revision").and_then(|v| v.as_i64()).unwrap_or(0),
+                        content_hash: j
+                            .get("content_hash")
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                            .unwrap_or_default(),
+                        deleted: j.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false),
+                    })
+                    .await;
+            }
+            Err(e) => {
+                let _ = self
+                    .tx
+                    .send(ServerMessage::Error {
+                        code: ErrorCode::DocumentNotFound,
+                        message: format!("Get document failed: {:?}", e),
                     })
                     .await;
             }
@@ -631,12 +671,17 @@ fn json_to_document(j: &Value) -> Option<Document> {
     })
 }
 
-fn json_to_patch(j: &Value) -> Option<DocumentPatch> {
+fn json_to_patch(j: &Value) -> Option<ServerDocumentPatch> {
     let patch_value = j.get("patch")?;
     let patch: json_patch::Patch = serde_json::from_value(patch_value.clone()).ok()?;
-    Some(DocumentPatch {
-        document_id: Uuid::parse_str(j.get("id")?.as_str()?).ok()?,
+    let id_str = j
+        .get("document_id")
+        .or_else(|| j.get("id"))
+        .and_then(|v| v.as_str())?;
+    Some(ServerDocumentPatch {
+        document_id: Uuid::parse_str(id_str).ok()?,
         patch,
+        sync_revision: j.get("sync_revision").and_then(|v| v.as_i64()).unwrap_or(0),
         content_hash: j
             .get("content_hash")
             .and_then(|v| v.as_str())
@@ -670,6 +715,23 @@ fn json_to_change_event(j: &Value) -> Option<ChangeEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_to_patch_reads_sync_revision_and_content_hash() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "sync_revision": 7,
+            "content_hash": "abc123"
+        });
+        let patch = json_to_patch(&j).unwrap();
+        assert_eq!(
+            patch.document_id.to_string(),
+            "71b2b712-7878-56ee-8323-43809b8198a5"
+        );
+        assert_eq!(patch.sync_revision, 7);
+        assert_eq!(patch.content_hash, "abc123");
+    }
 
     #[test]
     fn json_to_document_reads_attribution() {

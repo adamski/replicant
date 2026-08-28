@@ -30,7 +30,7 @@ CLIENT_CRATE="$CLIENT_ROOT/replicant-client"
 # user_id change (PR #7, merged as 332a8ba) so the seed can export
 # REPLICANT_TEST_USER_ID, plus the get_document channel op and the nil-hash
 # rejection the sync suite exercises. Re-pin this as the server advances.
-SERVER_REF="${REPLICANT_SERVER_REF:-dad45e5}"
+SERVER_REF="${REPLICANT_SERVER_REF:-19ffa7a}"
 
 # Where to prepare the server checkout. Locally we make a detached git worktree
 # from a sibling replicant-server clone; in CI (no local clone) we git-clone.
@@ -111,6 +111,15 @@ if ! grep -q ':bandit' "$SERVER_DIR/mix.exs"; then
     grep -q ':bandit' "$SERVER_DIR/mix.exs" || { err "Failed to inject bandit dep"; exit 1; }
 fi
 
+# The harness serves real, long-lived websocket clients, not ExUnit tests. Under
+# the Sandbox pool each channel process owns a connection for its whole lifetime,
+# so N clients pin 2N connections (sync:user + sync:public). Use the normal pool.
+if grep -q 'Ecto.Adapters.SQL.Sandbox' "$SERVER_DIR/config/test.exs"; then
+    log "Switching Repo to the standard connection pool (harness-only)"
+    perl -0pi -e 's/\s*pool: Ecto\.Adapters\.SQL\.Sandbox,//' "$SERVER_DIR/config/test.exs"
+    perl -0pi -e 's/pool_size: System\.schedulers_online\(\) \* 2/pool_size: 20/' "$SERVER_DIR/config/test.exs"
+fi
+
 # --- Build server ------------------------------------------------------------
 log "Fetching + compiling server deps (MIX_ENV=test)"
 ( cd "$SERVER_DIR" && mix deps.get >/dev/null && mix compile >/dev/null )
@@ -129,7 +138,6 @@ export DATABASE_URL
 log "Seeding enrolled + legacy credentials for $TEST_EMAIL (stderr: $SERVER_LOG)"
 : > "$SERVER_LOG"
 SEED_LINE="$( cd "$SERVER_DIR" && TEST_EMAIL="$TEST_EMAIL" mix run -e '
-  Ecto.Adapters.SQL.Sandbox.mode(ReplicantServer.Repo, :auto)
   email = System.get_env("TEST_EMAIL")
   {:ok, token} = ReplicantServer.Auth.request_enrollment(email)
   {:ok, creds} = ReplicantServer.Auth.claim_enrollment(email, token)
@@ -152,7 +160,6 @@ Application.put_env(:replicant_server, ReplicantServer.Sync.TestEndpoint,
   secret_key_base: "oD6r/Ez+1r8Dh1dGG7dZ8BQS3wcNOYQsXgrATKe1LCimCFRoO346xxuWJBbga1bE",
   pubsub_server: ReplicantServer.PubSub
 )
-Ecto.Adapters.SQL.Sandbox.mode(ReplicantServer.Repo, :auto)
 {:ok, _} = ReplicantServer.Sync.TestEndpoint.start_link([])
 IO.puts("ENDPOINT_STARTED")
 Process.sleep(:infinity)

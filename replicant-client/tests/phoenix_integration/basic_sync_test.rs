@@ -419,6 +419,69 @@ async fn offline_edits_flush_as_one_cumulative_patch() {
     remove_temp_db(&db_file);
 }
 
+/// A document created while offline and then edited offline has never reached
+/// the server, so its flush must be a CREATE carrying the final content.
+/// Uploading it as an update draws `not_found` — the document then sits Pending
+/// forever, across restarts, because nothing ever consumes its queued create.
+#[tokio::test]
+#[serial]
+async fn an_offline_created_document_flushes_as_a_create() {
+    if skip_if_no_server() {
+        return;
+    }
+
+    std::fs::create_dir_all("databases").ok();
+    let db_file = temp_db_path("offline_create_flush");
+    let db_url = format!("sqlite:{}?mode=rwc", db_file);
+
+    let driver = TestClient::connect(TEST_EMAIL).await.unwrap();
+    let doc_id = Uuid::new_v4();
+    let final_content = json!({"title": "draft", "a": 1, "b": 2});
+
+    // Offline from the start: create, then two edits. Nothing reaches the server.
+    {
+        let offline = open_offline_subject(&db_url).await;
+        offline
+            .create_document_with_id(doc_id, json!({"title": "draft"}))
+            .await
+            .unwrap();
+        offline
+            .update_document(doc_id, json!({"title": "draft", "a": 1}))
+            .await
+            .unwrap();
+        offline
+            .update_document(doc_id, final_content.clone())
+            .await
+            .unwrap();
+    }
+    assert!(
+        driver.get_document(doc_id).await.is_err(),
+        "the server must not hold a document that was only ever created offline"
+    );
+
+    // Reconnecting flushes the queue; the subject settles once the server acks.
+    let subject = connect_subject(&db_url).await;
+    assert!(
+        wait_for_local_synced(&db_url, doc_id).await,
+        "the offline-created document should settle as synced, not retry forever"
+    );
+
+    let server_doc = driver.get_document(doc_id).await.unwrap();
+    assert_eq!(
+        server_doc.get("content"),
+        Some(&final_content),
+        "the create must carry the edits made after it, not the content it was created with"
+    );
+    assert_eq!(
+        server_doc.get("sync_revision").and_then(|v| v.as_i64()),
+        Some(1),
+        "a create plus two offline edits must land as one document at the first revision"
+    );
+
+    drop(subject);
+    remove_temp_db(&db_file);
+}
+
 /// Proves envelope attribution flows end-to-end: server stamps author_name
 /// (email local-part fallback), visibility, and provenance on create, and
 /// the same fields arrive on full sync — outside the content JSON.

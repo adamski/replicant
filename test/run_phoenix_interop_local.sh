@@ -90,6 +90,8 @@ existing="$(lsof -ti :"$SERVER_PORT" 2>/dev/null || true)"
 # --- Prepare pinned server checkout ------------------------------------------
 if [ -d "$SERVER_DIR/.git" ] || [ -f "$SERVER_DIR/.git" ]; then
     log "Reusing server checkout at $SERVER_DIR (pinning to $SERVER_REF)"
+    # Discard prior harness-injected mix.exs/mix.lock changes so checkout doesn't abort.
+    git -C "$SERVER_DIR" checkout --quiet -- mix.exs mix.lock 2>/dev/null || true
     git -C "$SERVER_DIR" checkout --quiet --detach "$SERVER_REF" 2>/dev/null || \
         git -C "$SERVER_DIR" checkout --quiet "$SERVER_REF"
 elif [ -d "$SERVER_SRC/.git" ]; then

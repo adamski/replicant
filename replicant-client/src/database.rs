@@ -281,6 +281,11 @@ impl ClientDatabase {
     /// `get_queued_patch` reads exactly one row, so a leftover row with an
     /// outdated base hash would be retried — and rejected — forever.
     ///
+    /// `new_status` is what the row should carry afterwards: `Pending` for a
+    /// rebase whose patch is about to be sent, or the document's existing status
+    /// where that must survive (an unresolved `Conflict` is not cleared by
+    /// anything but a local edit).
+    ///
     /// Returns `false` if the row no longer matches `expected`.
     #[allow(clippy::too_many_arguments)]
     pub async fn rebase_pending_document_if_unchanged(
@@ -290,6 +295,7 @@ impl ClientDatabase {
         new_sync_revision: i64,
         patch: &json_patch::Patch,
         base_content_hash: &str,
+        new_status: SyncStatus,
         expected: &DocumentPreImage,
     ) -> SyncResult<bool> {
         let mut tx = self.pool.begin().await?;
@@ -301,7 +307,7 @@ impl ClientDatabase {
         .bind(serde_json::to_string(new_content)?)
         .bind(new_sync_revision)
         .bind(chrono::Utc::now().to_rfc3339())
-        .bind(SyncStatus::Pending.to_string())
+        .bind(new_status.to_string())
         .bind(document_id.to_string())
         .bind(serde_json::to_string(&expected.content)?)
         .bind(expected.sync_revision)

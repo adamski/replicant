@@ -152,6 +152,18 @@ impl UploadRetry {
     }
 }
 
+/// The status to write when server state is adopted wholesale.
+///
+/// An unresolved `Conflict` survives: the flag says the user still has to look
+/// at this document, and taking the server's content does not answer that. Only
+/// a genuine local edit clears it.
+fn settled_status(current: SyncStatus) -> SyncStatus {
+    match current {
+        SyncStatus::Conflict => SyncStatus::Conflict,
+        _ => SyncStatus::Synced,
+    }
+}
+
 /// The server state carried by a `hash_mismatch` rejection.
 ///
 /// The server sends what it currently holds so the client can rebase onto it;
@@ -1525,19 +1537,8 @@ impl Client {
             sync_status: status,
         };
 
-        if !upload_retry.claim_rebase(client_id, document_id).await {
-            return Self::settle_as_conflict(
-                db,
-                client_id,
-                event_dispatcher,
-                document_id,
-                &server,
-                &expected,
-                "the rebase attempt budget is exhausted",
-            )
-            .await;
-        }
-
+        // Read the patch before spending a budget unit: a document with nothing
+        // queued is unresolvable, not live-locked.
         let Ok(Some((queued, _))) = db.get_queued_patch(&document_id).await else {
             return Self::settle_as_conflict(
                 db,
@@ -1550,6 +1551,19 @@ impl Client {
             )
             .await;
         };
+
+        if !upload_retry.claim_rebase(client_id, document_id).await {
+            return Self::settle_as_conflict(
+                db,
+                client_id,
+                event_dispatcher,
+                document_id,
+                &server,
+                &expected,
+                "the rebase attempt budget is exhausted",
+            )
+            .await;
+        }
 
         let mut rebased = server.current_content.clone();
         if let Err(e) = apply_patch(&mut rebased, &queued) {
@@ -1569,6 +1583,22 @@ impl Client {
         // patch: the server will apply this to exactly `current_content`.
         let forward = create_patch(&server.current_content, &rebased)?;
 
+        if forward.0.is_empty() {
+            // The winner's update already contains this edit — replaying it
+            // would upload a no-op and take a full round trip to learn that.
+            return Self::adopt_without_resending(
+                db,
+                client_id,
+                event_dispatcher,
+                document_id,
+                upload_retry,
+                &server,
+                &expected,
+                local,
+            )
+            .await;
+        }
+
         if !db
             .rebase_pending_document_if_unchanged(
                 &document_id,
@@ -1576,6 +1606,7 @@ impl Client {
                 server.current_revision,
                 &forward,
                 &server.current_hash,
+                SyncStatus::Pending,
                 &expected,
             )
             .await?
@@ -1616,6 +1647,58 @@ impl Client {
         Ok(())
     }
 
+    /// The rebase produced exactly the server's content: the edit is already
+    /// there. Take the server's revision, drop the queue row, and skip the
+    /// upload entirely rather than paying a round trip for a no-op patch.
+    #[allow(clippy::too_many_arguments)]
+    async fn adopt_without_resending(
+        db: &Arc<ClientDatabase>,
+        client_id: Uuid,
+        event_dispatcher: &Arc<EventDispatcher>,
+        document_id: Uuid,
+        upload_retry: &UploadRetry,
+        server: &HashMismatch,
+        expected: &DocumentPreImage,
+        mut doc: Document,
+    ) -> SyncResult<()> {
+        doc.content = server.current_content.clone();
+        doc.sync_revision = server.current_revision;
+        doc.updated_at = chrono::Utc::now();
+
+        if !db
+            .save_document_if_unchanged(&doc, settled_status(expected.sync_status), expected)
+            .await?
+        {
+            tracing::warn!(
+                "CLIENT {}: Adopting {} raced a local edit, resending instead",
+                client_id,
+                document_id
+            );
+            upload_retry
+                .resend_after_rebase(client_id, document_id)
+                .await;
+            return Ok(());
+        }
+
+        db.remove_from_sync_queue(&document_id).await?;
+
+        tracing::info!(
+            "CLIENT {}: Rejected update for {} was already in the server's revision {}, nothing to resend",
+            client_id,
+            document_id,
+            server.current_revision
+        );
+
+        event_dispatcher.emit_document_updated_with_attribution(
+            &doc.id,
+            &doc.content,
+            doc.user_id.as_ref(),
+            doc.author_name.as_deref(),
+            doc.visibility.as_deref(),
+        );
+        Ok(())
+    }
+
     /// Give up on reconciling a rejected edit: the server's copy becomes local
     /// truth, the document is marked `Conflict`, and the host app is told.
     ///
@@ -1652,7 +1735,6 @@ impl Client {
         };
         doc.content = server.current_content.clone();
         doc.sync_revision = server.current_revision;
-        doc.content_hash = Some(server.current_hash.clone());
         doc.updated_at = chrono::Utc::now();
 
         if !db
@@ -1853,10 +1935,19 @@ impl Client {
             content: doc.content.clone(),
             sync_status: status.unwrap_or(SyncStatus::Conflict),
         };
-        let has_local_edits = matches!(
-            expected.sync_status,
-            SyncStatus::Pending | SyncStatus::Conflict
-        );
+        // A settled `Conflict` already holds the server's content and has no
+        // queued patch, so there is nothing to protect: take the server's state
+        // and keep the flag. Only a genuine local edit resolves a conflict.
+        let has_local_edits = match expected.sync_status {
+            SyncStatus::Pending => true,
+            SyncStatus::Conflict => db
+                .get_queued_patch(&document_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some(),
+            _ => false,
+        };
 
         let local_content = doc.content.clone();
         doc.sync_revision = sync_revision;
@@ -1874,13 +1965,14 @@ impl Client {
                 sync_revision,
                 &rebased,
                 &content_hash,
+                expected.sync_status,
                 &expected,
             )
             .await?
         } else {
             doc.content = content;
             doc.content_hash = Some(content_hash);
-            db.save_document_if_unchanged(&doc, SyncStatus::Synced, &expected)
+            db.save_document_if_unchanged(&doc, settled_status(expected.sync_status), &expected)
                 .await?
         };
 
@@ -1960,10 +2052,17 @@ impl Client {
 
                 // Unsent local edits, or a gap in the revision stream: the
                 // patch's base is not what we hold, so never blind-apply it.
+                //
+                // A settled `Conflict` holds the SERVER's content — only the
+                // flag differs — so a contiguous patch applies to it exactly as
+                // safely as to a `Synced` document. The flag is preserved on the
+                // write below: only a genuine local edit resolves a conflict.
                 let status = db.get_sync_status(&document_id).await?;
-                if status != Some(SyncStatus::Synced)
-                    || doc.sync_revision + 1 != patch.sync_revision
-                {
+                let appliable = matches!(
+                    status,
+                    Some(SyncStatus::Synced) | Some(SyncStatus::Conflict)
+                );
+                if !appliable || doc.sync_revision + 1 != patch.sync_revision {
                     tracing::info!(
                         "CLIENT {}: Cannot apply patch for {} (status {:?}, local revision {}, patch revision {}), resyncing",
                         client_id,
@@ -2002,11 +2101,14 @@ impl Client {
                 }
 
                 // Commit conditionally on the state the guard just verified: a
-                // local update landing since then must not be overwritten.
+                // local update landing since then must not be overwritten. The
+                // status is carried through unchanged so a document the user
+                // still has to resolve does not silently become `Synced`.
+                let status = status.unwrap_or(SyncStatus::Conflict);
                 let expected = DocumentPreImage {
                     sync_revision: doc.sync_revision,
                     content: doc.content.clone(),
-                    sync_status: SyncStatus::Synced,
+                    sync_status: status,
                 };
 
                 doc.content = new_content;
@@ -2015,7 +2117,7 @@ impl Client {
                 doc.updated_at = chrono::Utc::now();
 
                 if !db
-                    .save_document_if_unchanged(&doc, SyncStatus::Synced, &expected)
+                    .save_document_if_unchanged(&doc, status, &expected)
                     .await?
                 {
                     tracing::warn!(
@@ -3113,6 +3215,18 @@ mod broadcast_guard_tests {
 
     async fn queued_base_hash(db: &Arc<ClientDatabase>, id: &Uuid) -> Option<String> {
         db.get_queued_patch(id).await.unwrap().and_then(|(_, h)| h)
+    }
+
+    /// The stored content text, not the parsed value: the compare-and-swap
+    /// compares text, so "unchanged" has to be asserted at that level.
+    async fn raw_content(db: &Arc<ClientDatabase>, id: &Uuid) -> String {
+        sqlx::query("SELECT content FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("content")
+            .unwrap()
     }
 
     async fn resync_attempts(canned: &Arc<CannedResync>) -> Vec<Uuid> {
@@ -4296,6 +4410,316 @@ mod broadcast_guard_tests {
         );
         assert_eq!(doc.content, last, "the server's copy becomes local truth");
         assert_eq!(doc.sync_revision, 99);
+    }
+
+    /// Drive a document into a settled `Conflict` through the real path.
+    async fn seed_settled_conflict(
+        db: &Arc<ClientDatabase>,
+        id: Uuid,
+        server: &Value,
+        revision: i64,
+    ) {
+        let base = base_content();
+        // An edit to a field the winner removed cannot be rebased.
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(db, id, &base, &local, revision - 1).await;
+
+        let (upload_retry, _rx) = retry_probe();
+        deliver_ack(
+            db,
+            &dispatcher(),
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((revision, server.clone(), calculate_checksum(server))),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Conflict),
+            "the fixture must actually reach Conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_broadcast_onto_a_settled_conflict_advances_content_and_keeps_the_flag() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let server = json!({"title": "winner"});
+        seed_settled_conflict(&db, id, &server, 5).await;
+
+        // The conflicted copy IS the server's content, so a contiguous patch
+        // applies cleanly. What must NOT happen is the flag being cleared or
+        // flipped to Pending, which would resend and lose the user's signal.
+        let next = json!({"title": "winner", "note": "later"});
+        let resynced = deliver(&db, &dispatcher(), server_patch(id, &server, &next, 6)).await;
+
+        assert!(
+            resynced.is_empty(),
+            "a contiguous patch onto a conflict must apply, not resync"
+        );
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, next, "content must keep following the server");
+        assert_eq!(doc.sync_revision, 6);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Conflict),
+            "only a local edit may resolve a conflict"
+        );
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            0,
+            "nothing may be queued for upload"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resync_of_a_settled_conflict_keeps_the_flag() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let server = json!({"title": "winner"});
+        seed_settled_conflict(&db, id, &server, 5).await;
+
+        let fresh = json!({"title": "winner", "note": "much later"});
+        Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::GetDocumentResponse {
+                id,
+                content: fresh.clone(),
+                sync_revision: 9,
+                content_hash: calculate_checksum(&fresh),
+                deleted: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(
+            doc.content, fresh,
+            "a conflict with nothing queued has no local edits to protect"
+        );
+        assert_eq!(doc.sync_revision, 9);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Conflict)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_local_edit_resolves_a_conflict_into_pending() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let server = json!({"title": "winner"});
+        seed_settled_conflict(&db, id, &server, 5).await;
+
+        // Editing the document is the user's implicit resolution.
+        let resolved = json!({"title": "winner", "referenceFrequency": 441.0});
+        let mut doc = db.get_document(&id).await.unwrap();
+        let previous = doc.content.clone();
+        doc.content = resolved.clone();
+        db.save_document_and_queue_patch(
+            &doc,
+            &create_patch(&previous, &resolved).unwrap(),
+            replicant_core::protocol::ChangeEventType::Update,
+            Some(calculate_checksum(&previous)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending),
+            "a local edit must clear the conflict"
+        );
+        assert_eq!(queued_update_rows(&db, &id).await, 1);
+    }
+
+    /// Store content in a form `serde_json` would never emit. The row still
+    /// parses to the same `Value`, so it reads as the pre-image, but the CAS
+    /// binds the canonical text and can never match — a permanently losing
+    /// swap, with no races involved.
+    async fn wedge_the_swap(db: &Arc<ClientDatabase>, id: &Uuid, content: &Value) {
+        sqlx::query("UPDATE documents SET content = ? WHERE id = ?")
+            .bind(format!("{:#}", content))
+            .bind(id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_rebase_that_loses_the_swap_resends_and_spends_one_attempt() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+        wedge_the_swap(&db, &id, &local).await;
+        let before = raw_content(&db, &id).await;
+
+        let (upload_retry, mut retry_rx) = retry_probe();
+        let server = json!({"title": "winner", "referenceFrequency": 440.0});
+        deliver_ack(
+            &db,
+            &dispatcher(),
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((2, server.clone(), calculate_checksum(&server))),
+            ),
+        )
+        .await;
+
+        assert!(
+            retry_rx.try_recv().is_ok(),
+            "a lost swap must resend so the newer edit gets its own round"
+        );
+        assert!(
+            retry_rx.try_recv().is_err(),
+            "exactly one resend per lost round"
+        );
+        assert_eq!(
+            raw_content(&db, &id).await,
+            before,
+            "a lost swap must write nothing"
+        );
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending)
+        );
+
+        // Two more rounds spend the rest of the budget; the fourth has none
+        // left and falls through to the conflict settlement.
+        for _ in 0..2 {
+            deliver_ack(
+                &db,
+                &dispatcher(),
+                &upload_retry,
+                id,
+                update_rejected(
+                    id,
+                    "hash_mismatch",
+                    Some((2, server.clone(), calculate_checksum(&server))),
+                ),
+            )
+            .await;
+            assert!(retry_rx.try_recv().is_ok(), "each round resends once");
+        }
+
+        deliver_ack(
+            &db,
+            &dispatcher(),
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((2, server.clone(), calculate_checksum(&server))),
+            ),
+        )
+        .await;
+        assert!(
+            retry_rx.try_recv().is_err(),
+            "the budget is spent, so no fourth resend"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conflict_settlement_that_loses_the_swap_leaves_the_document_alone() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+        wedge_the_swap(&db, &id, &local).await;
+        let before = raw_content(&db, &id).await;
+
+        // The winner removed the edited field, so the queued patch cannot
+        // apply: this goes straight to settle_as_conflict, whose own swap is
+        // wedged too.
+        let server = json!({"title": "winner"});
+        let (upload_retry, mut retry_rx) = retry_probe();
+        deliver_ack(
+            &db,
+            &dispatcher(),
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((2, server.clone(), calculate_checksum(&server))),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            raw_content(&db, &id).await,
+            before,
+            "a settlement that loses the swap must not clobber the newer edit"
+        );
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending),
+            "the document stays pending for its own upload round"
+        );
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            1,
+            "the queue row survives an uncommitted settlement"
+        );
+        assert!(
+            retry_rx.try_recv().is_err(),
+            "the settlement path terminates rather than resending"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rebase_that_changes_nothing_is_adopted_without_a_resend() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+
+        // The winner's update already carries this client's edit.
+        let server = json!({"title": "winner", "referenceFrequency": 441.0});
+        let (upload_retry, mut retry_rx) = retry_probe();
+        deliver_ack(
+            &db,
+            &dispatcher(),
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((2, server.clone(), calculate_checksum(&server))),
+            ),
+        )
+        .await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, server);
+        assert_eq!(doc.sync_revision, 2);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Synced),
+            "nothing is outstanding once the edit is already on the server"
+        );
+        assert_eq!(queued_update_rows(&db, &id).await, 0);
+        assert!(
+            retry_rx.try_recv().is_err(),
+            "a no-op patch must not cost an upload round trip"
+        );
     }
 
     #[tokio::test]

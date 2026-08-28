@@ -23,6 +23,8 @@
 mod basic_sync_test;
 mod conflict_test;
 mod credential_enrollment_test;
+mod divergence_test;
+mod hash_interop_test;
 mod identity_adoption_test;
 mod live_sync_test;
 mod multi_client_test;
@@ -74,6 +76,84 @@ pub fn test_user_id() -> Uuid {
 
 pub fn skip_if_no_server() -> bool {
     std::env::var("RUN_INTEGRATION_TESTS").is_err()
+}
+
+/// The canonical user id, required rather than defaulted: a test that drives a
+/// real `Client` must join the same topic as its `TestClient` driver.
+pub fn canonical_user_id() -> Uuid {
+    std::env::var("REPLICANT_TEST_USER_ID")
+        .ok()
+        .and_then(|s| Uuid::parse_str(&s).ok())
+        .expect("REPLICANT_TEST_USER_ID is required for tests that drive a real Client")
+}
+
+/// A unique on-disk database path for a real `Client` under test.
+pub fn temp_db_path(tag: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("databases/{}_{}_{}.sqlite3", tag, std::process::id(), nanos)
+}
+
+/// Delete a temporary database, including the `-wal` and `-shm` siblings SQLite
+/// leaves behind.
+pub fn remove_temp_db(db_file: &str) {
+    for path in [
+        db_file.to_string(),
+        format!("{}-wal", db_file),
+        format!("{}-shm", db_file),
+    ] {
+        std::fs::remove_file(path).ok();
+    }
+}
+
+/// Connect a real `Client` (the subject under test, as opposed to the raw
+/// `TestClient` driver) and wait for it to come up.
+pub async fn connect_subject(db_url: &str) -> replicant_client::Client {
+    let client = replicant_client::Client::with_event_dispatcher(
+        db_url,
+        &server_url(),
+        TEST_EMAIL,
+        &test_api_key(),
+        &test_api_secret(),
+        Some(canonical_user_id()),
+        None,
+    )
+    .await
+    .expect("subject client should connect");
+
+    for _ in 0..50 {
+        if client.is_connected() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(client.is_connected(), "subject client should be connected");
+    client
+}
+
+/// Open a real `Client` on an existing database with no reachable server, so
+/// local edits queue instead of uploading. Port 1 refuses immediately, which is
+/// as offline as a client can be while still running its full write path.
+pub async fn open_offline_subject(db_url: &str) -> replicant_client::Client {
+    let client = replicant_client::Client::with_event_dispatcher(
+        db_url,
+        "ws://127.0.0.1:1/socket/websocket",
+        TEST_EMAIL,
+        &test_api_key(),
+        &test_api_secret(),
+        Some(canonical_user_id()),
+        None,
+    )
+    .await
+    .expect("offline client should still open");
+
+    assert!(
+        !client.is_connected(),
+        "the offline client must not reach a server"
+    );
+    client
 }
 
 /// A broadcast event received from the server
@@ -229,6 +309,11 @@ impl TestClient {
             "content_hash": content_hash
         });
         self.call("update_document", &payload).await
+    }
+
+    pub async fn get_document(&self, document_id: Uuid) -> Result<Value, String> {
+        let payload = json!({"id": document_id.to_string()});
+        self.call("get_document", &payload).await
     }
 
     pub async fn delete_document(&self, document_id: Uuid) -> Result<Value, String> {

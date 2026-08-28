@@ -1,7 +1,9 @@
 //! Conflict handling tests: hash mismatch, duplicate IDs
 
-use super::{serial, skip_if_no_server, TestClient, TEST_EMAIL};
-use serde_json::json;
+use super::{connect_subject, serial, skip_if_no_server, temp_db_path, TestClient, TEST_EMAIL};
+use replicant_client::ClientDatabase;
+use serde_json::{json, Value};
+use std::time::Duration;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -198,4 +200,124 @@ async fn test_concurrent_updates_one_wins() {
         result_b.is_err(),
         "Client B's update should fail with stale hash"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Rebase-and-resend on hash_mismatch (DEV-1037, Task 5)
+// ---------------------------------------------------------------------------
+
+/// Poll a client's local database until its content matches `expected`.
+async fn wait_for_content(db_url: &str, id: Uuid, expected: &Value) -> Option<Value> {
+    let db = ClientDatabase::new(db_url).await.unwrap();
+    for _ in 0..150 {
+        if let Ok(doc) = db.get_document(&id).await {
+            if &doc.content == expected {
+                return Some(doc.content);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    ClientDatabase::new(db_url)
+        .await
+        .unwrap()
+        .get_document(&id)
+        .await
+        .ok()
+        .map(|d| d.content)
+}
+
+async fn local_revision(db_url: &str, id: Uuid) -> Option<i64> {
+    ClientDatabase::new(db_url)
+        .await
+        .unwrap()
+        .get_document(&id)
+        .await
+        .ok()
+        .map(|d| d.sync_revision)
+}
+
+/// Two clients edit different fields of the same document from the same base.
+/// The loser's upload is rejected with `hash_mismatch`; it must rebase its
+/// queued patch onto the winner's content and resend, so both clients AND the
+/// server end up holding both edits.
+#[tokio::test]
+#[serial]
+async fn concurrent_edits_to_different_fields_converge_on_both() {
+    if skip_if_no_server() {
+        return;
+    }
+
+    std::fs::create_dir_all("databases").ok();
+    let winner_db_file = temp_db_path("rebase_winner");
+    let loser_db_file = temp_db_path("rebase_loser");
+    let winner_db = format!("sqlite:{}?mode=rwc", winner_db_file);
+    let loser_db = format!("sqlite:{}?mode=rwc", loser_db_file);
+
+    let winner = connect_subject(&winner_db).await;
+    let loser = connect_subject(&loser_db).await;
+
+    let doc_id = Uuid::new_v4();
+    let base = json!({"title": "base", "referenceFrequency": 440.0});
+    winner
+        .create_document_with_id(doc_id, base.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        wait_for_content(&loser_db, doc_id, &base).await.as_ref(),
+        Some(&base),
+        "the loser should receive the created document"
+    );
+    let base_revision = local_revision(&loser_db, doc_id).await.unwrap();
+
+    // The winner edits `title`.
+    let won = json!({"title": "winner", "referenceFrequency": 440.0});
+    winner.update_document(doc_id, won.clone()).await.unwrap();
+    assert_eq!(
+        wait_for_content(&winner_db, doc_id, &won).await.as_ref(),
+        Some(&won)
+    );
+
+    // Simulate the loser never having seen that update: rewind its row to the
+    // shared base. Its next edit is therefore built on a stale hash, exactly as
+    // a genuinely concurrent edit would be.
+    {
+        let db = ClientDatabase::new(&loser_db).await.unwrap();
+        sqlx::query("UPDATE documents SET content = ?, sync_revision = ? WHERE id = ?")
+            .bind(base.to_string())
+            .bind(base_revision)
+            .bind(doc_id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    // The loser edits `referenceFrequency` from the stale base.
+    let lost = json!({"title": "base", "referenceFrequency": 441.0});
+    loser.update_document(doc_id, lost).await.unwrap();
+
+    let merged = json!({"title": "winner", "referenceFrequency": 441.0});
+
+    assert_eq!(
+        wait_for_content(&loser_db, doc_id, &merged).await.as_ref(),
+        Some(&merged),
+        "the loser must rebase onto the winner's content, not drop its edit"
+    );
+    assert_eq!(
+        wait_for_content(&winner_db, doc_id, &merged).await.as_ref(),
+        Some(&merged),
+        "the winner must converge on the rebased content"
+    );
+
+    let driver = TestClient::connect(TEST_EMAIL).await.unwrap();
+    let server_doc = driver.get_document(doc_id).await.unwrap();
+    assert_eq!(
+        server_doc.get("content").cloned(),
+        Some(merged),
+        "the server must hold both edits too"
+    );
+
+    drop(winner);
+    drop(loser);
+    std::fs::remove_file(&winner_db_file).ok();
+    std::fs::remove_file(&loser_db_file).ok();
 }

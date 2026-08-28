@@ -26,48 +26,6 @@ pub type DocumentParams = (
 pub struct Queries;
 
 impl Queries {
-    /// Create the client database schema
-    pub const SCHEMA: &'static str = r#"
-        CREATE TABLE IF NOT EXISTS user_config (
-            user_id TEXT PRIMARY KEY,
-            server_url TEXT NOT NULL,
-            last_sync_at TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS documents (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            content JSON NOT NULL,
-            sync_revision INTEGER NOT NULL DEFAULT 1,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            deleted_at TIMESTAMP,
-            local_changes JSON,
-            sync_status TEXT DEFAULT 'pending',
-            title TEXT,
-            author_name TEXT,
-            visibility TEXT,
-            provenance JSON,
-            CHECK (sync_status IN ('synced', 'pending', 'conflict'))
-        );
-        
-        CREATE TABLE IF NOT EXISTS sync_queue (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            document_id TEXT NOT NULL,
-            operation_type TEXT NOT NULL,
-            patch JSON,
-            old_content_hash TEXT,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            retry_count INTEGER DEFAULT 0,
-            FOREIGN KEY (document_id) REFERENCES documents(id),
-            CHECK (operation_type IN ('create', 'update', 'delete'))
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents(user_id);
-        CREATE INDEX IF NOT EXISTS idx_documents_sync_status ON documents(sync_status);
-        CREATE INDEX IF NOT EXISTS idx_sync_queue_created_at ON sync_queue(created_at);
-    "#;
-
     // User config queries
     pub const GET_USER_ID: &'static str = "SELECT user_id FROM user_config LIMIT 1";
 
@@ -222,12 +180,6 @@ impl Queries {
 pub struct DbHelpers;
 
 impl DbHelpers {
-    /// Initialize the database schema
-    pub async fn init_schema(pool: &SqlitePool) -> SyncResult<()> {
-        sqlx::query(Queries::SCHEMA).execute(pool).await?;
-        Ok(())
-    }
-
     /// Parse a document from a database row
     pub fn parse_document(row: &SqliteRow) -> SyncResult<Document> {
         let id: String = row.get("id");

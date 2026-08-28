@@ -2,11 +2,12 @@ use crate::error_code::{error_code_for_reason, ReplicantErrorCode};
 use crate::events::EventDispatcher;
 use hmac::{Hmac, Mac};
 use phoenix_channels_client::{
-    Channel, ChannelJoinError, ChannelStatus, Event, Payload, Socket, StatusesError, Topic,
+    CallError, Channel, ChannelJoinError, ChannelStatus, Event, Payload, Socket, StatusesError,
+    Topic,
 };
 use replicant_core::{
     errors::ClientError,
-    models::{Document, DocumentPatch},
+    models::{Document, DocumentPatch, ServerDocumentPatch},
     protocol::{ChangeEvent, ChangeEventType, ClientMessage, ErrorCode, ServerMessage},
     SyncResult,
 };
@@ -291,10 +292,18 @@ impl WebSocketClient {
                                 }
                             }
                             "document_updated" => {
-                                if let Some(patch) = payload_json.as_ref().and_then(json_to_patch) {
-                                    let _ = tx_clone
-                                        .send(ServerMessage::DocumentUpdated { patch })
-                                        .await;
+                                match payload_json.as_ref().and_then(json_to_patch) {
+                                    Some(patch) => {
+                                        let _ = tx_clone
+                                            .send(ServerMessage::DocumentUpdated { patch })
+                                            .await;
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            "dropping malformed document_updated payload: {:?}",
+                                            payload_json
+                                        );
+                                    }
                                 }
                             }
                             "document_deleted" => {
@@ -341,6 +350,7 @@ impl WebSocketClient {
                 limit,
             } => self.get_changes_since(last_sequence, limit).await,
             ClientMessage::AckChanges { .. } => Ok(()),
+            ClientMessage::GetDocument { id } => self.get_document(id).await,
             ClientMessage::Ping => {
                 let _ = self.tx.send(ServerMessage::Pong).await;
                 Ok(())
@@ -387,25 +397,77 @@ impl WebSocketClient {
             "patch": patch.patch,
             "content_hash": patch.content_hash
         });
-        let resp = self.call("update_document", &payload).await;
 
-        let (success, sync_revision, error) = match &resp {
-            Ok(j) => {
-                let rev = j.get("sync_revision").and_then(|v| v.as_i64());
-                (rev.is_some(), rev, None)
+        // Bypass the `call` helper (which stringifies CallError) so a
+        // `hash_mismatch` rejection keeps the server state it carries. Without
+        // it the client cannot rebase and the local edit is silently lost.
+        let encoded = match to_payload(&payload) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = self
+                    .tx
+                    .send(update_rejected(
+                        patch.document_id,
+                        format!("Update failed to encode request: {:?}", e),
+                        Value::Null,
+                    ))
+                    .await;
+                return Ok(());
             }
-            Err(e) => (false, None, Some(format!("{:?}", e))),
         };
 
-        let _ = self
-            .tx
-            .send(ServerMessage::DocumentUpdatedResponse {
-                document_id: patch.document_id,
-                success,
-                error,
-                sync_revision,
-            })
+        let result = self
+            .channel
+            .call(
+                Event::from_string("update_document".to_string()),
+                encoded,
+                CALL_TIMEOUT,
+            )
             .await;
+
+        let message = match result {
+            Ok(reply) => {
+                let revision = payload_to_value(&reply)
+                    .and_then(|j| j.get("sync_revision").and_then(|v| v.as_i64()));
+                match revision {
+                    Some(revision) => ServerMessage::DocumentUpdatedResponse {
+                        document_id: patch.document_id,
+                        success: true,
+                        error: None,
+                        sync_revision: Some(revision),
+                        reason: None,
+                        current_revision: None,
+                        current_content: None,
+                        current_hash: None,
+                    },
+                    None => update_rejected(
+                        patch.document_id,
+                        "Malformed update_document response".to_string(),
+                        Value::Null,
+                    ),
+                }
+            }
+            Err(CallError::Reply { reply }) => {
+                let body = payload_to_value(&reply).unwrap_or(Value::Null);
+                let reason = body
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                update_rejected(
+                    patch.document_id,
+                    format!("Update rejected: {}", reason),
+                    body,
+                )
+            }
+            Err(e) => update_rejected(
+                patch.document_id,
+                format!("Update failed: {:?}", e),
+                Value::Null,
+            ),
+        };
+
+        let _ = self.tx.send(message).await;
         Ok(())
     }
 
@@ -462,6 +524,75 @@ impl WebSocketClient {
             }
         }
         Ok(())
+    }
+
+    async fn get_document(&self, id: Uuid) -> SyncResult<()> {
+        let msg = self.fetch_document(id).await;
+        let _ = self.tx.send(msg).await;
+        Ok(())
+    }
+
+    /// Fetch a full document and return the resulting message to the caller
+    /// instead of routing it through the inbound channel. Resync needs the
+    /// reply inline: routing it back through `tx` would lose the association
+    /// with the document being resynced (`ServerMessage::Error` carries no id).
+    pub async fn fetch_document(&self, id: Uuid) -> ServerMessage {
+        // Bypass the `call` helper (which stringifies CallError) so a
+        // `{"reason": "not_found"}` reply can be distinguished from a
+        // transient transport/timeout failure.
+        let payload = json!({"id": id.to_string()});
+        let encoded = match to_payload(&payload) {
+            Ok(p) => p,
+            Err(e) => {
+                return ServerMessage::Error {
+                    code: ErrorCode::ServerError,
+                    message: format!("Get document failed to encode request: {:?}", e),
+                }
+            }
+        };
+
+        let result = self
+            .channel
+            .call(
+                Event::from_string("get_document".to_string()),
+                encoded,
+                CALL_TIMEOUT,
+            )
+            .await;
+
+        match result {
+            Ok(reply) => match payload_to_value(&reply) {
+                Some(j) => match json_to_get_document_response(&j, id) {
+                    Ok(msg) => msg,
+                    Err(parse_err) => ServerMessage::Error {
+                        code: ErrorCode::ServerError,
+                        message: format!("Malformed get_document response: {}", parse_err),
+                    },
+                },
+                None => ServerMessage::Error {
+                    code: ErrorCode::ServerError,
+                    message: "Invalid get_document response payload".to_string(),
+                },
+            },
+            Err(CallError::Reply { reply: payload }) => {
+                let reason = payload_to_value(&payload)
+                    .and_then(|v| v.get("reason").and_then(|r| r.as_str().map(String::from)));
+                match reason.as_deref() {
+                    Some("not_found") => ServerMessage::Error {
+                        code: ErrorCode::DocumentNotFound,
+                        message: "Document not found".to_string(),
+                    },
+                    _ => ServerMessage::Error {
+                        code: ErrorCode::ServerError,
+                        message: format!("Get document failed: server error reply {:?}", reason),
+                    },
+                }
+            }
+            Err(e) => ServerMessage::Error {
+                code: ErrorCode::ServerError,
+                message: format!("Get document failed: {:?}", e),
+            },
+        }
     }
 
     async fn get_changes_since(&self, last_sequence: u64, limit: Option<u32>) -> SyncResult<()> {
@@ -564,6 +695,33 @@ fn to_payload(v: &Value) -> SyncResult<Payload> {
         .map_err(|e| ws_err(format!("Payload error: {:?}", e)))
 }
 
+/// A failed update ack, carrying whatever the server's error reply held.
+///
+/// `body` is the raw rejection payload; for `hash_mismatch` it also carries the
+/// server's current revision, content and hash, which the client rebases onto.
+/// Every field is optional so other reasons — and future ones — still parse.
+fn update_rejected(document_id: Uuid, error: String, body: Value) -> ServerMessage {
+    ServerMessage::DocumentUpdatedResponse {
+        document_id,
+        success: false,
+        error: Some(error),
+        sync_revision: None,
+        reason: body
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        current_revision: body.get("current_revision").and_then(|v| v.as_i64()),
+        current_content: body
+            .get("current_content")
+            .filter(|v| !v.is_null())
+            .cloned(),
+        current_hash: body
+            .get("current_hash")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    }
+}
+
 fn payload_to_value(p: &Payload) -> Option<Value> {
     match p {
         Payload::JSONPayload { json } => Some(Value::from(json.clone())),
@@ -631,17 +789,52 @@ fn json_to_document(j: &Value) -> Option<Document> {
     })
 }
 
-fn json_to_patch(j: &Value) -> Option<DocumentPatch> {
+fn json_to_patch(j: &Value) -> Option<ServerDocumentPatch> {
     let patch_value = j.get("patch")?;
     let patch: json_patch::Patch = serde_json::from_value(patch_value.clone()).ok()?;
-    Some(DocumentPatch {
-        document_id: Uuid::parse_str(j.get("id")?.as_str()?).ok()?,
+    let id_str = j
+        .get("document_id")
+        .or_else(|| j.get("id"))
+        .and_then(|v| v.as_str())?;
+    Some(ServerDocumentPatch {
+        document_id: Uuid::parse_str(id_str).ok()?,
         patch,
-        content_hash: j
-            .get("content_hash")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_default(),
+        sync_revision: j.get("sync_revision")?.as_i64()?,
+        content_hash: j.get("content_hash")?.as_str().map(String::from)?,
+    })
+}
+
+/// Parse a `get_document` success reply into `ServerMessage::GetDocumentResponse`.
+///
+/// `sync_revision` and `content_hash` are new fields with no legacy-compat
+/// requirement: a reply missing either is malformed and must be rejected
+/// rather than silently defaulted, since a defaulted revision would corrupt
+/// downstream continuity checks. `id` falls back to the requested id (the
+/// server always echoes it, but the caller already knows it either way).
+fn json_to_get_document_response(j: &Value, requested_id: Uuid) -> Result<ServerMessage, String> {
+    let id = j
+        .get("id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .unwrap_or(requested_id);
+    let content = j.get("content").cloned().unwrap_or(Value::Null);
+    let sync_revision = j
+        .get("sync_revision")
+        .and_then(|v| v.as_i64())
+        .ok_or("missing or invalid sync_revision")?;
+    let content_hash = j
+        .get("content_hash")
+        .and_then(|v| v.as_str())
+        .ok_or("missing or invalid content_hash")?
+        .to_string();
+    let deleted = j.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    Ok(ServerMessage::GetDocumentResponse {
+        id,
+        content,
+        sync_revision,
+        content_hash,
+        deleted,
     })
 }
 
@@ -670,6 +863,96 @@ fn json_to_change_event(j: &Value) -> Option<ChangeEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_to_patch_reads_sync_revision_and_content_hash() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "sync_revision": 7,
+            "content_hash": "abc123"
+        });
+        let patch = json_to_patch(&j).unwrap();
+        assert_eq!(
+            patch.document_id.to_string(),
+            "71b2b712-7878-56ee-8323-43809b8198a5"
+        );
+        assert_eq!(patch.sync_revision, 7);
+        assert_eq!(patch.content_hash, "abc123");
+    }
+
+    #[test]
+    fn json_to_patch_missing_sync_revision_is_none() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "content_hash": "abc123"
+        });
+        assert!(json_to_patch(&j).is_none());
+    }
+
+    #[test]
+    fn json_to_patch_missing_content_hash_is_none() {
+        let j = serde_json::json!({
+            "id": "71b2b712-7878-56ee-8323-43809b8198a5",
+            "patch": [{"op": "replace", "path": "/title", "value": "T"}],
+            "sync_revision": 7
+        });
+        assert!(json_to_patch(&j).is_none());
+    }
+
+    #[test]
+    fn json_to_get_document_response_tolerates_unknown_fields() {
+        let requested_id = Uuid::new_v4();
+        let j = serde_json::json!({
+            "id": requested_id.to_string(),
+            "content": {"title": "T"},
+            "sync_revision": 5,
+            "content_hash": "abc123",
+            "deleted": false,
+            "future_field": {"nested": "data"}
+        });
+        let msg = json_to_get_document_response(&j, requested_id).unwrap();
+        match msg {
+            ServerMessage::GetDocumentResponse {
+                id,
+                sync_revision,
+                content_hash,
+                deleted,
+                ..
+            } => {
+                assert_eq!(id, requested_id);
+                assert_eq!(sync_revision, 5);
+                assert_eq!(content_hash, "abc123");
+                assert!(!deleted);
+            }
+            other => panic!("expected GetDocumentResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn json_to_get_document_response_missing_sync_revision_is_error() {
+        let requested_id = Uuid::new_v4();
+        let j = serde_json::json!({
+            "id": requested_id.to_string(),
+            "content": {},
+            "content_hash": "abc123",
+            "deleted": false
+        });
+        assert!(json_to_get_document_response(&j, requested_id).is_err());
+    }
+
+    #[test]
+    fn json_to_get_document_response_missing_content_hash_is_error() {
+        let requested_id = Uuid::new_v4();
+        let j = serde_json::json!({
+            "id": requested_id.to_string(),
+            "content": {},
+            "sync_revision": 5,
+            "deleted": false
+        });
+        assert!(json_to_get_document_response(&j, requested_id).is_err());
+    }
 
     #[test]
     fn json_to_document_reads_attribution() {

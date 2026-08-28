@@ -1,4 +1,4 @@
-use crate::models::{Document, DocumentPatch};
+use crate::models::{Document, DocumentPatch, ServerDocumentPatch};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
 use uuid::Uuid;
@@ -44,6 +44,11 @@ pub enum ClientMessage {
         up_to_sequence: u64, // Client confirms it processed up to this sequence
     },
 
+    // Full-document fetch (used to resync a document off of a broadcast gap)
+    GetDocument {
+        id: Uuid,
+    },
+
     // Heartbeat
     Ping,
 }
@@ -65,10 +70,19 @@ pub enum ServerMessage {
         document: Document,
     },
     DocumentUpdated {
-        patch: DocumentPatch,
+        patch: ServerDocumentPatch,
     },
     DocumentDeleted {
         document_id: Uuid,
+    },
+
+    // Full-document fetch response
+    GetDocumentResponse {
+        id: Uuid,
+        content: serde_json::Value,
+        sync_revision: i64,
+        content_hash: String,
+        deleted: bool,
     },
 
     // Document operation confirmations
@@ -88,6 +102,21 @@ pub enum ServerMessage {
         success: bool,
         error: Option<String>,
         sync_revision: Option<i64>,
+        /// Machine-readable rejection reason (`hash_mismatch`, `not_found`,
+        /// `missing_hash`, ...). Optional so a reply carrying only a free-form
+        /// `error` still parses.
+        #[serde(default)]
+        reason: Option<String>,
+        /// Server state at the moment the update was rejected. Sent with
+        /// `hash_mismatch` so the client can rebase its queued patch onto the
+        /// current content instead of dropping the edit. All three are absent
+        /// for every other reason.
+        #[serde(default)]
+        current_revision: Option<i64>,
+        #[serde(default)]
+        current_content: Option<serde_json::Value>,
+        #[serde(default)]
+        current_hash: Option<String>,
     },
     DocumentDeletedResponse {
         document_id: Uuid,

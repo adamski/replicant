@@ -2,8 +2,12 @@
 //!
 //! Ported from the original Rust server integration tests.
 
-use super::{serial, skip_if_no_server, TestClient, TEST_EMAIL};
+use super::{
+    connect_subject, open_offline_subject, remove_temp_db, serial, skip_if_no_server, temp_db_path,
+    TestClient, TEST_EMAIL,
+};
 use serde_json::json;
+use std::time::Duration;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -322,6 +326,97 @@ async fn test_array_operations_no_duplication() {
     assert_eq!(tags.len(), 2, "Should have exactly 2 tags, got: {:?}", tags);
     assert_eq!(tags[0], "existing");
     assert_eq!(tags[1], "new_tag");
+}
+
+/// Poll the subject's local database until the document settles as synced.
+async fn wait_for_local_synced(db_url: &str, id: Uuid) -> bool {
+    let db = replicant_client::ClientDatabase::new(db_url).await.unwrap();
+    for _ in 0..100 {
+        if let Ok(Some(replicant_core::models::SyncStatus::Synced)) = db.get_sync_status(&id).await
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// Three edits made while offline must reach the server as ONE patch against
+/// the revision the server actually holds. Each edit adds a distinct key, so
+/// uploading only the newest fragment would land the last key and silently drop
+/// the other two — and would be rejected as a `hash_mismatch` first, costing an
+/// extra round trip.
+#[tokio::test]
+#[serial]
+async fn offline_edits_flush_as_one_cumulative_patch() {
+    if skip_if_no_server() {
+        return;
+    }
+
+    std::fs::create_dir_all("databases").ok();
+    let db_file = temp_db_path("offline_flush");
+    let db_url = format!("sqlite:{}?mode=rwc", db_file);
+
+    let driver = TestClient::connect(TEST_EMAIL).await.unwrap();
+    let doc_id = Uuid::new_v4();
+    let base = json!({"title": "base"});
+
+    let created_revision = {
+        let subject = connect_subject(&db_url).await;
+        subject
+            .create_document_with_id(doc_id, base.clone())
+            .await
+            .unwrap();
+        assert!(
+            wait_for_local_synced(&db_url, doc_id).await,
+            "the created document should be acknowledged before going offline"
+        );
+        let created = driver.get_document(doc_id).await.unwrap();
+        created
+            .get("sync_revision")
+            .and_then(|v| v.as_i64())
+            .expect("server holds the created document")
+    };
+
+    // Offline: three edits, each building on the previous one.
+    let final_content = json!({"title": "base", "a": 1, "b": 2, "c": 3});
+    {
+        let offline = open_offline_subject(&db_url).await;
+        offline
+            .update_document(doc_id, json!({"title": "base", "a": 1}))
+            .await
+            .unwrap();
+        offline
+            .update_document(doc_id, json!({"title": "base", "a": 1, "b": 2}))
+            .await
+            .unwrap();
+        offline
+            .update_document(doc_id, final_content.clone())
+            .await
+            .unwrap();
+    }
+
+    // Reconnecting flushes the queue; the subject settles once the server acks.
+    let subject = connect_subject(&db_url).await;
+    assert!(
+        wait_for_local_synced(&db_url, doc_id).await,
+        "the flushed edits should be acknowledged, not left pending"
+    );
+
+    let server_doc = driver.get_document(doc_id).await.unwrap();
+    assert_eq!(
+        server_doc.get("content"),
+        Some(&final_content),
+        "the flush must carry all three offline edits, not the newest fragment"
+    );
+    assert_eq!(
+        server_doc.get("sync_revision").and_then(|v| v.as_i64()),
+        Some(created_revision + 1),
+        "three offline edits must cost exactly one server revision"
+    );
+
+    drop(subject);
+    remove_temp_db(&db_file);
 }
 
 /// Proves envelope attribution flows end-to-end: server stamps author_name

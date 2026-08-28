@@ -44,6 +44,58 @@ enum UploadType {
     Delete,
 }
 
+/// What the next upload for a pending document has to be.
+enum PendingUploadKind {
+    Create,
+    Update {
+        patch: json_patch::Patch,
+        old_content_hash: Option<String>,
+    },
+}
+
+/// Decide whether a pending document uploads as a create or an update.
+///
+/// An unconsumed `create` row wins over anything else queued: the document has
+/// never reached the server, so an update for it is answered `not_found` and the
+/// document sits Pending forever. The create sends the document's CURRENT
+/// content, which already folds in every local edit made since — and the ack
+/// clears the whole queue for the document, so the update row those edits built
+/// has nothing left to say.
+///
+/// Without a create row the queued update is the signal, exactly as before: a
+/// cumulative patch means update, nothing queued means the document is new to
+/// the server. A queue that cannot be read falls back to create, which is what
+/// the reconnect and immediate-sync paths have always done.
+async fn classify_pending_upload(db: &ClientDatabase, document_id: &Uuid) -> PendingUploadKind {
+    match db.has_queued_create(document_id).await {
+        Ok(true) => return PendingUploadKind::Create,
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(
+                "CLIENT: Could not read the queued create for {} ({}), classifying by patch",
+                document_id,
+                e
+            );
+        }
+    }
+
+    match db.get_queued_patch(document_id).await {
+        Ok(Some((patch, old_content_hash))) => PendingUploadKind::Update {
+            patch,
+            old_content_hash,
+        },
+        Ok(None) => PendingUploadKind::Create,
+        Err(e) => {
+            tracing::warn!(
+                "CLIENT: Could not read the queued patch for {} ({}), sending a create",
+                document_id,
+                e
+            );
+            PendingUploadKind::Create
+        }
+    }
+}
+
 /// Where `resync_document` gets authoritative document state.
 ///
 /// `Socket` is the production source. The socket handle is cloned out from
@@ -612,9 +664,10 @@ impl Client {
             self.client_id,
             doc.id
         );
-        self.db
-            .save_document_with_status(&doc, Some(SyncStatus::Pending))
-            .await?;
+        // Queue the create alongside the save: until the server acks it, that
+        // row is what tells the upload path this document must be created and
+        // not patched, however many local edits land in the meantime.
+        self.db.save_new_document_and_queue_create(&doc).await?;
 
         self.event_dispatcher
             .emit_document_created_with_attribution(
@@ -977,11 +1030,13 @@ impl Client {
 
                         UploadType::Delete
                     } else {
-                        // Check if we have a patch stored in sync_queue to determine if this is create or update
-                        // With server-authoritative versioning, we can't rely on version number anymore
-                        match self.db.get_queued_patch(&pending_info.id).await? {
-                            Some((stored_patch, old_hash_opt)) => {
-                                // Have a queued patch = this is an UPDATE
+                        // A queued create outranks a queued patch; see
+                        // `classify_pending_upload`.
+                        match classify_pending_upload(&self.db, &pending_info.id).await {
+                            PendingUploadKind::Update {
+                                patch: stored_patch,
+                                old_content_hash: old_hash_opt,
+                            } => {
                                 tracing::info!(
                                     "CLIENT {}: 📋 Found stored patch in sync_queue for doc {} - treating as UPDATE",
                                     self.client_id,
@@ -1029,10 +1084,9 @@ impl Client {
 
                                 UploadType::Update
                             }
-                            None => {
-                                // No queued patch = this is a CREATE
+                            PendingUploadKind::Create => {
                                 tracing::info!(
-                                    "CLIENT {}: No queued patch found for doc {} - treating as CREATE",
+                                    "CLIENT {}: Doc {} has not reached the server - treating as CREATE",
                                     self.client_id,
                                     pending_info.id
                                 );
@@ -2567,13 +2621,13 @@ impl Client {
             document.content
         );
 
-        // Determine if this is create or update by checking for queued patch
-        // If we have a queued patch, it's an update. Otherwise, it's a create.
-        // This works correctly with server-authoritative versioning where client
-        // doesn't increment version locally.
-        let (operation_type, message) = match self.db.get_queued_patch(&document.id).await {
-            Ok(Some((patch, old_hash_opt))) => {
-                // Have a queued patch = this is an UPDATE
+        // A queued create outranks a queued patch; see `classify_pending_upload`.
+        let (operation_type, message) = match classify_pending_upload(&self.db, &document.id).await
+        {
+            PendingUploadKind::Update {
+                patch,
+                old_content_hash,
+            } => {
                 tracing::info!(
                     "CLIENT {}: Sending UPDATE with queued patch for doc {}",
                     self.client_id,
@@ -2585,7 +2639,7 @@ impl Client {
 
                 // Use the stored old content hash, or calculate from current content as fallback
                 let content_hash =
-                    old_hash_opt.unwrap_or_else(|| calculate_checksum(&document.content));
+                    old_content_hash.unwrap_or_else(|| calculate_checksum(&document.content));
 
                 (
                     UploadType::Update,
@@ -2598,27 +2652,11 @@ impl Client {
                     },
                 )
             }
-            Ok(None) => {
-                // No queued patch = this is a CREATE
+            PendingUploadKind::Create => {
                 tracing::info!(
-                    "CLIENT {}: Sending CREATE for doc {} (no queued patch found)",
+                    "CLIENT {}: Sending CREATE for doc {} (the server does not hold it yet)",
                     self.client_id,
                     document.id
-                );
-                (
-                    UploadType::Create,
-                    ClientMessage::CreateDocument {
-                        document: document.clone(),
-                    },
-                )
-            }
-            Err(e) => {
-                // Error querying patch = this is a CREATE
-                tracing::warn!(
-                    "CLIENT {}: Sending CREATE for doc {} (error getting queued patch: {})",
-                    self.client_id,
-                    document.id,
-                    e
                 );
                 (
                     UploadType::Create,
@@ -3020,11 +3058,13 @@ impl Client {
                             ))?;
                         }
                     } else {
-                        // Check if we have a queued patch to determine if this is create or update
-                        // With server-authoritative versioning, we can't rely on version number anymore
-                        match db.get_queued_patch(&pending_info.id).await {
-                            Ok(Some((json_patch, old_hash_opt))) => {
-                                // Have a queued patch = this is an UPDATE
+                        // A queued create outranks a queued patch; see
+                        // `classify_pending_upload`.
+                        match classify_pending_upload(db, &pending_info.id).await {
+                            PendingUploadKind::Update {
+                                patch: json_patch,
+                                old_content_hash: old_hash_opt,
+                            } => {
                                 tracing::info!(
                                     "CLIENT {}: Found queued patch for doc {} - using UpdateDocument",
                                     client_id,
@@ -3066,10 +3106,9 @@ impl Client {
                                     ))?;
                                 }
                             }
-                            Ok(None) | Err(_) => {
-                                // No queued patch = this is a CREATE
+                            PendingUploadKind::Create => {
                                 tracing::info!(
-                                    "CLIENT {}: No queued patch for doc {} - using CreateDocument",
+                                    "CLIENT {}: Doc {} has not reached the server - using CreateDocument",
                                     client_id,
                                     pending_info.id
                                 );
@@ -3115,6 +3154,127 @@ impl Client {
             client_id
         );
         Ok(())
+    }
+}
+
+/// The create-vs-update decision the upload paths share.
+#[cfg(test)]
+mod upload_classification_tests {
+    use super::*;
+    use replicant_core::patches::{apply_patch, create_patch};
+    use replicant_core::protocol::ChangeEventType;
+    use serde_json::json;
+
+    async fn test_db() -> ClientDatabase {
+        let db = ClientDatabase::new(":memory:").await.unwrap();
+        db.run_migrations().await.unwrap();
+        db
+    }
+
+    fn doc_with(id: Uuid, content: serde_json::Value) -> Document {
+        Document {
+            id,
+            user_id: Some(Uuid::new_v4()),
+            content,
+            sync_revision: 1,
+            content_hash: None,
+            title: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
+        }
+    }
+
+    /// One local edit, exactly as `Client::update_document` performs it.
+    async fn edit(db: &ClientDatabase, id: Uuid, new_content: serde_json::Value) {
+        let mut doc = db.get_document(&id).await.unwrap();
+        let old_content = doc.content.clone();
+        let patch = create_patch(&old_content, &new_content).unwrap();
+        doc.content = new_content;
+        db.save_document_and_queue_patch(&doc, &patch, ChangeEventType::Update, Some(&old_content))
+            .await
+            .unwrap();
+    }
+
+    /// The DEV-1040 case: created offline, then edited offline twice. The queued
+    /// update must not win, or the server is asked to patch a document it has
+    /// never seen and answers `not_found` forever.
+    #[tokio::test]
+    async fn a_document_created_offline_uploads_as_a_create_carrying_its_edits() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        db.save_new_document_and_queue_create(&doc_with(id, json!({"title": "draft"})))
+            .await
+            .unwrap();
+
+        edit(&db, id, json!({"title": "draft", "a": 1})).await;
+        let final_content = json!({"title": "draft", "a": 1, "b": 2});
+        edit(&db, id, final_content.clone()).await;
+
+        assert!(
+            matches!(
+                classify_pending_upload(&db, &id).await,
+                PendingUploadKind::Create
+            ),
+            "an unconsumed create must outrank the queued patch"
+        );
+        assert_eq!(
+            db.get_document(&id).await.unwrap().content,
+            final_content,
+            "the create sends current content, which must hold both edits"
+        );
+    }
+
+    /// The regression guard: a document the server already acknowledged still
+    /// uploads its edits as a cumulative update.
+    #[tokio::test]
+    async fn a_document_the_server_holds_uploads_as_an_update() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let acknowledged = json!({"title": "draft"});
+        db.save_new_document_and_queue_create(&doc_with(id, acknowledged.clone()))
+            .await
+            .unwrap();
+        db.remove_from_sync_queue(&id).await.unwrap(); // the create ack
+
+        edit(&db, id, json!({"title": "draft", "a": 1})).await;
+        let final_content = json!({"title": "draft", "a": 1, "b": 2});
+        edit(&db, id, final_content.clone()).await;
+
+        let PendingUploadKind::Update { patch, .. } = classify_pending_upload(&db, &id).await
+        else {
+            panic!("an acknowledged document must upload as an update");
+        };
+
+        let mut replayed = acknowledged;
+        apply_patch(&mut replayed, &patch).unwrap();
+        assert_eq!(
+            replayed, final_content,
+            "the update must still be one cumulative patch off the acknowledged content"
+        );
+    }
+
+    /// A document that is pending with nothing queued at all — a pre-upgrade
+    /// database, or a create whose row predates this fix — still reads as a
+    /// create, exactly as before.
+    #[tokio::test]
+    async fn a_pending_document_with_an_empty_queue_uploads_as_a_create() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        db.save_document_with_status(
+            &doc_with(id, json!({"title": "draft"})),
+            Some(SyncStatus::Pending),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            classify_pending_upload(&db, &id).await,
+            PendingUploadKind::Create
+        ));
     }
 }
 

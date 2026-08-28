@@ -676,6 +676,76 @@ impl ClientDatabase {
         Ok(())
     }
 
+    /// Save a newly created document and queue its `create` in one transaction,
+    /// so a crash between the two can never leave a document the server will
+    /// never be told about.
+    ///
+    /// The queued row is the durable record that this document has NOT reached
+    /// the server. Local edits made before it is sent queue their own `update`
+    /// row beside it and leave it alone; [`Self::has_queued_create`] is what the
+    /// upload path reads to know it must send a create, and the create it sends
+    /// carries the document's current content, which already folds those edits
+    /// in.
+    ///
+    /// The row carries no patch: a create uploads the whole document.
+    pub async fn save_new_document_and_queue_create(&self, doc: &Document) -> SyncResult<()> {
+        let params = DbHelpers::document_to_params(doc, Some(SyncStatus::Pending))?;
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(Queries::UPSERT_DOCUMENT)
+            .bind(params.0) // id
+            .bind(params.1) // user_id
+            .bind(params.2) // content
+            .bind(params.3) // version
+            .bind(params.4) // created_at
+            .bind(params.5) // updated_at
+            .bind(params.6) // deleted_at
+            .bind(params.7) // sync_status
+            .bind(params.8) // title
+            .bind(params.9) // author_name
+            .bind(params.10) // visibility
+            .bind(params.11) // provenance
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(Queries::INSERT_SYNC_QUEUE)
+            .bind(doc.id.to_string())
+            .bind(ChangeEventType::Create.to_string())
+            .bind(Option::<String>::None)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        tracing::info!(
+            "DATABASE: Atomically saved new document {} with pending status and queued its create",
+            doc.id
+        );
+
+        if let Err(e) = self.update_fts_for_document(&doc.id).await {
+            tracing::warn!("FTS: Failed to update index for {}: {:?}", doc.id, e);
+        }
+
+        Ok(())
+    }
+
+    /// Whether the document still carries an unconsumed `create` row — it was
+    /// created locally and the server has never acknowledged it.
+    ///
+    /// An ack clears every row for the document, so this goes false exactly when
+    /// the create lands. Until then it outranks any queued update: the server
+    /// cannot patch a document it does not hold, and answers `not_found`.
+    pub async fn has_queued_create(&self, document_id: &Uuid) -> SyncResult<bool> {
+        let row = sqlx::query(
+            "SELECT 1 FROM sync_queue WHERE document_id = ? AND operation_type = 'create' LIMIT 1",
+        )
+        .bind(document_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.is_some())
+    }
+
     /// Atomically save a document and queue the edit for upload, so a crash
     /// between the two can never lose the edit.
     ///
@@ -1069,6 +1139,76 @@ mod sync_queue_tests {
         assert_eq!(
             replayed, final_content,
             "the queued patch must carry all three edits"
+        );
+    }
+
+    /// A document created offline keeps its `create` row while later offline
+    /// edits pile up beside it, so the flush knows to send a create. The edits
+    /// still collapse into one update row, and an ack clears both — leaving the
+    /// update row with nothing to fire afterwards.
+    #[tokio::test]
+    async fn offline_edits_leave_the_create_row_for_the_upload_to_find() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        let created = json!({"title": "draft"});
+        db.save_new_document_and_queue_create(&doc_with(id, created))
+            .await
+            .unwrap();
+
+        assert!(
+            db.has_queued_create(&id).await.unwrap(),
+            "a locally created document starts out owing the server a create"
+        );
+
+        edit(&db, id, json!({"title": "draft", "a": 1})).await;
+        let final_content = json!({"title": "draft", "a": 1, "b": 2});
+        edit(&db, id, final_content.clone()).await;
+
+        assert!(
+            db.has_queued_create(&id).await.unwrap(),
+            "editing must not consume the create the server still has not seen"
+        );
+        assert_eq!(
+            update_rows(&db, id).await,
+            1,
+            "offline edits must still share one queue row"
+        );
+        assert_eq!(
+            db.get_document(&id).await.unwrap().content,
+            final_content,
+            "the create uploads current content, so it must carry both edits"
+        );
+
+        // What the create ack does.
+        db.remove_from_sync_queue(&id).await.unwrap();
+        assert!(
+            !db.has_queued_create(&id).await.unwrap(),
+            "the ack consumes the create"
+        );
+        assert!(
+            db.get_queued_patch(&id).await.unwrap().is_none(),
+            "the ack also clears the update row, which the create already carried"
+        );
+    }
+
+    /// A document the server has acknowledged owes no create, so its later
+    /// edits upload as updates.
+    #[tokio::test]
+    async fn an_acknowledged_document_owes_no_create() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        let created = json!({"title": "draft"});
+        db.save_new_document_and_queue_create(&doc_with(id, created))
+            .await
+            .unwrap();
+        db.remove_from_sync_queue(&id).await.unwrap();
+
+        edit(&db, id, json!({"title": "edited"})).await;
+
+        assert!(!db.has_queued_create(&id).await.unwrap());
+        assert!(
+            db.get_queued_patch(&id).await.unwrap().is_some(),
+            "the edit still queues an update"
         );
     }
 

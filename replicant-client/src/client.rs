@@ -79,6 +79,7 @@ pub(crate) struct CannedResync {
 pub(crate) struct UploadRetry {
     trigger: mpsc::Sender<()>,
     already_retried: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+    rebase_attempts: Arc<Mutex<HashMap<Uuid, u32>>>,
 }
 
 impl UploadRetry {
@@ -86,6 +87,7 @@ impl UploadRetry {
         Self {
             trigger,
             already_retried: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            rebase_attempts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -99,19 +101,65 @@ impl UploadRetry {
             return;
         }
 
+        self.trigger_upload_pass(client_id, document_id).await;
+    }
+
+    /// Claim one of [`MAX_REBASE_ATTEMPTS`] rebase rounds for `document_id`.
+    ///
+    /// A rebase-resend is not the blind retry `schedule` bounds: every round
+    /// rewrites the queued patch against fresher server state, so repeating it
+    /// is progress rather than a loop. The budget exists only so two clients
+    /// writing in lockstep cannot reject each other forever. `false` means the
+    /// budget is spent and the caller must settle the document as a conflict.
+    async fn claim_rebase(&self, client_id: Uuid, document_id: Uuid) -> bool {
+        let mut attempts = self.rebase_attempts.lock().await;
+        let used = attempts.entry(document_id).or_insert(0);
+        if *used >= MAX_REBASE_ATTEMPTS {
+            tracing::warn!(
+                "CLIENT {}: Document {} has used all {} rebase attempts this session",
+                client_id,
+                document_id,
+                MAX_REBASE_ATTEMPTS
+            );
+            return false;
+        }
+        *used += 1;
+        true
+    }
+
+    /// Re-run the pending-upload pass so a freshly rebased patch is sent.
+    ///
+    /// Deliberately not once-per-session like `schedule`: the queued patch has
+    /// changed, so a second send is legitimate. `claim_rebase` is the bound.
+    async fn resend_after_rebase(&self, client_id: Uuid, document_id: Uuid) {
+        self.trigger_upload_pass(client_id, document_id).await;
+    }
+
+    async fn trigger_upload_pass(&self, client_id: Uuid, document_id: Uuid) {
         match self.trigger.try_send(()) {
             Ok(()) => tracing::info!(
-                "CLIENT {}: Scheduled an upload retry pass after {} was rejected",
+                "CLIENT {}: Scheduled an upload pass for {}",
                 client_id,
                 document_id
             ),
             Err(e) => tracing::warn!(
-                "CLIENT {}: Could not schedule an upload retry pass: {}",
+                "CLIENT {}: Could not schedule an upload pass for {}: {}",
                 client_id,
+                document_id,
                 e
             ),
         }
     }
+}
+
+/// The server state carried by a `hash_mismatch` rejection.
+///
+/// The server sends what it currently holds so the client can rebase onto it;
+/// every other rejection reason arrives without these fields.
+struct HashMismatch {
+    current_revision: i64,
+    current_content: serde_json::Value,
+    current_hash: String,
 }
 
 impl ResyncSource {
@@ -1066,15 +1114,27 @@ impl Client {
                 // pending entry and drain the queue exactly like a successful
                 // one: otherwise every later patch for this document defers
                 // forever behind an upload that will never complete.
+                // A hash_mismatch is not a plain rejection: the server told us
+                // what it currently holds, so the queued patch can be rebased
+                // onto it and resent. That path triggers its own upload pass,
+                // so the blind retry must not also fire.
+                let rebase = if *success {
+                    None
+                } else {
+                    Self::hash_mismatch_details(&msg)
+                };
+
                 if !*success {
                     tracing::error!(
                         "CLIENT {}: Upload failed for document {}",
                         client_id,
                         document_id
                     );
-                    // The document is still Pending with its queue row intact,
-                    // so a retry pass will pick it up.
-                    upload_retry.schedule(client_id, *document_id).await;
+                    if rebase.is_none() {
+                        // The document is still Pending with its queue row
+                        // intact, so a retry pass will pick it up.
+                        upload_retry.schedule(client_id, *document_id).await;
+                    }
                 }
 
                 let mut uploads = pending_uploads.lock().await;
@@ -1117,6 +1177,20 @@ impl Client {
                         client_id,
                         e
                     );
+                }
+
+                // The pending entry is cleared and the queue drained, so a
+                // resend can re-register cleanly.
+                if let Some(server) = rebase {
+                    return Self::rebase_after_hash_mismatch(
+                        db,
+                        client_id,
+                        event_dispatcher,
+                        upload_retry,
+                        *document_id,
+                        server,
+                    )
+                    .await;
                 }
 
                 // Continue with normal processing
@@ -1377,6 +1451,245 @@ impl Client {
     ///
     /// Offline, this is a no-op: the document simply stays unsynced until a
     /// later resync.
+    /// The server state a `hash_mismatch` rejection carries, or `None` for any
+    /// other ack. All three fields are required: a partial reply cannot be
+    /// rebased onto and falls back to the blind retry.
+    fn hash_mismatch_details(msg: &ServerMessage) -> Option<HashMismatch> {
+        let ServerMessage::DocumentUpdatedResponse {
+            reason,
+            current_revision,
+            current_content,
+            current_hash,
+            ..
+        } = msg
+        else {
+            return None;
+        };
+
+        if reason.as_deref() != Some("hash_mismatch") {
+            return None;
+        }
+
+        Some(HashMismatch {
+            current_revision: (*current_revision)?,
+            current_content: current_content.clone()?,
+            current_hash: current_hash.clone()?,
+        })
+    }
+
+    /// Turn a `hash_mismatch` rejection into a rebase-and-resend.
+    ///
+    /// The queued patch is replayed onto the server's current content. If it
+    /// applies, the merged result becomes local truth at the server's revision,
+    /// a fresh patch is queued against `current_hash`, and the upload pass runs
+    /// again. Because the replay starts from the server's content, an edit to a
+    /// different field survives the round trip instead of being overwritten.
+    ///
+    /// Anything that stops the rebase — a patch that no longer applies, a
+    /// missing queue row, an exhausted attempt budget — settles the document as
+    /// `Conflict` with the server's copy as local truth.
+    async fn rebase_after_hash_mismatch(
+        db: &Arc<ClientDatabase>,
+        client_id: Uuid,
+        event_dispatcher: &Arc<EventDispatcher>,
+        upload_retry: &UploadRetry,
+        document_id: Uuid,
+        server: HashMismatch,
+    ) -> SyncResult<()> {
+        let Some(status) = db.get_sync_status(&document_id).await? else {
+            tracing::warn!(
+                "CLIENT {}: Rejected update for {} has no local row, nothing to rebase",
+                client_id,
+                document_id
+            );
+            return Ok(());
+        };
+
+        let local = match db.get_document(&document_id).await {
+            Ok(doc) => doc,
+            Err(e) => {
+                // Writing on a failed read would overwrite state we never saw.
+                tracing::warn!(
+                    "CLIENT {}: Could not read {} to rebase it ({}), leaving it untouched",
+                    client_id,
+                    document_id,
+                    e
+                );
+                return Ok(());
+            }
+        };
+
+        let expected = DocumentPreImage {
+            sync_revision: local.sync_revision,
+            content: local.content.clone(),
+            sync_status: status,
+        };
+
+        if !upload_retry.claim_rebase(client_id, document_id).await {
+            return Self::settle_as_conflict(
+                db,
+                client_id,
+                event_dispatcher,
+                document_id,
+                &server,
+                &expected,
+                "the rebase attempt budget is exhausted",
+            )
+            .await;
+        }
+
+        let Ok(Some((queued, _))) = db.get_queued_patch(&document_id).await else {
+            return Self::settle_as_conflict(
+                db,
+                client_id,
+                event_dispatcher,
+                document_id,
+                &server,
+                &expected,
+                "there is no queued patch to rebase",
+            )
+            .await;
+        };
+
+        let mut rebased = server.current_content.clone();
+        if let Err(e) = apply_patch(&mut rebased, &queued) {
+            return Self::settle_as_conflict(
+                db,
+                client_id,
+                event_dispatcher,
+                document_id,
+                &server,
+                &expected,
+                &format!("the queued patch no longer applies ({})", e),
+            )
+            .await;
+        }
+
+        // Diff from the server's content rather than resending the original
+        // patch: the server will apply this to exactly `current_content`.
+        let forward = create_patch(&server.current_content, &rebased)?;
+
+        if !db
+            .rebase_pending_document_if_unchanged(
+                &document_id,
+                &rebased,
+                server.current_revision,
+                &forward,
+                &server.current_hash,
+                &expected,
+            )
+            .await?
+        {
+            // A newer local edit landed mid-rebase. It is queued against the
+            // old base, so resending it earns another hash_mismatch and the
+            // next round rebases from the newer state. The attempt budget
+            // guarantees this terminates.
+            tracing::warn!(
+                "CLIENT {}: Rebase of {} raced a local edit, resending for another round",
+                client_id,
+                document_id
+            );
+            upload_retry
+                .resend_after_rebase(client_id, document_id)
+                .await;
+            return Ok(());
+        }
+
+        tracing::info!(
+            "CLIENT {}: Rebased {} onto server revision {} and requeued the edit",
+            client_id,
+            document_id,
+            server.current_revision
+        );
+
+        event_dispatcher.emit_document_updated_with_attribution(
+            &document_id,
+            &rebased,
+            local.user_id.as_ref(),
+            local.author_name.as_deref(),
+            local.visibility.as_deref(),
+        );
+
+        upload_retry
+            .resend_after_rebase(client_id, document_id)
+            .await;
+        Ok(())
+    }
+
+    /// Give up on reconciling a rejected edit: the server's copy becomes local
+    /// truth, the document is marked `Conflict`, and the host app is told.
+    ///
+    /// The queued patch is dropped — it is built on a base that no longer
+    /// exists, so leaving it would resend and be rejected forever.
+    #[allow(clippy::too_many_arguments)]
+    async fn settle_as_conflict(
+        db: &Arc<ClientDatabase>,
+        client_id: Uuid,
+        event_dispatcher: &Arc<EventDispatcher>,
+        document_id: Uuid,
+        server: &HashMismatch,
+        expected: &DocumentPreImage,
+        why: &str,
+    ) -> SyncResult<()> {
+        tracing::error!(
+            "CLIENT {}: Cannot rebase {}: {}. Keeping the server's copy.",
+            client_id,
+            document_id,
+            why
+        );
+
+        let mut doc = match db.get_document(&document_id).await {
+            Ok(doc) => doc,
+            Err(e) => {
+                tracing::warn!(
+                    "CLIENT {}: Could not read {} to settle the conflict ({})",
+                    client_id,
+                    document_id,
+                    e
+                );
+                return Ok(());
+            }
+        };
+        doc.content = server.current_content.clone();
+        doc.sync_revision = server.current_revision;
+        doc.content_hash = Some(server.current_hash.clone());
+        doc.updated_at = chrono::Utc::now();
+
+        if !db
+            .save_document_if_unchanged(&doc, SyncStatus::Conflict, expected)
+            .await?
+        {
+            // A newer local edit landed; it will be uploaded and get its own
+            // rejection, so do not clobber it here.
+            tracing::warn!(
+                "CLIENT {}: Conflict settlement for {} raced a local edit, leaving it pending",
+                client_id,
+                document_id
+            );
+            return Ok(());
+        }
+
+        db.remove_from_sync_queue(&document_id).await?;
+
+        event_dispatcher.emit_conflict_detected(&document_id);
+        event_dispatcher.emit_sync_error(
+            ReplicantErrorCode::UpdateConflict,
+            &format!(
+                "Update for {} could not be rebased ({}); the server's copy is now local truth",
+                document_id, why
+            ),
+        );
+        event_dispatcher.emit_document_updated_with_attribution(
+            &doc.id,
+            &doc.content,
+            doc.user_id.as_ref(),
+            doc.author_name.as_deref(),
+            doc.visibility.as_deref(),
+        );
+
+        Ok(())
+    }
+
     async fn resync_document(
         db: &Arc<ClientDatabase>,
         source: &ResyncSource,
@@ -1557,6 +1870,7 @@ impl Client {
             doc.content_hash = None;
             db.rebase_pending_document_if_unchanged(
                 &document_id,
+                &local_content,
                 sync_revision,
                 &rebased,
                 &content_hash,
@@ -3776,8 +4090,9 @@ mod broadcast_guard_tests {
     // hash_mismatch -> rebase and resend (Task 5)
     // ---------------------------------------------------------------------
 
-    /// Collect emitted events. Emission is queued to the dispatcher's callback
-    /// thread, so readers must poll rather than read once.
+    /// Collect emitted events. Emission only queues them; `drain_events` runs
+    /// the pump, which must happen on the registering thread (here, the
+    /// single-threaded test runtime).
     fn event_probe(events: &Arc<EventDispatcher>) -> Arc<std::sync::Mutex<Vec<SyncEvent>>> {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
@@ -3787,17 +4102,12 @@ mod broadcast_guard_tests {
         seen
     }
 
-    async fn wait_for_event(
+    fn drain_events(
+        events: &Arc<EventDispatcher>,
         seen: &Arc<std::sync::Mutex<Vec<SyncEvent>>>,
-        matches: impl Fn(&SyncEvent) -> bool,
-    ) -> bool {
-        for _ in 0..100 {
-            if seen.lock().unwrap().iter().any(&matches) {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        false
+    ) -> Vec<SyncEvent> {
+        events.process_events().unwrap();
+        seen.lock().unwrap().clone()
     }
 
     fn base_content() -> Value {
@@ -3905,20 +4215,24 @@ mod broadcast_guard_tests {
             retry_rx.try_recv().is_err(),
             "a conflict must not schedule a resend"
         );
+        let emitted = drain_events(&events, &seen);
         assert!(
-            wait_for_event(&seen, |e| matches!(e, SyncEvent::ConflictDetected { .. })).await,
-            "the host app must be told about the conflict"
+            emitted
+                .iter()
+                .any(|e| matches!(e, SyncEvent::ConflictDetected { .. })),
+            "the host app must be told about the conflict: {:?}",
+            emitted
         );
         assert!(
-            wait_for_event(&seen, |e| matches!(
+            emitted.iter().any(|e| matches!(
                 e,
                 SyncEvent::SyncError {
                     code: ReplicantErrorCode::UpdateConflict,
                     ..
                 }
-            ))
-            .await,
-            "the conflict must carry a structured error code"
+            )),
+            "the conflict must carry a structured error code: {:?}",
+            emitted
         );
     }
 

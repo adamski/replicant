@@ -83,6 +83,8 @@ typedef enum ReplicantEventType {
  * - `3xxx` — **protocol**: the exchange was malformed or violated the contract.
  * - `4xxx` — **identity drift**: the local identity diverged from the account;
  *   refuse to sync, but do NOT clear credentials.
+ * - `5xxx` — **unresolved divergence**: a local edit could not be reconciled
+ *   with the server's copy. Retrying cannot help; surface it to the user.
  */
 enum ReplicantErrorCode
 #ifdef __cplusplus
@@ -138,6 +140,11 @@ enum ReplicantErrorCode
    * The server-reported user id diverged from the local identity.
    */
   IdentityDrift = 4001,
+  /**
+   * A local edit could not be rebased onto the server's current content.
+   * The server's copy is now local truth and the edit was discarded.
+   */
+  UpdateConflict = 5001,
 };
 #ifndef __cplusplus
 typedef int32_t ReplicantErrorCode;

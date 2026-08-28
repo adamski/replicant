@@ -269,17 +269,24 @@ impl ClientDatabase {
     }
 
     /// Rebase a document carrying unsent local edits onto a fresh server base:
-    /// adopt the server revision (the local content stays visible) and replace
-    /// the queued update patch, in one transaction.
+    /// adopt `new_content` at the server's revision and replace the queued
+    /// update patch, in one transaction.
+    ///
+    /// `new_content` is what the local copy should now show. A resync passes the
+    /// content it already has (the user's unsent edit stays visible); a
+    /// `hash_mismatch` rebase passes the merged result of replaying the queued
+    /// patch onto the server's content.
     ///
     /// Prior `update` rows for the document are deleted rather than added to.
     /// `get_queued_patch` reads exactly one row, so a leftover row with an
     /// outdated base hash would be retried — and rejected — forever.
     ///
     /// Returns `false` if the row no longer matches `expected`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn rebase_pending_document_if_unchanged(
         &self,
         document_id: &Uuid,
+        new_content: &serde_json::Value,
         new_sync_revision: i64,
         patch: &json_patch::Patch,
         base_content_hash: &str,
@@ -288,9 +295,10 @@ impl ClientDatabase {
         let mut tx = self.pool.begin().await?;
 
         let result = sqlx::query(
-            "UPDATE documents SET sync_revision = ?, updated_at = ?, sync_status = ? \
+            "UPDATE documents SET content = ?, sync_revision = ?, updated_at = ?, sync_status = ? \
              WHERE id = ? AND content = ? AND sync_revision = ? AND sync_status = ?",
         )
+        .bind(serde_json::to_string(new_content)?)
         .bind(new_sync_revision)
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(SyncStatus::Pending.to_string())
@@ -327,6 +335,10 @@ impl ClientDatabase {
         .await?;
 
         tx.commit().await?;
+
+        if let Err(e) = self.update_fts_for_document(document_id).await {
+            tracing::warn!("FTS: Failed to update index for {}: {:?}", document_id, e);
+        }
 
         Ok(true)
     }

@@ -389,29 +389,77 @@ impl WebSocketClient {
             "patch": patch.patch,
             "content_hash": patch.content_hash
         });
-        let resp = self.call("update_document", &payload).await;
 
-        let (success, sync_revision, error) = match &resp {
-            Ok(j) => {
-                let rev = j.get("sync_revision").and_then(|v| v.as_i64());
-                (rev.is_some(), rev, None)
+        // Bypass the `call` helper (which stringifies CallError) so a
+        // `hash_mismatch` rejection keeps the server state it carries. Without
+        // it the client cannot rebase and the local edit is silently lost.
+        let encoded = match to_payload(&payload) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = self
+                    .tx
+                    .send(update_rejected(
+                        patch.document_id,
+                        format!("Update failed to encode request: {:?}", e),
+                        Value::Null,
+                    ))
+                    .await;
+                return Ok(());
             }
-            Err(e) => (false, None, Some(format!("{:?}", e))),
         };
 
-        let _ = self
-            .tx
-            .send(ServerMessage::DocumentUpdatedResponse {
-                document_id: patch.document_id,
-                success,
-                error,
-                sync_revision,
-                reason: None,
-                current_revision: None,
-                current_content: None,
-                current_hash: None,
-            })
+        let result = self
+            .channel
+            .call(
+                Event::from_string("update_document".to_string()),
+                encoded,
+                CALL_TIMEOUT,
+            )
             .await;
+
+        let message = match result {
+            Ok(reply) => {
+                let revision = payload_to_value(&reply)
+                    .and_then(|j| j.get("sync_revision").and_then(|v| v.as_i64()));
+                match revision {
+                    Some(revision) => ServerMessage::DocumentUpdatedResponse {
+                        document_id: patch.document_id,
+                        success: true,
+                        error: None,
+                        sync_revision: Some(revision),
+                        reason: None,
+                        current_revision: None,
+                        current_content: None,
+                        current_hash: None,
+                    },
+                    None => update_rejected(
+                        patch.document_id,
+                        "Malformed update_document response".to_string(),
+                        Value::Null,
+                    ),
+                }
+            }
+            Err(CallError::Reply { reply }) => {
+                let body = payload_to_value(&reply).unwrap_or(Value::Null);
+                let reason = body
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                update_rejected(
+                    patch.document_id,
+                    format!("Update rejected: {}", reason),
+                    body,
+                )
+            }
+            Err(e) => update_rejected(
+                patch.document_id,
+                format!("Update failed: {:?}", e),
+                Value::Null,
+            ),
+        };
+
+        let _ = self.tx.send(message).await;
         Ok(())
     }
 
@@ -637,6 +685,33 @@ fn ws_err(msg: String) -> replicant_core::errors::SyncError {
 fn to_payload(v: &Value) -> SyncResult<Payload> {
     Payload::json_from_serialized(v.to_string())
         .map_err(|e| ws_err(format!("Payload error: {:?}", e)))
+}
+
+/// A failed update ack, carrying whatever the server's error reply held.
+///
+/// `body` is the raw rejection payload; for `hash_mismatch` it also carries the
+/// server's current revision, content and hash, which the client rebases onto.
+/// Every field is optional so other reasons — and future ones — still parse.
+fn update_rejected(document_id: Uuid, error: String, body: Value) -> ServerMessage {
+    ServerMessage::DocumentUpdatedResponse {
+        document_id,
+        success: false,
+        error: Some(error),
+        sync_revision: None,
+        reason: body
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        current_revision: body.get("current_revision").and_then(|v| v.as_i64()),
+        current_content: body
+            .get("current_content")
+            .filter(|v| !v.is_null())
+            .cloned(),
+        current_hash: body
+            .get("current_hash")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    }
 }
 
 fn payload_to_value(p: &Payload) -> Option<Value> {

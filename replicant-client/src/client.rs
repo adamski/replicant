@@ -425,6 +425,7 @@ impl Client {
                 &self.db,
                 self.client_id,
                 &self.event_dispatcher,
+                &self.pending_uploads,
                 &ResyncSource::socket(&self.ws_client),
             )
             .await
@@ -997,53 +998,57 @@ impl Client {
                 success,
                 ..
             } => {
-                if *success {
-                    // Remove from pending uploads
-                    let mut uploads = pending_uploads.lock().await;
-                    if let Some(upload) = uploads.remove(document_id) {
-                        let elapsed = upload.sent_at.elapsed();
-                        tracing::info!(
-                            "CLIENT {}: Upload confirmed for {} ({:?}) in {:?}",
-                            client_id,
-                            document_id,
-                            upload.operation_type,
-                            elapsed
-                        );
-
-                        // If this was the last pending upload, notify
-                        if uploads.is_empty() {
-                            tracing::info!(
-                                "CLIENT {}: All uploads confirmed - notifying completion",
-                                client_id
-                            );
-                            upload_complete_notifier.notify_one();
-                        }
-                    }
-                    // Release the lock before processing deferred messages
-                    drop(uploads);
-
-                    // Process any deferred messages now that this upload is complete
-                    // Some messages might have been queued while this document was uploading
-                    if let Err(e) = Self::process_deferred_messages(
-                        deferred_messages,
-                        db,
-                        client_id,
-                        event_dispatcher,
-                        source,
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            "CLIENT {}: Error processing deferred messages after upload: {}",
-                            client_id,
-                            e
-                        );
-                    }
-                } else {
+                // The upload is over either way. A failed ack must clear the
+                // pending entry and drain the queue exactly like a successful
+                // one: otherwise every later patch for this document defers
+                // forever behind an upload that will never complete.
+                if !*success {
                     tracing::error!(
                         "CLIENT {}: Upload failed for document {}",
                         client_id,
                         document_id
+                    );
+                }
+
+                let mut uploads = pending_uploads.lock().await;
+                if let Some(upload) = uploads.remove(document_id) {
+                    let elapsed = upload.sent_at.elapsed();
+                    tracing::info!(
+                        "CLIENT {}: Upload settled for {} ({:?}, success={}) in {:?}",
+                        client_id,
+                        document_id,
+                        upload.operation_type,
+                        success,
+                        elapsed
+                    );
+
+                    // If this was the last pending upload, notify
+                    if uploads.is_empty() {
+                        tracing::info!(
+                            "CLIENT {}: All uploads settled - notifying completion",
+                            client_id
+                        );
+                        upload_complete_notifier.notify_one();
+                    }
+                }
+                // Release the lock before processing deferred messages
+                drop(uploads);
+
+                // Replay anything queued while this document was uploading.
+                if let Err(e) = Self::process_deferred_messages(
+                    deferred_messages,
+                    db,
+                    client_id,
+                    event_dispatcher,
+                    pending_uploads,
+                    source,
+                )
+                .await
+                {
+                    tracing::error!(
+                        "CLIENT {}: Error processing deferred messages after upload: {}",
+                        client_id,
+                        e
                     );
                 }
 
@@ -1089,20 +1094,14 @@ impl Client {
                         document.id,
                         document.sync_revision
                     );
-                    // Queue message for later processing instead of dropping it
-                    const MAX_DEFERRED_MESSAGES: usize = 100;
-                    let mut queue = deferred_messages.lock().await;
-                    if queue.len() >= MAX_DEFERRED_MESSAGES {
-                        tracing::warn!(
-                            "CLIENT {}: Deferred queue full ({} messages), dropping oldest",
-                            client_id,
-                            queue.len()
-                        );
-                        queue.remove(0);
-                    }
-                    queue.push(ServerMessage::SyncDocument {
-                        document: document.clone(),
-                    });
+                    Self::defer_message(
+                        deferred_messages,
+                        client_id,
+                        ServerMessage::SyncDocument {
+                            document: document.clone(),
+                        },
+                    )
+                    .await;
                     return Ok(());
                 }
 
@@ -1117,20 +1116,14 @@ impl Client {
                             document.id,
                             document.sync_revision
                         );
-                        // Queue message for later processing instead of dropping it
-                        const MAX_DEFERRED_MESSAGES: usize = 100;
-                        let mut queue = deferred_messages.lock().await;
-                        if queue.len() >= MAX_DEFERRED_MESSAGES {
-                            tracing::warn!(
-                                "CLIENT {}: Deferred queue full ({} messages), dropping oldest",
-                                client_id,
-                                queue.len()
-                            );
-                            queue.remove(0);
-                        }
-                        queue.push(ServerMessage::SyncDocument {
-                            document: document.clone(),
-                        });
+                        Self::defer_message(
+                            deferred_messages,
+                            client_id,
+                            ServerMessage::SyncDocument {
+                                document: document.clone(),
+                            },
+                        )
+                        .await;
                         return Ok(());
                     }
                 }
@@ -1154,23 +1147,41 @@ impl Client {
         db: &Arc<ClientDatabase>,
         client_id: Uuid,
         event_dispatcher: &Arc<EventDispatcher>,
+        pending_uploads: &Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
         source: &ResyncSource,
     ) -> SyncResult<()> {
-        let mut messages = deferred_messages.lock().await;
-        let count = messages.len();
-
-        if count == 0 {
-            return Ok(());
-        }
+        // Drain into a local batch and release the lock before handling: the
+        // handlers below may defer again, which needs the same lock.
+        let batch: Vec<ServerMessage> = {
+            let mut messages = deferred_messages.lock().await;
+            if messages.is_empty() {
+                return Ok(());
+            }
+            messages.drain(..).collect()
+        };
 
         tracing::info!(
             "CLIENT {}: Processing {} deferred sync messages",
             client_id,
-            count
+            batch.len()
         );
 
-        // Process all deferred messages in order
-        for msg in messages.drain(..) {
+        for msg in batch {
+            // One ack drains the whole queue, but other documents may still be
+            // uploading. Replaying their messages now would resync against
+            // state we are about to overwrite, so re-defer them instead.
+            if let Some((_, document_id)) = Self::deferral_key(&msg) {
+                if Self::has_pending_upload(pending_uploads, &document_id).await {
+                    tracing::info!(
+                        "CLIENT {}: Re-deferring message for {} (upload still in progress)",
+                        client_id,
+                        document_id
+                    );
+                    Self::defer_message(deferred_messages, client_id, msg).await;
+                    continue;
+                }
+            }
+
             if let Err(e) =
                 Self::handle_server_message(msg, db, client_id, event_dispatcher, source).await
             {
@@ -1191,7 +1202,26 @@ impl Client {
         Ok(())
     }
 
+    /// Identity of a deferrable message: its variant plus the document it
+    /// concerns. Two messages with the same key are interchangeable — both
+    /// carry "the server's latest state for this document" — so the newer one
+    /// can replace the older.
+    fn deferral_key(msg: &ServerMessage) -> Option<(&'static str, Uuid)> {
+        match msg {
+            ServerMessage::DocumentUpdated { patch } => {
+                Some(("document_updated", patch.document_id))
+            }
+            ServerMessage::SyncDocument { document } => Some(("sync_document", document.id)),
+            _ => None,
+        }
+    }
+
     /// Queue a message for replay once the in-flight upload completes.
+    ///
+    /// Entries are deduplicated per (variant, document): a burst of echoes for
+    /// one document must not evict a `SyncDocument` for another, because a
+    /// dropped `SyncDocument` never self-heals — that document just stays
+    /// silently stale.
     async fn defer_message(
         deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
         client_id: Uuid,
@@ -1199,6 +1229,17 @@ impl Client {
     ) {
         const MAX_DEFERRED_MESSAGES: usize = 100;
         let mut queue = deferred_messages.lock().await;
+
+        if let Some(key) = Self::deferral_key(&msg) {
+            if let Some(slot) = queue
+                .iter_mut()
+                .find(|queued| Self::deferral_key(queued) == Some(key))
+            {
+                *slot = msg;
+                return;
+            }
+        }
+
         if queue.len() >= MAX_DEFERRED_MESSAGES {
             tracing::warn!(
                 "CLIENT {}: Deferred queue full ({} messages), dropping oldest",
@@ -1232,16 +1273,42 @@ impl Client {
         event_dispatcher: &Arc<EventDispatcher>,
         document_id: Uuid,
     ) -> SyncResult<()> {
-        let Some(result) = source.fetch(document_id).await else {
-            tracing::warn!(
-                "CLIENT {}: Cannot resync {} while offline, leaving it unsynced",
+        // A lost compare-and-swap means a local edit landed mid-resync. Re-fetch
+        // once and reconcile against the newer local state rather than leaving a
+        // stale queued patch stranded until some unrelated broadcast arrives.
+        const RESYNC_ATTEMPTS: usize = 2;
+
+        for attempt in 1..=RESYNC_ATTEMPTS {
+            let Some(result) = source.fetch(document_id).await else {
+                tracing::warn!(
+                    "CLIENT {}: Cannot resync {} while offline, leaving it unsynced",
+                    client_id,
+                    document_id
+                );
+                return Ok(());
+            };
+
+            if Self::apply_resync_result(db, client_id, event_dispatcher, document_id, result)
+                .await?
+            {
+                return Ok(());
+            }
+
+            tracing::info!(
+                "CLIENT {}: Resync attempt {}/{} for {} lost to a local edit",
                 client_id,
+                attempt,
+                RESYNC_ATTEMPTS,
                 document_id
             );
-            return Ok(());
-        };
+        }
 
-        Self::apply_resync_result(db, client_id, event_dispatcher, document_id, result).await
+        tracing::warn!(
+            "CLIENT {}: Giving up resyncing {} for now, leaving it for the next broadcast",
+            client_id,
+            document_id
+        );
+        Ok(())
     }
 
     /// Reconcile a `get_document` reply with local state.
@@ -1250,13 +1317,17 @@ impl Client {
     /// checked both the user's own documents and the public set — so the local
     /// copy is soft-deleted. Any other error is transient and MUST leave local
     /// state untouched: deleting on a network blip destroys user data.
+    /// Returns `true` when the document is settled (written, deleted, or
+    /// deliberately left alone) and `false` when a concurrent local write won
+    /// the compare-and-swap, meaning a retry against fresher server state is
+    /// worthwhile.
     async fn apply_resync_result(
         db: &Arc<ClientDatabase>,
         client_id: Uuid,
         event_dispatcher: &Arc<EventDispatcher>,
         document_id: Uuid,
         result: ServerMessage,
-    ) -> SyncResult<()> {
+    ) -> SyncResult<bool> {
         let (content, sync_revision, content_hash, deleted) = match result {
             ServerMessage::GetDocumentResponse {
                 content,
@@ -1277,7 +1348,7 @@ impl Client {
                 db.delete_document(&document_id).await?;
                 db.mark_synced(&document_id).await?;
                 event_dispatcher.emit_document_deleted(&document_id);
-                return Ok(());
+                return Ok(true);
             }
             other => {
                 tracing::warn!(
@@ -1286,7 +1357,7 @@ impl Client {
                     document_id,
                     other
                 );
-                return Ok(());
+                return Ok(true);
             }
         };
 
@@ -1299,14 +1370,31 @@ impl Client {
             db.delete_document(&document_id).await?;
             db.mark_synced(&document_id).await?;
             event_dispatcher.emit_document_deleted(&document_id);
-            return Ok(());
+            return Ok(true);
         }
 
-        let local = db.get_document(&document_id).await.ok();
+        // Read the status first: it is what distinguishes "no such row" from
+        // "the row is there but the read failed".
         let status = db.get_sync_status(&document_id).await?;
+        let local = match db.get_document(&document_id).await {
+            Ok(doc) => Some(doc),
+            Err(_) if status.is_none() => None,
+            Err(e) => {
+                // The row exists, so this is a read failure, not an absence.
+                // Writing here would overwrite local state we never saw.
+                tracing::warn!(
+                    "CLIENT {}: Could not read {} for resync ({}), leaving it untouched",
+                    client_id,
+                    document_id,
+                    e
+                );
+                return Ok(true);
+            }
+        };
 
         let Some(mut doc) = local else {
-            // Nothing local to protect: take the server's copy wholesale.
+            // Genuinely new: status is None AND the row is absent, so there is
+            // no local state to protect and an unconditional insert is safe.
             let doc = Document {
                 id: document_id,
                 user_id: None,
@@ -1330,7 +1418,7 @@ impl Client {
                 doc.author_name.as_deref(),
                 doc.visibility.as_deref(),
             );
-            return Ok(());
+            return Ok(true);
         };
 
         // Everything below writes conditionally on the state just read, so a
@@ -1373,11 +1461,11 @@ impl Client {
 
         if !committed {
             tracing::warn!(
-                "CLIENT {}: Resync of {} raced a local edit, leaving it for the next resync",
+                "CLIENT {}: Resync of {} raced a local edit",
                 client_id,
                 document_id
             );
-            return Ok(());
+            return Ok(false);
         }
 
         tracing::info!(
@@ -1396,7 +1484,7 @@ impl Client {
             doc.visibility.as_deref(),
         );
 
-        Ok(())
+        Ok(true)
     }
 
     async fn handle_server_message(
@@ -2804,6 +2892,228 @@ mod broadcast_guard_tests {
         assert_eq!(replayed, local, "queued patch must rebuild local content");
     }
 
+    /// Build the argument bundle `handle_server_message_with_tracking` needs.
+    fn tracking_args() -> (
+        Arc<Mutex<HashMap<Uuid, PendingUpload>>>,
+        Arc<Mutex<Vec<ServerMessage>>>,
+        Arc<Notify>,
+        Arc<AtomicBool>,
+    ) {
+        (
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    fn in_flight_upload() -> PendingUpload {
+        PendingUpload {
+            operation_type: UploadType::Update,
+            sent_at: Instant::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_ack_clears_the_pending_upload_and_drains_the_queue() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+        let after = json!({"title": "B"});
+        seed_pending_edit(&db, id, &before, &after, 5).await;
+
+        let (pending_uploads, deferred_messages, notifier, protection) = tracking_args();
+        pending_uploads.lock().await.insert(id, in_flight_upload());
+        let (source, canned) = recording_source();
+
+        // The echo arrives while the upload is in flight, so it defers.
+        Client::handle_server_message_with_tracking(
+            ServerMessage::DocumentUpdated {
+                patch: server_patch(id, &before, &after, 6),
+            },
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            &pending_uploads,
+            &notifier,
+            &protection,
+            &deferred_messages,
+            &source,
+        )
+        .await
+        .unwrap();
+        assert_eq!(deferred_messages.lock().await.len(), 1);
+
+        // The server rejects the upload. The entry must still be cleared and
+        // the queue drained, or this document defers forever.
+        db.update_sync_revision(&id, 6).await.unwrap();
+        db.mark_synced(&id).await.unwrap();
+        Client::handle_server_message_with_tracking(
+            ServerMessage::DocumentUpdatedResponse {
+                document_id: id,
+                success: false,
+                error: Some("rejected".to_string()),
+                sync_revision: None,
+            },
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            &pending_uploads,
+            &notifier,
+            &protection,
+            &deferred_messages,
+            &source,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            pending_uploads.lock().await.is_empty(),
+            "a failed ack must clear the pending upload"
+        );
+        assert!(
+            deferred_messages.lock().await.is_empty(),
+            "a failed ack must drain the deferred queue"
+        );
+        assert!(
+            resync_attempts(&canned).await.is_empty(),
+            "the replayed echo must drop as a duplicate, not resync"
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_echoes_dedupe_and_cannot_evict_a_sync_document() {
+        let db = test_db().await;
+        let echo_id = Uuid::new_v4();
+        let sync_id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+        seed_pending_edit(&db, echo_id, &before, &json!({"title": "B"}), 5).await;
+
+        let (pending_uploads, deferred_messages, notifier, protection) = tracking_args();
+        {
+            let mut uploads = pending_uploads.lock().await;
+            uploads.insert(echo_id, in_flight_upload());
+            uploads.insert(sync_id, in_flight_upload());
+        }
+        let (source, _canned) = recording_source();
+
+        // A SyncDocument for another document gets deferred first.
+        let mut sync_doc = make_doc(sync_id, json!({"title": "sync me"}), 2);
+        sync_doc.title = None;
+        db.save_document_with_status(&sync_doc, Some(SyncStatus::Synced))
+            .await
+            .unwrap();
+        Client::handle_server_message_with_tracking(
+            ServerMessage::SyncDocument {
+                document: sync_doc.clone(),
+            },
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            &pending_uploads,
+            &notifier,
+            &protection,
+            &deferred_messages,
+            &source,
+        )
+        .await
+        .unwrap();
+
+        // Then a burst of echoes for the other document.
+        for revision in 6..206 {
+            Client::handle_server_message_with_tracking(
+                ServerMessage::DocumentUpdated {
+                    patch: server_patch(echo_id, &before, &json!({"n": revision}), revision),
+                },
+                &db,
+                Uuid::new_v4(),
+                &dispatcher(),
+                &pending_uploads,
+                &notifier,
+                &protection,
+                &deferred_messages,
+                &source,
+            )
+            .await
+            .unwrap();
+        }
+
+        let queue = deferred_messages.lock().await;
+        assert_eq!(
+            queue.len(),
+            2,
+            "200 echoes for one document must collapse to a single entry"
+        );
+        assert!(
+            queue.iter().any(
+                |m| matches!(m, ServerMessage::SyncDocument { document } if document.id == sync_id)
+            ),
+            "echo pressure must not evict the SyncDocument"
+        );
+        // The surviving echo is the newest one.
+        let latest = queue
+            .iter()
+            .find_map(|m| match m {
+                ServerMessage::DocumentUpdated { patch } => Some(patch.sync_revision),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(latest, 205, "the newest echo must replace older ones");
+    }
+
+    #[tokio::test]
+    async fn a_document_read_failure_during_resync_writes_nothing() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let local = json!({"title": "unsent edit"});
+        seed(&db, &make_doc(id, local.clone(), 5), SyncStatus::Pending).await;
+
+        // A row whose content is not valid JSON: the status reads back fine
+        // (Pending) but parsing the document fails, which must NOT be mistaken
+        // for "no such document".
+        sqlx::query("UPDATE documents SET content = 'not json' WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(db.get_document(&id).await.is_err(), "the read must fail");
+
+        let fresh = json!({"title": "server"});
+        let settled = Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::GetDocumentResponse {
+                id,
+                content: fresh.clone(),
+                sync_revision: 9,
+                content_hash: calculate_checksum(&fresh),
+                deleted: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(settled, "a read failure must not trigger a retry loop");
+        let raw: String = sqlx::query("SELECT content FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("content")
+            .unwrap();
+        assert_eq!(
+            raw, "not json",
+            "nothing may be written after a read failure"
+        );
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending),
+            "the pending edit must survive"
+        );
+    }
+
     #[tokio::test]
     async fn compare_and_swap_refuses_to_clobber_a_concurrent_local_edit() {
         let db = test_db().await;
@@ -2924,6 +3234,7 @@ mod broadcast_guard_tests {
             &db,
             Uuid::new_v4(),
             &dispatcher(),
+            &pending_uploads,
             &source,
         )
         .await

@@ -2093,3 +2093,426 @@ impl Client {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod broadcast_guard_tests {
+    use super::*;
+    use replicant_core::models::ServerDocumentPatch;
+    use replicant_core::patches::calculate_checksum;
+    use replicant_core::protocol::ErrorCode;
+    use serde_json::{json, Value};
+
+    async fn test_db() -> Arc<ClientDatabase> {
+        let db = ClientDatabase::new(":memory:").await.unwrap();
+        db.run_migrations().await.unwrap();
+        Arc::new(db)
+    }
+
+    fn dispatcher() -> Arc<EventDispatcher> {
+        Arc::new(EventDispatcher::new())
+    }
+
+    /// No socket: resync must not be able to mutate local state, which is what
+    /// lets these tests assert "the guard refused to blind-apply".
+    fn no_socket() -> Arc<Mutex<Option<WebSocketClient>>> {
+        Arc::new(Mutex::new(None))
+    }
+
+    fn make_doc(id: Uuid, content: Value, sync_revision: i64) -> Document {
+        Document {
+            id,
+            user_id: Some(Uuid::new_v4()),
+            content,
+            sync_revision,
+            content_hash: None,
+            title: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            author_name: None,
+            visibility: None,
+            provenance: None,
+        }
+    }
+
+    async fn seed(db: &Arc<ClientDatabase>, doc: &Document, status: SyncStatus) {
+        db.save_document_with_status(doc, Some(status))
+            .await
+            .unwrap();
+    }
+
+    async fn deleted_at(db: &Arc<ClientDatabase>, id: &Uuid) -> Option<String> {
+        sqlx::query("SELECT deleted_at FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("deleted_at")
+            .unwrap()
+    }
+
+    fn server_patch(
+        document_id: Uuid,
+        before: &Value,
+        after: &Value,
+        sync_revision: i64,
+    ) -> ServerDocumentPatch {
+        ServerDocumentPatch {
+            document_id,
+            patch: create_patch(before, after).unwrap(),
+            sync_revision,
+            content_hash: calculate_checksum(after),
+        }
+    }
+
+    async fn deliver(
+        db: &Arc<ClientDatabase>,
+        events: &Arc<EventDispatcher>,
+        patch: ServerDocumentPatch,
+    ) {
+        Client::handle_server_message(
+            ServerMessage::DocumentUpdated { patch },
+            db,
+            Uuid::new_v4(),
+            events,
+            &no_socket(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn contiguous_broadcast_with_matching_hash_applies() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+        let after = json!({"title": "B"});
+        seed(&db, &make_doc(id, before.clone(), 5), SyncStatus::Synced).await;
+
+        deliver(&db, &dispatcher(), server_patch(id, &before, &after, 6)).await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, after);
+        assert_eq!(doc.sync_revision, 6);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Synced)
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_delivery_of_same_revision_is_a_noop() {
+        let db = test_db().await;
+        let events = dispatcher();
+        let id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+        let after = json!({"title": "B"});
+        seed(&db, &make_doc(id, before.clone(), 5), SyncStatus::Synced).await;
+
+        let patch = server_patch(id, &before, &after, 6);
+        deliver(&db, &events, patch.clone()).await;
+        deliver(&db, &events, patch).await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, after, "second delivery must not re-patch");
+        assert_eq!(doc.sync_revision, 6);
+    }
+
+    #[tokio::test]
+    async fn self_broadcast_at_or_below_local_revision_is_dropped() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+        let after = json!({"title": "B"});
+        // Local already advanced to 6 (our own update was confirmed); the
+        // server echoes our own broadcast back at 6.
+        seed(&db, &make_doc(id, after.clone(), 6), SyncStatus::Synced).await;
+
+        deliver(&db, &dispatcher(), server_patch(id, &before, &after, 6)).await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, after);
+        assert_eq!(doc.sync_revision, 6);
+    }
+
+    #[tokio::test]
+    async fn revision_gap_does_not_blind_apply() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let local = json!({"title": "A"});
+        seed(&db, &make_doc(id, local.clone(), 5), SyncStatus::Synced).await;
+
+        // u1 was missed; only u2's broadcast (revision 7) arrives.
+        let skipped_base = json!({"title": "B"});
+        deliver(
+            &db,
+            &dispatcher(),
+            server_patch(id, &skipped_base, &json!({"title": "C"}), 7),
+        )
+        .await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, local, "gap must resync, never frankenpatch");
+        assert_eq!(doc.sync_revision, 5);
+    }
+
+    #[tokio::test]
+    async fn pending_local_edits_are_never_overwritten_by_a_broadcast() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let local = json!({"title": "local edit"});
+        seed(&db, &make_doc(id, local.clone(), 5), SyncStatus::Pending).await;
+
+        deliver(
+            &db,
+            &dispatcher(),
+            server_patch(id, &json!({"title": "A"}), &json!({"title": "B"}), 6),
+        )
+        .await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, local);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending)
+        );
+    }
+
+    #[tokio::test]
+    async fn hash_mismatch_after_apply_does_not_commit_the_patch() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+        seed(&db, &make_doc(id, before.clone(), 5), SyncStatus::Synced).await;
+
+        let mut patch = server_patch(id, &before, &json!({"title": "B"}), 6);
+        patch.content_hash =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        deliver(&db, &dispatcher(), patch).await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, before, "diverged patch must resync, not apply");
+        assert_eq!(doc.sync_revision, 5);
+    }
+
+    #[tokio::test]
+    async fn resync_response_replaces_a_synced_local_document() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        seed(
+            &db,
+            &make_doc(id, json!({"title": "stale"}), 5),
+            SyncStatus::Synced,
+        )
+        .await;
+
+        let fresh = json!({"title": "fresh", "n": 2});
+        Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::GetDocumentResponse {
+                id,
+                content: fresh.clone(),
+                sync_revision: 9,
+                content_hash: calculate_checksum(&fresh),
+                deleted: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, fresh);
+        assert_eq!(doc.sync_revision, 9);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Synced)
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_rebases_pending_local_edits_onto_the_fresh_base() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let local = json!({"title": "stale", "mine": true});
+        seed(&db, &make_doc(id, local.clone(), 5), SyncStatus::Pending).await;
+
+        let fresh = json!({"title": "fresh"});
+        let fresh_hash = calculate_checksum(&fresh);
+        Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::GetDocumentResponse {
+                id,
+                content: fresh.clone(),
+                sync_revision: 9,
+                content_hash: fresh_hash.clone(),
+                deleted: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, local, "local edits must survive the rebase");
+        assert_eq!(doc.sync_revision, 9, "base revision adopted from server");
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending)
+        );
+
+        let (patch, base_hash) = db.get_queued_patch(&id).await.unwrap().unwrap();
+        assert_eq!(base_hash.as_deref(), Some(fresh_hash.as_str()));
+        let mut replayed = fresh;
+        apply_patch(&mut replayed, &patch).unwrap();
+        assert_eq!(replayed, local, "queued patch must rebuild local content");
+    }
+
+    #[tokio::test]
+    async fn resync_tombstone_soft_deletes_locally() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        seed(
+            &db,
+            &make_doc(id, json!({"title": "doomed"}), 5),
+            SyncStatus::Synced,
+        )
+        .await;
+
+        Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::GetDocumentResponse {
+                id,
+                content: Value::Null,
+                sync_revision: 6,
+                content_hash: String::new(),
+                deleted: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(deleted_at(&db, &id).await.is_some());
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Synced)
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_not_found_soft_deletes_locally() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        seed(
+            &db,
+            &make_doc(id, json!({"title": "gone"}), 5),
+            SyncStatus::Synced,
+        )
+        .await;
+
+        Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::Error {
+                code: ErrorCode::DocumentNotFound,
+                message: "Document not found".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(deleted_at(&db, &id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn resync_server_error_leaves_local_state_untouched() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let local = json!({"title": "unsent edit"});
+        seed(&db, &make_doc(id, local.clone(), 5), SyncStatus::Pending).await;
+
+        Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::Error {
+                code: ErrorCode::ServerError,
+                message: "timeout".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, local);
+        assert_eq!(doc.sync_revision, 5);
+        assert!(deleted_at(&db, &id).await.is_none(), "must not delete");
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending)
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_of_an_unknown_document_saves_it_as_synced() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let fresh = json!({"title": "brand new"});
+
+        Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::GetDocumentResponse {
+                id,
+                content: fresh.clone(),
+                sync_revision: 3,
+                content_hash: calculate_checksum(&fresh),
+                deleted: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let doc = db.get_document(&id).await.unwrap();
+        assert_eq!(doc.content, fresh);
+        assert_eq!(doc.sync_revision, 3);
+    }
+
+    #[tokio::test]
+    async fn remote_delete_of_a_pending_document_still_emits_deleted() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        seed(
+            &db,
+            &make_doc(id, json!({"title": "edited then deleted"}), 5),
+            SyncStatus::Pending,
+        )
+        .await;
+
+        // Remote deletes are user intent and stay unconditional: the pending
+        // local edit is dropped and the host app is told the doc is gone.
+        Client::handle_server_message(
+            ServerMessage::DocumentDeleted { document_id: id },
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            &no_socket(),
+        )
+        .await
+        .unwrap();
+
+        assert!(deleted_at(&db, &id).await.is_some());
+    }
+}

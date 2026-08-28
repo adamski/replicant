@@ -181,6 +181,47 @@ impl ClientDatabase {
         DbHelpers::parse_document(&row)
     }
 
+    /// Read the row's `sync_status`. `Ok(None)` means the document is not in
+    /// the local database. `Document` does not carry the status, but the
+    /// broadcast guard has to know whether local edits are outstanding.
+    pub async fn get_sync_status(&self, id: &Uuid) -> SyncResult<Option<SyncStatus>> {
+        let row = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(row) => {
+                let raw: String = row.try_get("sync_status")?;
+                Ok(Some(
+                    raw.parse::<SyncStatus>().unwrap_or(SyncStatus::Synced),
+                ))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Queue an update patch for a document that is already saved. Used by
+    /// resync to re-queue local edits against a freshly fetched server base.
+    pub async fn queue_update_patch(
+        &self,
+        document_id: &Uuid,
+        patch: &json_patch::Patch,
+        old_content_hash: &str,
+    ) -> SyncResult<()> {
+        sqlx::query(
+            "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash) VALUES (?, ?, ?, ?)",
+        )
+        .bind(document_id.to_string())
+        .bind(ChangeEventType::Update.to_string())
+        .bind(serde_json::to_string(patch)?)
+        .bind(old_content_hash)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn save_document(&self, doc: &Document) -> SyncResult<()> {
         self.save_document_with_status(doc, None).await
     }

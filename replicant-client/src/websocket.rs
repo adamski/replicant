@@ -467,20 +467,40 @@ impl WebSocketClient {
     }
 
     async fn get_document(&self, id: Uuid) -> SyncResult<()> {
+        let msg = self.fetch_document(id).await;
+        let _ = self.tx.send(msg).await;
+        Ok(())
+    }
+
+    /// Fetch a full document and return the resulting message to the caller
+    /// instead of routing it through the inbound channel. Resync needs the
+    /// reply inline: routing it back through `tx` would lose the association
+    /// with the document being resynced (`ServerMessage::Error` carries no id).
+    pub async fn fetch_document(&self, id: Uuid) -> ServerMessage {
         // Bypass the `call` helper (which stringifies CallError) so a
         // `{"reason": "not_found"}` reply can be distinguished from a
         // transient transport/timeout failure.
         let payload = json!({"id": id.to_string()});
+        let encoded = match to_payload(&payload) {
+            Ok(p) => p,
+            Err(e) => {
+                return ServerMessage::Error {
+                    code: ErrorCode::ServerError,
+                    message: format!("Get document failed to encode request: {:?}", e),
+                }
+            }
+        };
+
         let result = self
             .channel
             .call(
                 Event::from_string("get_document".to_string()),
-                to_payload(&payload)?,
+                encoded,
                 CALL_TIMEOUT,
             )
             .await;
 
-        let msg = match result {
+        match result {
             Ok(reply) => match payload_to_value(&reply) {
                 Some(j) => match json_to_get_document_response(&j, id) {
                     Ok(msg) => msg,
@@ -512,10 +532,7 @@ impl WebSocketClient {
                 code: ErrorCode::ServerError,
                 message: format!("Get document failed: {:?}", e),
             },
-        };
-
-        let _ = self.tx.send(msg).await;
-        Ok(())
+        }
     }
 
     async fn get_changes_since(&self, last_sequence: u64, limit: Option<u32>) -> SyncResult<()> {

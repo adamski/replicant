@@ -6,56 +6,11 @@
 //! Gated behind `RUN_INTEGRATION_TESTS`; run via
 //! `test/run_phoenix_interop_local.sh`.
 
-use super::{
-    serial, server_url, skip_if_no_server, test_api_key, test_api_secret, TestClient, TEST_EMAIL,
-};
-use replicant_client::{Client, ClientDatabase};
+use super::{connect_subject, serial, skip_if_no_server, temp_db_path, TestClient, TEST_EMAIL};
+use replicant_client::ClientDatabase;
 use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
-
-fn canonical_user_id() -> Uuid {
-    std::env::var("REPLICANT_TEST_USER_ID")
-        .ok()
-        .and_then(|s| Uuid::parse_str(&s).ok())
-        .expect("REPLICANT_TEST_USER_ID is required for divergence tests")
-}
-
-fn temp_db_path(tag: &str) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!(
-        "databases/divergence_{}_{}_{}.sqlite3",
-        tag,
-        std::process::id(),
-        nanos
-    )
-}
-
-async fn connect_subject(db_url: &str) -> Client {
-    let client = Client::with_event_dispatcher(
-        db_url,
-        &server_url(),
-        TEST_EMAIL,
-        &test_api_key(),
-        &test_api_secret(),
-        Some(canonical_user_id()),
-        None,
-    )
-    .await
-    .expect("subject client should connect");
-
-    for _ in 0..50 {
-        if client.is_connected() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(client.is_connected(), "subject client should be connected");
-    client
-}
 
 /// Poll the subject's local database until it reaches the expected revision.
 async fn wait_for_revision(db_url: &str, id: Uuid, revision: i64) -> Option<(Value, i64)> {
@@ -98,7 +53,7 @@ async fn contiguous_broadcast_is_applied_and_verified_against_the_server_hash() 
     }
 
     std::fs::create_dir_all("databases").ok();
-    let db_file = temp_db_path("apply");
+    let db_file = temp_db_path("divergence_apply");
     let db_url = format!("sqlite:{}?mode=rwc", db_file);
     let subject = connect_subject(&db_url).await;
 
@@ -146,7 +101,7 @@ async fn missed_broadcast_resyncs_instead_of_frankenpatching() {
     }
 
     std::fs::create_dir_all("databases").ok();
-    let db_file = temp_db_path("resync");
+    let db_file = temp_db_path("divergence_resync");
     let db_url = format!("sqlite:{}?mode=rwc", db_file);
     let subject = connect_subject(&db_url).await;
 

@@ -78,6 +78,49 @@ pub fn skip_if_no_server() -> bool {
     std::env::var("RUN_INTEGRATION_TESTS").is_err()
 }
 
+/// The canonical user id, required rather than defaulted: a test that drives a
+/// real `Client` must join the same topic as its `TestClient` driver.
+pub fn canonical_user_id() -> Uuid {
+    std::env::var("REPLICANT_TEST_USER_ID")
+        .ok()
+        .and_then(|s| Uuid::parse_str(&s).ok())
+        .expect("REPLICANT_TEST_USER_ID is required for tests that drive a real Client")
+}
+
+/// A unique on-disk database path for a real `Client` under test.
+pub fn temp_db_path(tag: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("databases/{}_{}_{}.sqlite3", tag, std::process::id(), nanos)
+}
+
+/// Connect a real `Client` (the subject under test, as opposed to the raw
+/// `TestClient` driver) and wait for it to come up.
+pub async fn connect_subject(db_url: &str) -> replicant_client::Client {
+    let client = replicant_client::Client::with_event_dispatcher(
+        db_url,
+        &server_url(),
+        TEST_EMAIL,
+        &test_api_key(),
+        &test_api_secret(),
+        Some(canonical_user_id()),
+        None,
+    )
+    .await
+    .expect("subject client should connect");
+
+    for _ in 0..50 {
+        if client.is_connected() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(client.is_connected(), "subject client should be connected");
+    client
+}
+
 /// A broadcast event received from the server
 #[derive(Debug)]
 pub struct BroadcastEvent {

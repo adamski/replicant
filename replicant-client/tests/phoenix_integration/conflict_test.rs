@@ -1,9 +1,7 @@
 //! Conflict handling tests: hash mismatch, duplicate IDs
 
-use super::{
-    serial, server_url, skip_if_no_server, test_api_key, test_api_secret, TestClient, TEST_EMAIL,
-};
-use replicant_client::{Client, ClientDatabase};
+use super::{connect_subject, serial, skip_if_no_server, temp_db_path, TestClient, TEST_EMAIL};
+use replicant_client::ClientDatabase;
 use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
@@ -208,49 +206,6 @@ async fn test_concurrent_updates_one_wins() {
 // Rebase-and-resend on hash_mismatch (DEV-1037, Task 5)
 // ---------------------------------------------------------------------------
 
-fn canonical_user_id() -> Uuid {
-    std::env::var("REPLICANT_TEST_USER_ID")
-        .ok()
-        .and_then(|s| Uuid::parse_str(&s).ok())
-        .expect("REPLICANT_TEST_USER_ID is required for rebase tests")
-}
-
-fn temp_db_path(tag: &str) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!(
-        "databases/rebase_{}_{}_{}.sqlite3",
-        tag,
-        std::process::id(),
-        nanos
-    )
-}
-
-async fn connect_subject(db_url: &str) -> Client {
-    let client = Client::with_event_dispatcher(
-        db_url,
-        &server_url(),
-        TEST_EMAIL,
-        &test_api_key(),
-        &test_api_secret(),
-        Some(canonical_user_id()),
-        None,
-    )
-    .await
-    .expect("subject client should connect");
-
-    for _ in 0..50 {
-        if client.is_connected() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(client.is_connected(), "subject client should be connected");
-    client
-}
-
 /// Poll a client's local database until its content matches `expected`.
 async fn wait_for_content(db_url: &str, id: Uuid, expected: &Value) -> Option<Value> {
     let db = ClientDatabase::new(db_url).await.unwrap();
@@ -293,8 +248,8 @@ async fn concurrent_edits_to_different_fields_converge_on_both() {
     }
 
     std::fs::create_dir_all("databases").ok();
-    let winner_db_file = temp_db_path("winner");
-    let loser_db_file = temp_db_path("loser");
+    let winner_db_file = temp_db_path("rebase_winner");
+    let loser_db_file = temp_db_path("rebase_loser");
     let winner_db = format!("sqlite:{}?mode=rwc", winner_db_file);
     let loser_db = format!("sqlite:{}?mode=rwc", loser_db_file);
 

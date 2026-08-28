@@ -454,6 +454,11 @@ impl ClientDatabase {
         let adopts_server_state = matches!(sync_status, Some(SyncStatus::Synced));
         let params = DbHelpers::document_to_params(doc, sync_status)?;
 
+        // One transaction: a crash between the write and the queue clear would
+        // leave a Synced document still owing a create, which is exactly the
+        // invariant violation the create row exists to prevent.
+        let mut tx = self.pool.begin().await?;
+
         sqlx::query(Queries::UPSERT_DOCUMENT)
             .bind(params.0) // id
             .bind(params.1) // user_id
@@ -467,7 +472,7 @@ impl ClientDatabase {
             .bind(params.9) // author_name
             .bind(params.10) // visibility
             .bind(params.11) // provenance
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
         // Writing a document as Synced means the server holds it, so it no
@@ -478,9 +483,11 @@ impl ClientDatabase {
             sqlx::query("DELETE FROM sync_queue WHERE document_id = ? AND operation_type = ?")
                 .bind(doc.id.to_string())
                 .bind(ChangeEventType::Create.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
+
+        tx.commit().await?;
 
         tracing::info!("DATABASE: ✅ Document {} saved successfully", doc.id);
 
@@ -533,17 +540,24 @@ impl ClientDatabase {
     pub async fn mark_synced(&self, document_id: &Uuid) -> SyncResult<()> {
         tracing::info!("DATABASE: 🔄 Marking document {} as synced", document_id);
 
+        // One transaction, for the same reason as `save_document_with_status`:
+        // a crash between the two would leave a Synced document still owing a
+        // create.
+        let mut tx = self.pool.begin().await?;
+
         let result = sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
             .bind(SyncStatus::Synced.to_string())
             .bind(document_id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("DELETE FROM sync_queue WHERE document_id = ? AND operation_type = ?")
             .bind(document_id.to_string())
             .bind(ChangeEventType::Create.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+
+        tx.commit().await?;
 
         tracing::info!(
             "DATABASE: ✅ Marked {} as synced, rows affected: {}",

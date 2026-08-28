@@ -349,7 +349,8 @@ impl ClientDatabase {
     ///
     /// Prior `update` rows for the document are deleted rather than added to.
     /// `get_queued_patch` reads exactly one row, so a leftover row with an
-    /// outdated base hash would be retried — and rejected — forever.
+    /// outdated base hash would be retried — and rejected — forever. Any
+    /// `create` row goes too: adopting server content is the create's ack.
     ///
     /// `new_status` is what the row should carry afterwards: `Pending` for a
     /// rebase whose patch is about to be sent, or the document's existing status
@@ -400,6 +401,16 @@ impl ClientDatabase {
             .execute(&mut *tx)
             .await?;
 
+        // Rebasing onto server content proves the server holds this document,
+        // which is exactly what an unconsumed `create` row denies. Leaving it
+        // would make the next upload send a create the server answers with a
+        // primary-key conflict, and nothing clears a rejected create.
+        sqlx::query("DELETE FROM sync_queue WHERE document_id = ? AND operation_type = ?")
+            .bind(document_id.to_string())
+            .bind(ChangeEventType::Create.to_string())
+            .execute(&mut *tx)
+            .await?;
+
         sqlx::query(
             "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash, base_content) VALUES (?, ?, ?, ?, ?)",
         )
@@ -440,6 +451,7 @@ impl ClientDatabase {
             doc.sync_revision
         );
 
+        let adopts_server_state = matches!(sync_status, Some(SyncStatus::Synced));
         let params = DbHelpers::document_to_params(doc, sync_status)?;
 
         sqlx::query(Queries::UPSERT_DOCUMENT)
@@ -457,6 +469,18 @@ impl ClientDatabase {
             .bind(params.11) // provenance
             .execute(&self.pool)
             .await?;
+
+        // Writing a document as Synced means the server holds it, so it no
+        // longer owes a create. The broadcast and full-sync paths adopt server
+        // state this way; a `create` row left behind here would make a later
+        // local edit upload as a create the server rejects as a duplicate.
+        if adopts_server_state {
+            sqlx::query("DELETE FROM sync_queue WHERE document_id = ? AND operation_type = ?")
+                .bind(doc.id.to_string())
+                .bind(ChangeEventType::Create.to_string())
+                .execute(&self.pool)
+                .await?;
+        }
 
         tracing::info!("DATABASE: ✅ Document {} saved successfully", doc.id);
 
@@ -1188,6 +1212,77 @@ mod sync_queue_tests {
         assert!(
             db.get_queued_patch(&id).await.unwrap().is_none(),
             "the ack also clears the update row, which the create already carried"
+        );
+    }
+
+    /// The lost-ack trace: the server committed the create but the ack never
+    /// arrived, so the create row survives. A later edit, then a resync that
+    /// rebases onto the server's copy, must consume that create row — otherwise
+    /// the next upload sends a create the server rejects as a duplicate, and a
+    /// rejected create clears nothing.
+    #[tokio::test]
+    async fn rebasing_onto_server_content_consumes_the_create_row() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        let created = json!({"title": "draft"});
+        db.save_new_document_and_queue_create(&doc_with(id, created.clone()))
+            .await
+            .unwrap();
+
+        // The ack was lost, so the create row is still owed. Then a local edit.
+        let edited = json!({"title": "draft", "a": 1});
+        edit(&db, id, edited.clone()).await;
+        assert!(db.has_queued_create(&id).await.unwrap());
+
+        // A resync delivers the server's copy and rebases the local edit onto it.
+        let server_content = json!({"title": "draft", "server": true});
+        let expected = DocumentPreImage {
+            sync_revision: 1,
+            content: edited,
+            sync_status: SyncStatus::Pending,
+        };
+        assert!(db
+            .rebase_pending_document_if_unchanged(
+                &id,
+                &json!({"title": "draft", "server": true, "a": 1}),
+                7,
+                &server_content,
+                &calculate_checksum(&server_content),
+                SyncStatus::Pending,
+                &expected,
+            )
+            .await
+            .unwrap());
+
+        assert!(
+            !db.has_queued_create(&id).await.unwrap(),
+            "adopting server content is the create's ack"
+        );
+        assert!(
+            db.get_queued_patch(&id).await.unwrap().is_some(),
+            "the rebased edit must still be queued as an update"
+        );
+    }
+
+    /// Adopting server state through the broadcast/full-sync route — a plain
+    /// write at `Synced` — must also consume the create row, or a later edit
+    /// uploads as a duplicate create.
+    #[tokio::test]
+    async fn saving_a_document_as_synced_consumes_the_create_row() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        let created = json!({"title": "draft"});
+        db.save_new_document_and_queue_create(&doc_with(id, created.clone()))
+            .await
+            .unwrap();
+
+        db.save_document_with_status(&doc_with(id, created), Some(SyncStatus::Synced))
+            .await
+            .unwrap();
+
+        assert!(
+            !db.has_queued_create(&id).await.unwrap(),
+            "a document written as Synced is one the server holds"
         );
     }
 

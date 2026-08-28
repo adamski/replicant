@@ -143,13 +143,24 @@ impl UploadRetry {
         }
     }
 
-    async fn schedule(&self, client_id: Uuid, document_id: Uuid) {
+    /// Claim the single recovery attempt a document gets per session.
+    ///
+    /// `false` means it has already been spent and the caller must not try
+    /// again — the bound that keeps a repeating rejection from spinning.
+    async fn claim_once(&self, client_id: Uuid, document_id: Uuid) -> bool {
         if !self.already_retried.lock().await.insert(document_id) {
             tracing::warn!(
                 "CLIENT {}: Upload for {} failed again, not retrying a second time",
                 client_id,
                 document_id
             );
+            return false;
+        }
+        true
+    }
+
+    async fn schedule(&self, client_id: Uuid, document_id: Uuid) {
+        if !self.claim_once(client_id, document_id).await {
             return;
         }
 
@@ -1188,21 +1199,30 @@ impl Client {
                     Self::hash_mismatch_details(&msg)
                 };
 
+                // A rejected create cannot be fixed by resending it: the server
+                // either already holds the document (lost ack, or the
+                // content-hash dedupe) or refuses it outright, and both survive
+                // a blind retry. It gets its own recovery below instead.
+                let document_id = *document_id;
+                let failed_create = !*success
+                    && rebase.is_none()
+                    && matches!(msg, ServerMessage::DocumentCreatedResponse { .. });
+
                 if !*success {
                     tracing::error!(
                         "CLIENT {}: Upload failed for document {}",
                         client_id,
                         document_id
                     );
-                    if rebase.is_none() {
+                    if rebase.is_none() && !failed_create {
                         // The document is still Pending with its queue row
                         // intact, so a retry pass will pick it up.
-                        upload_retry.schedule(client_id, *document_id).await;
+                        upload_retry.schedule(client_id, document_id).await;
                     }
                 }
 
                 let mut uploads = pending_uploads.lock().await;
-                if let Some(upload) = uploads.remove(document_id) {
+                if let Some(upload) = uploads.remove(&document_id) {
                     let elapsed = upload.sent_at.elapsed();
                     tracing::info!(
                         "CLIENT {}: Upload settled for {} ({:?}, success={}) in {:?}",
@@ -1251,15 +1271,29 @@ impl Client {
                         client_id,
                         event_dispatcher,
                         upload_retry,
-                        *document_id,
+                        document_id,
                         server,
                     )
                     .await;
                 }
 
-                // Continue with normal processing
-                return Self::handle_server_message(msg, db, client_id, event_dispatcher, source)
+                // Normal processing first, so the plain failure event still
+                // reaches the consumer before any recovery event.
+                Self::handle_server_message(msg, db, client_id, event_dispatcher, source).await?;
+
+                if failed_create {
+                    return Self::recover_failed_create(
+                        db,
+                        source,
+                        client_id,
+                        event_dispatcher,
+                        upload_retry,
+                        document_id,
+                    )
                     .await;
+                }
+
+                return Ok(());
             }
 
             // A patch for a document we are still uploading is almost always
@@ -1821,6 +1855,109 @@ impl Client {
             doc.visibility.as_deref(),
         );
 
+        Ok(())
+    }
+
+    /// Recover a document whose create the server rejected.
+    ///
+    /// A create fails for two very different reasons. Either the server already
+    /// holds the document — a lost ack, or its content-hash dedupe returning an
+    /// existing row — in which case the local copy must adopt server state and
+    /// upload its edits as an update. Or the create was genuinely refused
+    /// (validation, quota), which no amount of resending fixes.
+    ///
+    /// Fetching the document settles which it is. Adopting server state also
+    /// consumes the queued `create`, so the retry sends an update rather than a
+    /// second doomed create.
+    ///
+    /// One attempt per document per session, so a repeating refusal cannot spin.
+    async fn recover_failed_create(
+        db: &Arc<ClientDatabase>,
+        source: &ResyncSource,
+        client_id: Uuid,
+        event_dispatcher: &Arc<EventDispatcher>,
+        upload_retry: &UploadRetry,
+        document_id: Uuid,
+    ) -> SyncResult<()> {
+        if !upload_retry.claim_once(client_id, document_id).await {
+            return Ok(());
+        }
+
+        let Some(result) = source.fetch(document_id).await else {
+            tracing::warn!(
+                "CLIENT {}: Cannot check {} after a rejected create while offline, leaving it pending",
+                client_id,
+                document_id
+            );
+            return Ok(());
+        };
+
+        if let ServerMessage::Error {
+            code: ErrorCode::DocumentNotFound,
+            ..
+        } = result
+        {
+            return Self::settle_rejected_create(db, client_id, event_dispatcher, document_id)
+                .await;
+        }
+
+        tracing::info!(
+            "CLIENT {}: Server already holds {}, adopting its state and resending as an update",
+            client_id,
+            document_id
+        );
+        Self::apply_resync_result(db, client_id, event_dispatcher, document_id, result).await?;
+        upload_retry
+            .resend_after_rebase(client_id, document_id)
+            .await;
+        Ok(())
+    }
+
+    /// Park a document the server refused to create and does not hold.
+    ///
+    /// `Conflict` takes it out of the pending set, so the upload pass stops
+    /// resending a create that is only going to be refused again. Deliberately
+    /// NOT soft-deleted the way a resync treats a missing document: this content
+    /// has never reached the server, so the local copy is the only one there is.
+    ///
+    /// The queued rows stay. The document genuinely still owes the server a
+    /// create, and a later session — after whatever refused it is resolved — can
+    /// send one once a local edit makes it pending again.
+    async fn settle_rejected_create(
+        db: &Arc<ClientDatabase>,
+        client_id: Uuid,
+        event_dispatcher: &Arc<EventDispatcher>,
+        document_id: Uuid,
+    ) -> SyncResult<()> {
+        tracing::error!(
+            "CLIENT {}: Server refused to create {} and does not hold it, parking it as a conflict",
+            client_id,
+            document_id
+        );
+
+        let doc = match db.get_document(&document_id).await {
+            Ok(doc) => doc,
+            Err(e) => {
+                tracing::warn!(
+                    "CLIENT {}: Could not read {} to park the rejected create ({})",
+                    client_id,
+                    document_id,
+                    e
+                );
+                return Ok(());
+            }
+        };
+        db.save_document_with_status(&doc, Some(SyncStatus::Conflict))
+            .await?;
+
+        event_dispatcher.emit_conflict_detected(&document_id);
+        event_dispatcher.emit_sync_error(
+            ReplicantErrorCode::UpdateConflict,
+            &format!(
+                "The server refused to create {} and does not hold it; the local copy is unsynced",
+                document_id
+            ),
+        );
         Ok(())
     }
 
@@ -3351,9 +3488,22 @@ mod broadcast_guard_tests {
         id: Uuid,
         ack: ServerMessage,
     ) {
+        let (source, _canned) = recording_source();
+        deliver_ack_from(db, events, upload_retry, id, ack, &source).await;
+    }
+
+    /// `deliver_ack` against a chosen resync source, for acks whose recovery
+    /// path fetches the document from the server.
+    async fn deliver_ack_from(
+        db: &Arc<ClientDatabase>,
+        events: &Arc<EventDispatcher>,
+        upload_retry: &UploadRetry,
+        id: Uuid,
+        ack: ServerMessage,
+        source: &ResyncSource,
+    ) {
         let (pending_uploads, deferred_messages, notifier, protection) = tracking_args();
         pending_uploads.lock().await.insert(id, in_flight_upload());
-        let (source, _canned) = recording_source();
 
         Client::handle_server_message_with_tracking(
             ack,
@@ -3365,7 +3515,7 @@ mod broadcast_guard_tests {
             &protection,
             &deferred_messages,
             upload_retry,
-            &source,
+            source,
         )
         .await
         .unwrap();
@@ -3374,6 +3524,18 @@ mod broadcast_guard_tests {
             pending_uploads.lock().await.is_empty(),
             "an ack must settle the upload before anything is resent"
         );
+    }
+
+    /// A create the server refused.
+    fn create_rejected(document_id: Uuid, error: &str) -> ServerMessage {
+        ServerMessage::DocumentCreatedResponse {
+            document_id,
+            success: false,
+            error: Some(error.to_string()),
+            author_name: None,
+            visibility: None,
+            provenance: None,
+        }
     }
 
     async fn queued_base_hash(db: &Arc<ClientDatabase>, id: &Uuid) -> Option<String> {
@@ -4525,6 +4687,188 @@ mod broadcast_guard_tests {
             )),
             "the conflict must carry a structured error code: {:?}",
             emitted
+        );
+    }
+
+    /// A create rejected because the server already holds the document (a lost
+    /// ack, or its content-hash dedupe). Resending the create would be refused
+    /// again forever, so the client must adopt the server's copy — which
+    /// consumes the create row — and resend the local edits as an update.
+    #[tokio::test]
+    async fn a_create_rejected_for_a_document_the_server_holds_becomes_an_update() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let created = json!({"title": "draft"});
+        db.save_new_document_and_queue_create(&make_doc(id, created.clone(), 1))
+            .await
+            .unwrap();
+
+        // Edit it while the create is still unsent — deliberately NOT via
+        // `seed_pending_edit`, whose Synced seed would consume the create row
+        // and leave nothing for this test to prove.
+        let edited = json!({"title": "edited"});
+        db.save_document_and_queue_patch(
+            &make_doc(id, edited.clone(), 1),
+            &create_patch(&created, &edited).unwrap(),
+            replicant_core::protocol::ChangeEventType::Update,
+            Some(&created),
+        )
+        .await
+        .unwrap();
+        assert!(
+            db.has_queued_create(&id).await.unwrap(),
+            "the create must still be owed going in, or this test proves nothing"
+        );
+
+        let server = json!({"title": "draft", "server": true});
+        let (source, canned) = canned_source(vec![ServerMessage::GetDocumentResponse {
+            id,
+            content: server.clone(),
+            sync_revision: 4,
+            content_hash: calculate_checksum(&server),
+            deleted: false,
+        }]);
+        let events = dispatcher();
+        let (upload_retry, mut retry_rx) = retry_probe();
+
+        deliver_ack_from(
+            &db,
+            &events,
+            &upload_retry,
+            id,
+            create_rejected(id, "id_taken"),
+            &source,
+        )
+        .await;
+
+        assert_eq!(
+            resync_attempts(&canned).await,
+            vec![id],
+            "a rejected create must ask the server what it actually holds"
+        );
+        assert!(
+            !db.has_queued_create(&id).await.unwrap(),
+            "adopting the server's copy must consume the create row"
+        );
+        assert!(
+            matches!(
+                classify_pending_upload(&db, &id).await,
+                PendingUploadKind::Update { .. }
+            ),
+            "the next upload must be an update, not a second doomed create"
+        );
+        assert!(
+            retry_rx.try_recv().is_ok(),
+            "the rebased update must be resent"
+        );
+    }
+
+    /// A create the server refused outright and does not hold. Resending cannot
+    /// help, so the document is parked as a conflict — and NOT soft-deleted, the
+    /// way a resync treats a missing document: this content never reached the
+    /// server, so the local copy is the only one there is.
+    #[tokio::test]
+    async fn a_create_refused_outright_settles_as_a_conflict_without_losing_the_content() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let created = json!({"title": "draft"});
+        db.save_new_document_and_queue_create(&make_doc(id, created.clone(), 1))
+            .await
+            .unwrap();
+
+        let (source, canned) = canned_source(vec![ServerMessage::Error {
+            code: ErrorCode::DocumentNotFound,
+            message: "not found".to_string(),
+        }]);
+        let events = dispatcher();
+        let seen = event_probe(&events);
+        let (upload_retry, mut retry_rx) = retry_probe();
+
+        deliver_ack_from(
+            &db,
+            &events,
+            &upload_retry,
+            id,
+            create_rejected(id, "quota_exceeded"),
+            &source,
+        )
+        .await;
+
+        assert_eq!(resync_attempts(&canned).await, vec![id]);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Conflict),
+            "a refused create must leave the pending set so it stops being resent"
+        );
+        assert_eq!(
+            db.get_document(&id).await.unwrap().content,
+            created,
+            "the only copy of this content must survive"
+        );
+        assert_eq!(
+            deleted_at(&db, &id).await,
+            None,
+            "a refused create is not a deletion"
+        );
+        assert!(
+            retry_rx.try_recv().is_err(),
+            "a refused create must not schedule a resend"
+        );
+
+        let emitted = drain_events(&events, &seen);
+        assert!(
+            emitted
+                .iter()
+                .any(|e| matches!(e, SyncEvent::ConflictDetected { .. })),
+            "the host app must be told: {:?}",
+            emitted
+        );
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                SyncEvent::SyncError {
+                    code: ReplicantErrorCode::UpdateConflict,
+                    ..
+                }
+            )),
+            "the refusal must carry a structured error code: {:?}",
+            emitted
+        );
+    }
+
+    /// The bound: a create that keeps being refused must not spin.
+    #[tokio::test]
+    async fn a_repeatedly_refused_create_recovers_only_once() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        db.save_new_document_and_queue_create(&make_doc(id, json!({"title": "draft"}), 1))
+            .await
+            .unwrap();
+
+        let not_found = || ServerMessage::Error {
+            code: ErrorCode::DocumentNotFound,
+            message: "not found".to_string(),
+        };
+        let (source, canned) = canned_source(vec![not_found(), not_found()]);
+        let events = dispatcher();
+        let (upload_retry, _retry_rx) = retry_probe();
+
+        for _ in 0..2 {
+            deliver_ack_from(
+                &db,
+                &events,
+                &upload_retry,
+                id,
+                create_rejected(id, "quota_exceeded"),
+                &source,
+            )
+            .await;
+        }
+
+        assert_eq!(
+            resync_attempts(&canned).await,
+            vec![id],
+            "the second refusal must not fetch again"
         );
     }
 

@@ -39,7 +39,13 @@ impl OfflineQueue {
             let patch: Option<String> = row.get("patch");
             let _retry_count: i64 = row.get("retry_count");
 
-            let message: ClientMessage = serde_json::from_str(&patch.unwrap_or_default())?;
+            // Rows this queue wrote always carry a serialized ClientMessage.
+            // `create` rows written by the document path carry no patch at all,
+            // and are uploaded from the document itself, not from here.
+            let Some(patch) = patch else {
+                continue;
+            };
+            let message: ClientMessage = serde_json::from_str(&patch)?;
 
             // Simple retry logic without backoff crate due to closure limitations
             let result = send_fn(message.clone()).await;

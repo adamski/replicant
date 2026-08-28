@@ -198,9 +198,13 @@ impl ClientDatabase {
     /// the local database. `Document` does not carry the status, but the
     /// broadcast guard has to know whether local edits are outstanding.
     ///
-    /// An unparseable status fails CLOSED (`Conflict`): `Synced` is the one
-    /// value that authorises a blind patch apply, so nothing may reach it by
-    /// way of a fallback.
+    /// An unparseable status falls back to `Conflict`, the status that asserts
+    /// the least. Note that `Conflict` is itself appliable: a settled conflict
+    /// holds the server's content, so a broadcast may be applied to it. What
+    /// keeps that safe is not the status but the guards around it — revision
+    /// contiguity, the post-apply hash check, and the compare-and-swap — and
+    /// the fact that the write preserves whatever status it found. The fallback
+    /// only guarantees that a drifted value never reads as `Synced`.
     pub async fn get_sync_status(&self, id: &Uuid) -> SyncResult<Option<SyncStatus>> {
         let row = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
             .bind(id.to_string())
@@ -260,6 +264,65 @@ impl ClientDatabase {
             );
             return Ok(false);
         }
+
+        if let Err(e) = self.update_fts_for_document(&doc.id).await {
+            tracing::warn!("FTS: Failed to update index for {}: {:?}", doc.id, e);
+        }
+
+        Ok(true)
+    }
+
+    /// Adopt server state and clear the document's sync queue, in one
+    /// transaction.
+    ///
+    /// Doing these as two statements leaves a window: a local edit landing
+    /// between them sets `Pending` and inserts a fresh queue row, which the
+    /// unscoped delete then removes — leaving a `Pending` document with nothing
+    /// queued, which the next upload pass sends as a `CreateDocument` for a
+    /// document the server already has.
+    ///
+    /// Returns `false` if the row no longer matches `expected`, in which case
+    /// nothing is deleted.
+    pub async fn save_document_and_clear_queue_if_unchanged(
+        &self,
+        doc: &Document,
+        new_status: SyncStatus,
+        expected: &DocumentPreImage,
+    ) -> SyncResult<bool> {
+        let params = DbHelpers::document_to_params(doc, Some(new_status))?;
+        let mut tx = self.pool.begin().await?;
+
+        let result = sqlx::query(
+            "UPDATE documents SET content = ?, sync_revision = ?, updated_at = ?, sync_status = ?, title = ? \
+             WHERE id = ? AND content = ? AND sync_revision = ? AND sync_status = ?",
+        )
+        .bind(params.2) // content
+        .bind(params.3) // sync_revision
+        .bind(params.5) // updated_at
+        .bind(params.7) // sync_status
+        .bind(params.8) // title
+        .bind(doc.id.to_string())
+        .bind(serde_json::to_string(&expected.content)?)
+        .bind(expected.sync_revision)
+        .bind(expected.sync_status.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            tx.rollback().await?;
+            tracing::warn!(
+                "DATABASE: Compare-and-swap for {} lost to a concurrent local write",
+                doc.id
+            );
+            return Ok(false);
+        }
+
+        sqlx::query("DELETE FROM sync_queue WHERE document_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
 
         if let Err(e) = self.update_fts_for_document(&doc.id).await {
             tracing::warn!("FTS: Failed to update index for {}: {:?}", doc.id, e);

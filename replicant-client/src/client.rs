@@ -1665,8 +1665,15 @@ impl Client {
         doc.sync_revision = server.current_revision;
         doc.updated_at = chrono::Utc::now();
 
+        // One transaction: a local edit landing between the write and the
+        // delete would otherwise have its fresh queue row deleted, leaving a
+        // Pending document with nothing queued.
         if !db
-            .save_document_if_unchanged(&doc, settled_status(expected.sync_status), expected)
+            .save_document_and_clear_queue_if_unchanged(
+                &doc,
+                settled_status(expected.sync_status),
+                expected,
+            )
             .await?
         {
             tracing::warn!(
@@ -1679,8 +1686,6 @@ impl Client {
                 .await;
             return Ok(());
         }
-
-        db.remove_from_sync_queue(&document_id).await?;
 
         tracing::info!(
             "CLIENT {}: Rejected update for {} was already in the server's revision {}, nothing to resend",
@@ -1737,8 +1742,11 @@ impl Client {
         doc.sync_revision = server.current_revision;
         doc.updated_at = chrono::Utc::now();
 
+        // One transaction, for the same reason as `adopt_without_resending`:
+        // dropping the queue row must not outlive a failed swap, and must not
+        // take a queue row a concurrent local edit just inserted.
         if !db
-            .save_document_if_unchanged(&doc, SyncStatus::Conflict, expected)
+            .save_document_and_clear_queue_if_unchanged(&doc, SyncStatus::Conflict, expected)
             .await?
         {
             // A newer local edit landed; it will be uploaded and get its own
@@ -1750,8 +1758,6 @@ impl Client {
             );
             return Ok(());
         }
-
-        db.remove_from_sync_queue(&document_id).await?;
 
         event_dispatcher.emit_conflict_detected(&document_id);
         event_dispatcher.emit_sync_error(
@@ -4719,6 +4725,100 @@ mod broadcast_guard_tests {
         assert!(
             retry_rx.try_recv().is_err(),
             "a no-op patch must not cost an upload round trip"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_adoption_that_loses_the_swap_keeps_the_queue_row() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+        wedge_the_swap(&db, &id, &local).await;
+        let before = raw_content(&db, &id).await;
+
+        // Server content already equals the local edit, so the rebase diff is
+        // empty and this takes the adopt path — whose swap is wedged.
+        let (upload_retry, mut retry_rx) = retry_probe();
+        deliver_ack(
+            &db,
+            &dispatcher(),
+            &upload_retry,
+            id,
+            update_rejected(
+                id,
+                "hash_mismatch",
+                Some((2, local.clone(), calculate_checksum(&local))),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            1,
+            "clearing the queue must not outlive a failed swap: a Pending document \
+             with no queue row would be re-sent as a create"
+        );
+        assert_eq!(raw_content(&db, &id).await, before);
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending)
+        );
+        assert!(
+            retry_rx.try_recv().is_ok(),
+            "a lost adoption falls back to resending"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_the_queue_is_coupled_to_the_swap_winning() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let base = base_content();
+        let local = json!({"title": "base", "referenceFrequency": 441.0});
+        seed_pending_edit(&db, id, &base, &local, 1).await;
+
+        let doc = db.get_document(&id).await.unwrap();
+        let stale = DocumentPreImage {
+            sync_revision: doc.sync_revision,
+            content: json!({"title": "never stored"}),
+            sync_status: SyncStatus::Pending,
+        };
+
+        assert!(
+            !db.save_document_and_clear_queue_if_unchanged(&doc, SyncStatus::Synced, &stale)
+                .await
+                .unwrap(),
+            "a stale pre-image must lose"
+        );
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            1,
+            "a rolled-back transaction must delete nothing"
+        );
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending)
+        );
+
+        let current = DocumentPreImage {
+            sync_revision: doc.sync_revision,
+            content: doc.content.clone(),
+            sync_status: SyncStatus::Pending,
+        };
+        assert!(db
+            .save_document_and_clear_queue_if_unchanged(&doc, SyncStatus::Synced, &current)
+            .await
+            .unwrap());
+        assert_eq!(
+            queued_update_rows(&db, &id).await,
+            0,
+            "a winning swap clears the queue in the same transaction"
+        );
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Synced)
         );
     }
 

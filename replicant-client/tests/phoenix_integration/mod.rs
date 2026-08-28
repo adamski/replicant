@@ -96,6 +96,18 @@ pub fn temp_db_path(tag: &str) -> String {
     format!("databases/{}_{}_{}.sqlite3", tag, std::process::id(), nanos)
 }
 
+/// Delete a temporary database, including the `-wal` and `-shm` siblings SQLite
+/// leaves behind.
+pub fn remove_temp_db(db_file: &str) {
+    for path in [
+        db_file.to_string(),
+        format!("{}-wal", db_file),
+        format!("{}-shm", db_file),
+    ] {
+        std::fs::remove_file(path).ok();
+    }
+}
+
 /// Connect a real `Client` (the subject under test, as opposed to the raw
 /// `TestClient` driver) and wait for it to come up.
 pub async fn connect_subject(db_url: &str) -> replicant_client::Client {

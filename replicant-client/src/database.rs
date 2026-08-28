@@ -726,7 +726,9 @@ impl ClientDatabase {
         // Queue sync operation (in transaction)
         if let Some(edit_base) = base_content {
             // An update: collapse onto the single row, keeping whatever base it
-            // already carries.
+            // already carries. Oldest-first is the earliest base, which only
+            // several pre-upgrade rows can offer — this build keeps exactly one,
+            // so the reader's newest-first order picks the same row.
             let existing = sqlx::query(
                 "SELECT base_content, old_content_hash FROM sync_queue \
                  WHERE document_id = ? AND operation_type = ? ORDER BY id ASC LIMIT 1",
@@ -807,7 +809,13 @@ impl ClientDatabase {
     /// document is a create, not an update.
     ///
     /// A row written before `base_content` existed falls back to its stored
-    /// patch and hash, which is what a pre-upgrade client would have sent.
+    /// patch and hash, which is what a pre-upgrade client would have sent. A NULL
+    /// base is that legacy case; a column that fails to read is corruption and is
+    /// reported, not quietly treated as legacy.
+    ///
+    /// Newest-first ordering only matters for a pre-upgrade document holding
+    /// several rows, where the newest is what the old reader would have sent;
+    /// every row this build writes is the document's only one.
     pub async fn get_queued_patch(
         &self,
         document_id: &Uuid,
@@ -823,8 +831,8 @@ impl ClientDatabase {
             return Ok(None);
         };
 
-        let base_json: Option<String> = row.try_get("base_content").ok().flatten();
-        let old_hash: Option<String> = row.try_get("old_content_hash").ok().flatten();
+        let base_json: Option<String> = row.try_get("base_content")?;
+        let old_hash: Option<String> = row.try_get("old_content_hash")?;
 
         if let Some(base_json) = base_json {
             let base: serde_json::Value = serde_json::from_str(&base_json)?;

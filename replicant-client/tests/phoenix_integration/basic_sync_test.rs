@@ -3,10 +3,10 @@
 //! Ported from the original Rust server integration tests.
 
 use super::{
-    connect_subject, open_offline_subject, serial, skip_if_no_server, temp_db_path, TestClient,
-    TEST_EMAIL,
+    connect_subject, open_offline_subject, remove_temp_db, serial, skip_if_no_server, temp_db_path,
+    TestClient, TEST_EMAIL,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -328,24 +328,6 @@ async fn test_array_operations_no_duplication() {
     assert_eq!(tags[1], "new_tag");
 }
 
-/// Poll the server for a document until it reaches `revision`.
-async fn wait_for_server_revision(
-    driver: &TestClient,
-    id: Uuid,
-    revision: i64,
-) -> Option<(Value, i64)> {
-    for _ in 0..100 {
-        if let Ok(doc) = driver.get_document(id).await {
-            let current = doc.get("sync_revision").and_then(|v| v.as_i64());
-            if current == Some(revision) {
-                return Some((doc.get("content").cloned()?, revision));
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    None
-}
-
 /// Poll the subject's local database until the document settles as synced.
 async fn wait_for_local_synced(db_url: &str, id: Uuid) -> bool {
     let db = replicant_client::ClientDatabase::new(db_url).await.unwrap();
@@ -414,19 +396,27 @@ async fn offline_edits_flush_as_one_cumulative_patch() {
             .unwrap();
     }
 
-    // Reconnecting flushes the queue.
+    // Reconnecting flushes the queue; the subject settles once the server acks.
     let subject = connect_subject(&db_url).await;
+    assert!(
+        wait_for_local_synced(&db_url, doc_id).await,
+        "the flushed edits should be acknowledged, not left pending"
+    );
 
-    let (content, _) = wait_for_server_revision(&driver, doc_id, created_revision + 1)
-        .await
-        .expect("the server should advance exactly one revision for the flushed edits");
+    let server_doc = driver.get_document(doc_id).await.unwrap();
     assert_eq!(
-        content, final_content,
+        server_doc.get("content"),
+        Some(&final_content),
         "the flush must carry all three offline edits, not the newest fragment"
+    );
+    assert_eq!(
+        server_doc.get("sync_revision").and_then(|v| v.as_i64()),
+        Some(created_revision + 1),
+        "three offline edits must cost exactly one server revision"
     );
 
     drop(subject);
-    std::fs::remove_file(&db_file).ok();
+    remove_temp_db(&db_file);
 }
 
 /// Proves envelope attribution flows end-to-end: server stamps author_name

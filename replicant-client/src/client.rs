@@ -3963,7 +3963,7 @@ mod broadcast_guard_tests {
     }
 
     #[tokio::test]
-    async fn unparseable_sync_status_fails_closed_as_conflict() {
+    async fn unparseable_sync_status_fails_closed_as_pending() {
         let db = test_db().await;
         let id = Uuid::new_v4();
         seed(&db, &make_doc(id, json!({}), 1), SyncStatus::Synced).await;
@@ -3984,8 +3984,23 @@ mod broadcast_guard_tests {
 
         assert_eq!(
             db.get_sync_status(&id).await.unwrap(),
-            Some(SyncStatus::Conflict),
-            "an unknown status must never read back as Synced"
+            Some(SyncStatus::Pending),
+            "an unknown status must read back as the only non-appliable, \
+             non-destructive value: Synced and Conflict both authorise an apply"
+        );
+
+        // And prove it: a contiguous broadcast onto the drifted row resyncs
+        // instead of applying, so unsent local edits cannot be overwritten.
+        let resynced = deliver(
+            &db,
+            &dispatcher(),
+            server_patch(id, &json!({}), &json!({"title": "from the server"}), 2),
+        )
+        .await;
+        assert_eq!(
+            resynced,
+            vec![id],
+            "a drifted status must route to a resync, never a blind apply"
         );
     }
 

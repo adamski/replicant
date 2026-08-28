@@ -198,13 +198,14 @@ impl ClientDatabase {
     /// the local database. `Document` does not carry the status, but the
     /// broadcast guard has to know whether local edits are outstanding.
     ///
-    /// An unparseable status falls back to `Conflict`, the status that asserts
-    /// the least. Note that `Conflict` is itself appliable: a settled conflict
-    /// holds the server's content, so a broadcast may be applied to it. What
-    /// keeps that safe is not the status but the guards around it — revision
-    /// contiguity, the post-apply hash check, and the compare-and-swap — and
-    /// the fact that the write preserves whatever status it found. The fallback
-    /// only guarantees that a drifted value never reads as `Synced`.
+    /// An unparseable status fails CLOSED as `Pending`. Both `Synced` and
+    /// `Conflict` authorise a guarded patch apply — a settled conflict holds the
+    /// server's content, so applying to it is safe — and neither may be reached
+    /// by way of a fallback: a drifted row might be hiding unsent local edits,
+    /// and the compare-and-swap cannot tell, because its content would match.
+    /// `Pending` is the only status that is both non-appliable and
+    /// non-destructive: it routes the document to a resync, which rebases the
+    /// local content forward rather than overwriting it.
     pub async fn get_sync_status(&self, id: &Uuid) -> SyncResult<Option<SyncStatus>> {
         let row = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
             .bind(id.to_string())
@@ -216,11 +217,11 @@ impl ClientDatabase {
                 let raw: String = row.try_get("sync_status")?;
                 Ok(Some(raw.parse::<SyncStatus>().unwrap_or_else(|_| {
                     tracing::warn!(
-                        "DATABASE: Unrecognised sync_status {:?} for {}, treating as conflict",
+                        "DATABASE: Unrecognised sync_status {:?} for {}, treating as pending",
                         raw,
                         id
                     );
-                    SyncStatus::Conflict
+                    SyncStatus::Pending
                 })))
             }
             None => Ok(None),

@@ -54,7 +54,57 @@ pub(crate) enum ResyncSource {
 #[cfg(test)]
 pub(crate) struct CannedResync {
     pub attempts: Mutex<Vec<Uuid>>,
-    pub reply: Option<ServerMessage>,
+    /// Replies handed out one per fetch, in order. An exhausted queue behaves
+    /// like an unavailable socket, which is how "offline" is modelled.
+    pub replies: Mutex<std::collections::VecDeque<ServerMessage>>,
+}
+
+/// One-shot, per-document recovery for uploads the server rejected.
+///
+/// Settling a failed ack (removing the pending entry so later patches stop
+/// deferring behind it) would otherwise cost the retry that the initial-sync
+/// timeout used to provide. The document is still `Pending` with its sync_queue
+/// row intact, so re-running the pending-document upload pass is enough.
+///
+/// Bounded to one trigger per document per session so a permanently rejected
+/// document cannot spin the retry loop.
+#[derive(Clone)]
+pub(crate) struct UploadRetry {
+    trigger: mpsc::Sender<()>,
+    already_retried: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+}
+
+impl UploadRetry {
+    fn new(trigger: mpsc::Sender<()>) -> Self {
+        Self {
+            trigger,
+            already_retried: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        }
+    }
+
+    async fn schedule(&self, client_id: Uuid, document_id: Uuid) {
+        if !self.already_retried.lock().await.insert(document_id) {
+            tracing::warn!(
+                "CLIENT {}: Upload for {} failed again, not retrying a second time",
+                client_id,
+                document_id
+            );
+            return;
+        }
+
+        match self.trigger.try_send(()) {
+            Ok(()) => tracing::info!(
+                "CLIENT {}: Scheduled an upload retry pass after {} was rejected",
+                client_id,
+                document_id
+            ),
+            Err(e) => tracing::warn!(
+                "CLIENT {}: Could not schedule an upload retry pass: {}",
+                client_id,
+                e
+            ),
+        }
+    }
 }
 
 impl ResyncSource {
@@ -73,7 +123,7 @@ impl ResyncSource {
             #[cfg(test)]
             Self::Canned(canned) => {
                 canned.attempts.lock().await.push(document_id);
-                canned.reply.clone()
+                canned.replies.lock().await.pop_front()
             }
         }
     }
@@ -100,6 +150,8 @@ pub struct Client {
     reconnect_sync_rx: Option<mpsc::Receiver<()>>,
     // Queue for deferred sync messages during upload protection
     deferred_messages: Arc<Mutex<Vec<ServerMessage>>>,
+    // One-shot recovery for uploads the server rejects
+    upload_retry: UploadRetry,
     // Sync is possible for this instance (credentials + adopted identity).
     // Immutable for the client's lifetime: enrollment recreates the client.
     sync_enabled: bool,
@@ -151,6 +203,7 @@ impl Client {
 
         // Create a channel for reconnection sync triggers
         let (reconnect_sync_tx, reconnect_sync_rx) = mpsc::channel(10);
+        let reconnect_sync_tx_for_retry = reconnect_sync_tx.clone();
 
         let is_connected = Arc::new(AtomicBool::new(false));
 
@@ -231,6 +284,7 @@ impl Client {
             reconnect_sync_tx,
             reconnect_sync_rx: Some(reconnect_sync_rx),
             deferred_messages: Arc::new(Mutex::new(Vec::new())),
+            upload_retry: UploadRetry::new(reconnect_sync_tx_for_retry),
             sync_enabled,
         };
 
@@ -265,6 +319,7 @@ impl Client {
         let ws_client = self.ws_client.clone();
         let ws_client_for_handler = ws_client.clone();
         let deferred_messages = self.deferred_messages.clone();
+        let upload_retry = self.upload_retry.clone();
 
         // Clone variables for the reconnection sync handler
         let db_for_reconnect_sync = db.clone();
@@ -292,6 +347,7 @@ impl Client {
                     &upload_complete_notifier,
                     &sync_protection_mode,
                     &deferred_messages,
+                    &upload_retry,
                     &ResyncSource::socket(&ws_client_for_handler),
                 )
                 .await
@@ -391,7 +447,7 @@ impl Client {
 
                 tokio::select! {
                     _ = self.upload_complete_notifier.notified() => {
-                        tracing::info!("CLIENT {}: All uploads confirmed successfully", self.client_id);
+                        tracing::info!("CLIENT {}: All uploads settled", self.client_id);
                     }
                     _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
                         let remaining = self.pending_uploads.lock().await.len();
@@ -979,6 +1035,7 @@ impl Client {
         upload_complete_notifier: &Arc<Notify>,
         sync_protection_mode: &Arc<AtomicBool>,
         deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
+        upload_retry: &UploadRetry,
         source: &ResyncSource,
     ) -> SyncResult<()> {
         match &msg {
@@ -1008,6 +1065,9 @@ impl Client {
                         client_id,
                         document_id
                     );
+                    // The document is still Pending with its queue row intact,
+                    // so a retry pass will pick it up.
+                    upload_retry.schedule(client_id, *document_id).await;
                 }
 
                 let mut uploads = pending_uploads.lock().await;
@@ -1177,7 +1237,7 @@ impl Client {
                         client_id,
                         document_id
                     );
-                    Self::defer_message(deferred_messages, client_id, msg).await;
+                    Self::redefer_message(deferred_messages, client_id, msg).await;
                     continue;
                 }
             }
@@ -1216,16 +1276,55 @@ impl Client {
         }
     }
 
+    /// The server revision a deferrable message carries, used to decide which
+    /// of two entries for the same document is newer.
+    fn deferral_revision(msg: &ServerMessage) -> i64 {
+        match msg {
+            ServerMessage::DocumentUpdated { patch } => patch.sync_revision,
+            ServerMessage::SyncDocument { document } => document.sync_revision,
+            _ => 0,
+        }
+    }
+
     /// Queue a message for replay once the in-flight upload completes.
     ///
-    /// Entries are deduplicated per (variant, document): a burst of echoes for
-    /// one document must not evict a `SyncDocument` for another, because a
-    /// dropped `SyncDocument` never self-heals — that document just stays
-    /// silently stale.
+    /// Entries are collapsed per (variant, document), keeping whichever carries
+    /// the higher revision. Collapsing is what keeps a burst of echoes for one
+    /// document from evicting a `SyncDocument` for another — and a dropped
+    /// `SyncDocument` never self-heals, it just leaves that document silently
+    /// stale.
+    ///
+    /// Dropping intermediate revisions is safe but not free: the survivor will
+    /// usually fail the contiguity check on replay and cost one resync
+    /// round-trip, which is still cheaper than replaying every echo.
+    ///
+    /// Producers run on several tasks (initial-sync drain, handler, and the
+    /// post-reconnect handler), and the drain no longer holds the lock, so the
+    /// revision comparison — not arrival order — is what decides the winner.
     async fn defer_message(
         deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
         client_id: Uuid,
         msg: ServerMessage,
+    ) {
+        Self::defer_message_inner(deferred_messages, client_id, msg, false).await
+    }
+
+    /// Re-queue a message pulled off the queue that turned out not to be
+    /// replayable yet. A queued entry is never older than what we are putting
+    /// back, so this must not overwrite a newer entry that landed meanwhile.
+    async fn redefer_message(
+        deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
+        client_id: Uuid,
+        msg: ServerMessage,
+    ) {
+        Self::defer_message_inner(deferred_messages, client_id, msg, true).await
+    }
+
+    async fn defer_message_inner(
+        deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
+        client_id: Uuid,
+        msg: ServerMessage,
+        insert_if_absent_only: bool,
     ) {
         const MAX_DEFERRED_MESSAGES: usize = 100;
         let mut queue = deferred_messages.lock().await;
@@ -1235,7 +1334,12 @@ impl Client {
                 .iter_mut()
                 .find(|queued| Self::deferral_key(queued) == Some(key))
             {
-                *slot = msg;
+                if insert_if_absent_only {
+                    return;
+                }
+                if Self::deferral_revision(&msg) > Self::deferral_revision(slot) {
+                    *slot = msg;
+                }
                 return;
             }
         }
@@ -1937,8 +2041,26 @@ impl Client {
             timed_out_uploads.len()
         );
 
-        // Clear the pending uploads (we'll re-add them during retry)
+        // Clear the pending uploads (we'll re-add them during retry).
+        // Clearing without an ack means nothing else drains the deferred queue,
+        // so drain it here or those messages wait for an unrelated document's ack.
         self.pending_uploads.lock().await.clear();
+        if let Err(e) = Self::process_deferred_messages(
+            &self.deferred_messages,
+            &self.db,
+            self.client_id,
+            &self.event_dispatcher,
+            &self.pending_uploads,
+            &ResyncSource::socket(&self.ws_client),
+        )
+        .await
+        {
+            tracing::error!(
+                "CLIENT {}: Error draining deferred messages before retry: {}",
+                self.client_id,
+                e
+            );
+        }
 
         // Re-run sync_pending_documents to retry uploads
         // This will re-query the database for documents with pending status
@@ -2163,6 +2285,7 @@ impl Client {
         let sync_protection_mode = self.sync_protection_mode.clone();
         let last_ping_time = self.last_ping_time.clone();
         let deferred_messages = self.deferred_messages.clone();
+        let upload_retry = self.upload_retry.clone();
 
         tracing::info!(
             "🔄 CLIENT {}: Starting continuous reconnection monitor (5-second intervals)",
@@ -2246,6 +2369,7 @@ impl Client {
                             let upload_complete_notifier_clone = upload_complete_notifier.clone();
                             let sync_protection_mode_clone = sync_protection_mode.clone();
                             let deferred_messages_clone = deferred_messages.clone();
+                            let upload_retry_clone = upload_retry.clone();
                             let ws_client_for_handler = ws_client.clone();
                             let handler_is_connected = is_connected.clone();
                             let handler_client_id = client_id;
@@ -2261,6 +2385,7 @@ impl Client {
                                         &upload_complete_notifier_clone,
                                         &sync_protection_mode_clone,
                                         &deferred_messages_clone,
+                                        &upload_retry_clone,
                                         &ResyncSource::socket(&ws_client_for_handler),
                                     )
                                     .await
@@ -2286,6 +2411,25 @@ impl Client {
                                                  client_id, uploads.len());
                                     uploads.clear();
                                 }
+                            }
+
+                            // Those uploads will never be acked, so nothing else
+                            // would drain messages deferred behind them.
+                            if let Err(e) = Self::process_deferred_messages(
+                                &deferred_messages,
+                                &db,
+                                client_id,
+                                &event_dispatcher,
+                                &pending_uploads,
+                                &ResyncSource::socket(&ws_client),
+                            )
+                            .await
+                            {
+                                tracing::error!(
+                                    "CLIENT {}: Error draining deferred messages after reconnection: {}",
+                                    client_id,
+                                    e
+                                );
                             }
 
                             // Trigger pending sync on the real sync engine via channel
@@ -2569,11 +2713,22 @@ mod broadcast_guard_tests {
     /// assert a resync WAS attempted rather than inferring it from the absence
     /// of a write.
     fn recording_source() -> (ResyncSource, Arc<CannedResync>) {
+        canned_source(Vec::new())
+    }
+
+    /// A resync source that hands out `replies` one per fetch attempt.
+    fn canned_source(replies: Vec<ServerMessage>) -> (ResyncSource, Arc<CannedResync>) {
         let canned = Arc::new(CannedResync {
             attempts: Mutex::new(Vec::new()),
-            reply: None,
+            replies: Mutex::new(replies.into()),
         });
         (ResyncSource::Canned(canned.clone()), canned)
+    }
+
+    /// An `UploadRetry` plus the receiving end of its trigger channel.
+    fn retry_probe() -> (UploadRetry, mpsc::Receiver<()>) {
+        let (tx, rx) = mpsc::channel(10);
+        (UploadRetry::new(tx), rx)
     }
 
     async fn resync_attempts(canned: &Arc<CannedResync>) -> Vec<Uuid> {
@@ -2938,6 +3093,7 @@ mod broadcast_guard_tests {
             &notifier,
             &protection,
             &deferred_messages,
+            &retry_probe().0,
             &source,
         )
         .await
@@ -2948,6 +3104,7 @@ mod broadcast_guard_tests {
         // the queue drained, or this document defers forever.
         db.update_sync_revision(&id, 6).await.unwrap();
         db.mark_synced(&id).await.unwrap();
+        let (upload_retry, mut retry_rx) = retry_probe();
         Client::handle_server_message_with_tracking(
             ServerMessage::DocumentUpdatedResponse {
                 document_id: id,
@@ -2962,10 +3119,16 @@ mod broadcast_guard_tests {
             &notifier,
             &protection,
             &deferred_messages,
+            &upload_retry,
             &source,
         )
         .await
         .unwrap();
+
+        assert!(
+            retry_rx.try_recv().is_ok(),
+            "a failed ack must schedule an upload retry pass"
+        );
 
         assert!(
             pending_uploads.lock().await.is_empty(),
@@ -3014,6 +3177,7 @@ mod broadcast_guard_tests {
             &notifier,
             &protection,
             &deferred_messages,
+            &retry_probe().0,
             &source,
         )
         .await
@@ -3032,6 +3196,7 @@ mod broadcast_guard_tests {
                 &notifier,
                 &protection,
                 &deferred_messages,
+                &retry_probe().0,
                 &source,
             )
             .await
@@ -3111,6 +3276,154 @@ mod broadcast_guard_tests {
             db.get_sync_status(&id).await.unwrap(),
             Some(SyncStatus::Pending),
             "the pending edit must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redeferred_message_never_overwrites_a_newer_queued_one() {
+        let client_id = Uuid::new_v4();
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let id = Uuid::new_v4();
+
+        // A newer SyncDocument landed from another producer task while an older
+        // copy was in flight back to the queue.
+        Client::defer_message(
+            &queue,
+            client_id,
+            ServerMessage::SyncDocument {
+                document: make_doc(id, json!({"title": "newer"}), 9),
+            },
+        )
+        .await;
+
+        Client::redefer_message(
+            &queue,
+            client_id,
+            ServerMessage::SyncDocument {
+                document: make_doc(id, json!({"title": "older"}), 4),
+            },
+        )
+        .await;
+
+        let queued = queue.lock().await;
+        assert_eq!(queued.len(), 1);
+        match &queued[0] {
+            ServerMessage::SyncDocument { document } => {
+                assert_eq!(document.sync_revision, 9, "the newer entry must survive");
+                assert_eq!(document.content, json!({"title": "newer"}));
+            }
+            other => panic!("expected SyncDocument, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn deferring_an_older_message_never_downgrades_a_newer_one() {
+        let client_id = Uuid::new_v4();
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+
+        Client::defer_message(
+            &queue,
+            client_id,
+            ServerMessage::DocumentUpdated {
+                patch: server_patch(id, &before, &json!({"n": 9}), 9),
+            },
+        )
+        .await;
+        Client::defer_message(
+            &queue,
+            client_id,
+            ServerMessage::DocumentUpdated {
+                patch: server_patch(id, &before, &json!({"n": 4}), 4),
+            },
+        )
+        .await;
+
+        let queued = queue.lock().await;
+        assert_eq!(queued.len(), 1);
+        assert_eq!(Client::deferral_revision(&queued[0]), 9);
+    }
+
+    #[tokio::test]
+    async fn a_resync_that_settles_first_time_only_fetches_once() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        seed(
+            &db,
+            &make_doc(id, json!({"title": "stale"}), 5),
+            SyncStatus::Synced,
+        )
+        .await;
+
+        let fresh = json!({"title": "server"});
+        let (source, canned) = canned_source(vec![ServerMessage::GetDocumentResponse {
+            id,
+            content: fresh.clone(),
+            sync_revision: 9,
+            content_hash: calculate_checksum(&fresh),
+            deleted: false,
+        }]);
+
+        Client::resync_document(&db, &source, Uuid::new_v4(), &dispatcher(), id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resync_attempts(&canned).await,
+            vec![id],
+            "a swap that wins must not re-fetch"
+        );
+        assert_eq!(db.get_document(&id).await.unwrap().content, fresh);
+    }
+
+    #[tokio::test]
+    async fn a_resync_whose_swap_keeps_losing_refetches_once_then_gives_up() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let local = json!({"title": "local"});
+        seed(&db, &make_doc(id, local.clone(), 5), SyncStatus::Synced).await;
+
+        // Store the content with whitespace serde_json would never emit. The
+        // row still parses to `local`, so the resync reads that as its
+        // pre-image, but the compare-and-swap binds the canonical form and can
+        // never match the stored text — a permanently losing swap.
+        sqlx::query(r#"UPDATE documents SET content = '{"title": "local"}' WHERE id = ?"#)
+            .bind(id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let fresh = json!({"title": "server"});
+        let reply = || ServerMessage::GetDocumentResponse {
+            id,
+            content: fresh.clone(),
+            sync_revision: 9,
+            content_hash: calculate_checksum(&fresh),
+            deleted: false,
+        };
+        let (source, canned) = canned_source(vec![reply(), reply(), reply()]);
+
+        Client::resync_document(&db, &source, Uuid::new_v4(), &dispatcher(), id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resync_attempts(&canned).await,
+            vec![id, id],
+            "a lost swap must re-fetch exactly once, then give up"
+        );
+
+        let raw: String = sqlx::query("SELECT content FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("content")
+            .unwrap();
+        assert_eq!(
+            raw, r#"{"title": "local"}"#,
+            "a losing swap must never write"
         );
     }
 
@@ -3206,6 +3519,7 @@ mod broadcast_guard_tests {
             &Arc::new(Notify::new()),
             &Arc::new(AtomicBool::new(false)),
             &deferred_messages,
+            &retry_probe().0,
             &source,
         )
         .await

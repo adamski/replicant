@@ -26,11 +26,11 @@ CLIENT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CLIENT_CRATE="$CLIENT_ROOT/replicant-client"
 
 # --- Server pin --------------------------------------------------------------
-# PINNED to origin/main of replicant-server. This SHA must include the
-# claim_enrollment -> user_id change (PR #7, merged as 332a8ba) so the seed can
-# export REPLICANT_TEST_USER_ID. Re-pin this to a newer main SHA as the server
-# advances.
-SERVER_REF="${REPLICANT_SERVER_REF:-332a8ba}"
+# PINNED to a replicant-server SHA. It must include the claim_enrollment ->
+# user_id change (PR #7, merged as 332a8ba) so the seed can export
+# REPLICANT_TEST_USER_ID, plus the get_document channel op and the nil-hash
+# rejection the sync suite exercises. Re-pin this as the server advances.
+SERVER_REF="${REPLICANT_SERVER_REF:-dad45e5}"
 
 # Where to prepare the server checkout. Locally we make a detached git worktree
 # from a sibling replicant-server clone; in CI (no local clone) we git-clone.

@@ -23,6 +23,7 @@
 mod basic_sync_test;
 mod conflict_test;
 mod credential_enrollment_test;
+mod divergence_test;
 mod hash_interop_test;
 mod identity_adoption_test;
 mod live_sync_test;
@@ -230,6 +231,11 @@ impl TestClient {
             "content_hash": content_hash
         });
         self.call("update_document", &payload).await
+    }
+
+    pub async fn get_document(&self, document_id: Uuid) -> Result<Value, String> {
+        let payload = json!({"id": document_id.to_string()});
+        self.call("get_document", &payload).await
     }
 
     pub async fn delete_document(&self, document_id: Uuid) -> Result<Value, String> {

@@ -5,10 +5,11 @@ use crate::{
 use replicant_core::{
     errors::ClientError,
     models::{Document, SyncStatus},
-    patches::{apply_patch, create_patch},
-    protocol::{ClientMessage, ServerMessage},
+    patches::{apply_patch, calculate_checksum, create_patch},
+    protocol::{ClientMessage, ErrorCode, ServerMessage},
     SyncResult,
 };
+use serde_json::Value;
 use sqlx::Row;
 use std::collections::HashMap;
 use std::sync::{
@@ -219,6 +220,7 @@ impl Client {
         let upload_complete_notifier = self.upload_complete_notifier.clone();
         let sync_protection_mode = self.sync_protection_mode.clone();
         let ws_client = self.ws_client.clone();
+        let ws_client_for_handler = ws_client.clone();
         let deferred_messages = self.deferred_messages.clone();
 
         // Clone variables for the reconnection sync handler
@@ -247,6 +249,7 @@ impl Client {
                     &upload_complete_notifier,
                     &sync_protection_mode,
                     &deferred_messages,
+                    &ws_client_for_handler,
                 )
                 .await
                 {
@@ -379,6 +382,7 @@ impl Client {
                 &self.db,
                 self.client_id,
                 &self.event_dispatcher,
+                &self.ws_client,
             )
             .await
             {
@@ -931,6 +935,7 @@ impl Client {
         upload_complete_notifier: &Arc<Notify>,
         sync_protection_mode: &Arc<AtomicBool>,
         deferred_messages: &Arc<Mutex<Vec<ServerMessage>>>,
+        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
     ) -> SyncResult<()> {
         match &msg {
             // Handle upload confirmations first
@@ -981,6 +986,7 @@ impl Client {
                         db,
                         client_id,
                         event_dispatcher,
+                        ws_client,
                     )
                     .await
                     {
@@ -999,7 +1005,14 @@ impl Client {
                 }
 
                 // Continue with normal processing
-                return Self::handle_server_message(msg, db, client_id, event_dispatcher).await;
+                return Self::handle_server_message(
+                    msg,
+                    db,
+                    client_id,
+                    event_dispatcher,
+                    ws_client,
+                )
+                .await;
             }
 
             // Apply protection for sync messages during upload phase
@@ -1059,12 +1072,26 @@ impl Client {
                 }
 
                 // Safe to proceed with sync
-                return Self::handle_server_message(msg, db, client_id, event_dispatcher).await;
+                return Self::handle_server_message(
+                    msg,
+                    db,
+                    client_id,
+                    event_dispatcher,
+                    ws_client,
+                )
+                .await;
             }
 
             _ => {
                 // For all other messages, use normal handling
-                return Self::handle_server_message(msg, db, client_id, event_dispatcher).await;
+                return Self::handle_server_message(
+                    msg,
+                    db,
+                    client_id,
+                    event_dispatcher,
+                    ws_client,
+                )
+                .await;
             }
         }
     }
@@ -1075,6 +1102,7 @@ impl Client {
         db: &Arc<ClientDatabase>,
         client_id: Uuid,
         event_dispatcher: &Arc<EventDispatcher>,
+        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
     ) -> SyncResult<()> {
         let mut messages = deferred_messages.lock().await;
         let count = messages.len();
@@ -1091,7 +1119,8 @@ impl Client {
 
         // Process all deferred messages in order
         for msg in messages.drain(..) {
-            if let Err(e) = Self::handle_server_message(msg, db, client_id, event_dispatcher).await
+            if let Err(e) =
+                Self::handle_server_message(msg, db, client_id, event_dispatcher, ws_client).await
             {
                 tracing::error!(
                     "CLIENT {}: Error processing deferred message: {}",
@@ -1119,44 +1148,263 @@ impl Client {
         uploads.contains_key(document_id)
     }
 
+    /// Fetch the authoritative document from the server and reconcile it with
+    /// local state. Used whenever a broadcast patch cannot be trusted to apply
+    /// (unknown doc, revision gap, unsent local edits, diverged result).
+    ///
+    /// Offline, this is a no-op: the document simply stays unsynced until a
+    /// later resync.
+    async fn resync_document(
+        db: &Arc<ClientDatabase>,
+        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
+        client_id: Uuid,
+        event_dispatcher: &Arc<EventDispatcher>,
+        document_id: Uuid,
+    ) -> SyncResult<()> {
+        let result = {
+            let guard = ws_client.lock().await;
+            match guard.as_ref() {
+                Some(ws) => ws.fetch_document(document_id).await,
+                None => {
+                    tracing::warn!(
+                        "CLIENT {}: Cannot resync {} while offline, leaving it unsynced",
+                        client_id,
+                        document_id
+                    );
+                    return Ok(());
+                }
+            }
+        };
+
+        Self::apply_resync_result(db, client_id, event_dispatcher, document_id, result).await
+    }
+
+    /// Reconcile a `get_document` reply with local state.
+    ///
+    /// A missing document (`DocumentNotFound`) is authoritative — the server
+    /// checked both the user's own documents and the public set — so the local
+    /// copy is soft-deleted. Any other error is transient and MUST leave local
+    /// state untouched: deleting on a network blip destroys user data.
+    async fn apply_resync_result(
+        db: &Arc<ClientDatabase>,
+        client_id: Uuid,
+        event_dispatcher: &Arc<EventDispatcher>,
+        document_id: Uuid,
+        result: ServerMessage,
+    ) -> SyncResult<()> {
+        let (content, sync_revision, content_hash, deleted) = match result {
+            ServerMessage::GetDocumentResponse {
+                content,
+                sync_revision,
+                content_hash,
+                deleted,
+                ..
+            } => (content, sync_revision, content_hash, deleted),
+            ServerMessage::Error {
+                code: ErrorCode::DocumentNotFound,
+                ..
+            } => {
+                tracing::info!(
+                    "CLIENT {}: Server does not have {}, soft-deleting locally",
+                    client_id,
+                    document_id
+                );
+                db.delete_document(&document_id).await?;
+                db.mark_synced(&document_id).await?;
+                event_dispatcher.emit_document_deleted(&document_id);
+                return Ok(());
+            }
+            other => {
+                tracing::warn!(
+                    "CLIENT {}: Resync of {} failed transiently ({:?}), local state unchanged",
+                    client_id,
+                    document_id,
+                    other
+                );
+                return Ok(());
+            }
+        };
+
+        if deleted {
+            tracing::info!(
+                "CLIENT {}: Resync of {} returned a tombstone, soft-deleting locally",
+                client_id,
+                document_id
+            );
+            db.delete_document(&document_id).await?;
+            db.mark_synced(&document_id).await?;
+            event_dispatcher.emit_document_deleted(&document_id);
+            return Ok(());
+        }
+
+        let local = db.get_document(&document_id).await.ok();
+        let status = db.get_sync_status(&document_id).await?;
+        let has_local_edits = matches!(
+            status,
+            Some(SyncStatus::Pending) | Some(SyncStatus::Conflict)
+        );
+
+        let mut doc = match local {
+            Some(doc) => doc,
+            None => Document {
+                id: document_id,
+                user_id: None,
+                content: Value::Null,
+                sync_revision: 0,
+                content_hash: None,
+                title: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                deleted_at: None,
+                author_name: None,
+                visibility: None,
+                provenance: None,
+            },
+        };
+
+        let local_content = doc.content.clone();
+        doc.sync_revision = sync_revision;
+        doc.updated_at = chrono::Utc::now();
+
+        if has_local_edits {
+            // Keep the user's edits visible, but rebase them: the local copy now
+            // sits on the server's revision, and the queued patch carries the
+            // edits forward from the server's current content.
+            let rebased = create_patch(&content, &local_content)?;
+            doc.content_hash = None;
+            db.save_document_with_status(&doc, Some(SyncStatus::Pending))
+                .await?;
+            db.queue_update_patch(&document_id, &rebased, &content_hash)
+                .await?;
+
+            tracing::info!(
+                "CLIENT {}: Rebased local edits for {} onto server revision {}",
+                client_id,
+                document_id,
+                sync_revision
+            );
+        } else {
+            doc.content = content;
+            doc.content_hash = Some(content_hash);
+            db.save_document_with_status(&doc, Some(SyncStatus::Synced))
+                .await?;
+
+            tracing::info!(
+                "CLIENT {}: Resynced {} to server revision {}",
+                client_id,
+                document_id,
+                sync_revision
+            );
+        }
+
+        event_dispatcher.emit_document_updated_with_attribution(
+            &doc.id,
+            &doc.content,
+            doc.user_id.as_ref(),
+            doc.author_name.as_deref(),
+            doc.visibility.as_deref(),
+        );
+
+        Ok(())
+    }
+
     async fn handle_server_message(
         msg: ServerMessage,
         db: &Arc<ClientDatabase>,
         client_id: Uuid,
         event_dispatcher: &Arc<EventDispatcher>,
+        ws_client: &Arc<Mutex<Option<WebSocketClient>>>,
     ) -> SyncResult<()> {
         match msg {
             ServerMessage::DocumentUpdated { patch } => {
-                // Apply patch from server
+                let document_id = patch.document_id;
                 tracing::info!(
-                    "CLIENT {}: Received DocumentUpdated for doc {}",
+                    "CLIENT {}: Received DocumentUpdated for doc {} (revision {})",
                     client_id,
-                    patch.document_id
+                    document_id,
+                    patch.sync_revision
                 );
-                let mut doc = db.get_document(&patch.document_id).await?;
 
-                tracing::info!(
-                    "CLIENT {}: Document content before patch: {:?}",
-                    client_id,
-                    doc.content
-                );
-                tracing::info!("CLIENT {}: Patch to apply: {:?}", client_id, patch.patch);
+                let Ok(mut doc) = db.get_document(&document_id).await else {
+                    tracing::info!(
+                        "CLIENT {}: Patch for unknown doc {}, resyncing",
+                        client_id,
+                        document_id
+                    );
+                    return Self::resync_document(
+                        db,
+                        ws_client,
+                        client_id,
+                        event_dispatcher,
+                        document_id,
+                    )
+                    .await;
+                };
 
-                // Apply patch
-                apply_patch(&mut doc.content, &patch.patch)?;
-                doc.content_hash = None; // Will be recalculated
+                // Already at or past this revision: a duplicate or our own
+                // broadcast echoed back. Re-applying would corrupt the doc.
+                if doc.sync_revision >= patch.sync_revision {
+                    tracing::info!(
+                        "CLIENT {}: Dropping duplicate patch for {} (local revision {} >= {})",
+                        client_id,
+                        document_id,
+                        doc.sync_revision,
+                        patch.sync_revision
+                    );
+                    return Ok(());
+                }
+
+                // Unsent local edits, or a gap in the revision stream: the
+                // patch's base is not what we hold, so never blind-apply it.
+                let status = db.get_sync_status(&document_id).await?;
+                if status != Some(SyncStatus::Synced)
+                    || doc.sync_revision + 1 != patch.sync_revision
+                {
+                    tracing::info!(
+                        "CLIENT {}: Cannot apply patch for {} (status {:?}, local revision {}, patch revision {}), resyncing",
+                        client_id,
+                        document_id,
+                        status,
+                        doc.sync_revision,
+                        patch.sync_revision
+                    );
+                    return Self::resync_document(
+                        db,
+                        ws_client,
+                        client_id,
+                        event_dispatcher,
+                        document_id,
+                    )
+                    .await;
+                }
+
+                let mut new_content = doc.content.clone();
+                if apply_patch(&mut new_content, &patch.patch).is_err()
+                    || calculate_checksum(&new_content) != patch.content_hash
+                {
+                    tracing::warn!(
+                        "CLIENT {}: Patch diverged for {}, resyncing",
+                        client_id,
+                        document_id
+                    );
+                    return Self::resync_document(
+                        db,
+                        ws_client,
+                        client_id,
+                        event_dispatcher,
+                        document_id,
+                    )
+                    .await;
+                }
+
+                doc.content = new_content;
+                doc.sync_revision = patch.sync_revision;
+                doc.content_hash = Some(patch.content_hash);
                 doc.updated_at = chrono::Utc::now();
 
-                tracing::info!(
-                    "CLIENT {}: Document content after patch: {:?}",
-                    client_id,
-                    doc.content
-                );
+                db.save_document_with_status(&doc, Some(SyncStatus::Synced))
+                    .await?;
 
-                db.save_document(&doc).await?;
-                db.mark_synced(&doc.id).await?;
-
-                // Emit event for updated document
                 event_dispatcher.emit_document_updated_with_attribution(
                     &doc.id,
                     &doc.content,
@@ -1795,6 +2043,7 @@ impl Client {
                             let upload_complete_notifier_clone = upload_complete_notifier.clone();
                             let sync_protection_mode_clone = sync_protection_mode.clone();
                             let deferred_messages_clone = deferred_messages.clone();
+                            let ws_client_for_handler = ws_client.clone();
                             let handler_is_connected = is_connected.clone();
                             let handler_client_id = client_id;
                             let handler_server_url = server_url.clone();
@@ -1809,6 +2058,7 @@ impl Client {
                                         &upload_complete_notifier_clone,
                                         &sync_protection_mode_clone,
                                         &deferred_messages_clone,
+                                        &ws_client_for_handler,
                                     )
                                     .await
                                     {

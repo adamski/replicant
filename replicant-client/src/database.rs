@@ -8,6 +8,19 @@ use replicant_core::{
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 use uuid::Uuid;
 
+/// The state a caller verified before deciding to write. Passing it back to a
+/// `*_if_unchanged` write turns read-check-write into a compare-and-swap, so a
+/// local edit landing in between is never silently clobbered.
+///
+/// `content` compares as its stored JSON text: `serde_json` orders object keys
+/// deterministically, so equal `Value`s always serialise to equal strings.
+#[derive(Debug, Clone)]
+pub struct DocumentPreImage {
+    pub sync_revision: i64,
+    pub content: serde_json::Value,
+    pub sync_status: SyncStatus,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingDocumentInfo {
     pub id: Uuid,
@@ -184,6 +197,10 @@ impl ClientDatabase {
     /// Read the row's `sync_status`. `Ok(None)` means the document is not in
     /// the local database. `Document` does not carry the status, but the
     /// broadcast guard has to know whether local edits are outstanding.
+    ///
+    /// An unparseable status fails CLOSED (`Conflict`): `Synced` is the one
+    /// value that authorises a blind patch apply, so nothing may reach it by
+    /// way of a fallback.
     pub async fn get_sync_status(&self, id: &Uuid) -> SyncResult<Option<SyncStatus>> {
         let row = sqlx::query("SELECT sync_status FROM documents WHERE id = ?")
             .bind(id.to_string())
@@ -193,33 +210,125 @@ impl ClientDatabase {
         match row {
             Some(row) => {
                 let raw: String = row.try_get("sync_status")?;
-                Ok(Some(
-                    raw.parse::<SyncStatus>().unwrap_or(SyncStatus::Synced),
-                ))
+                Ok(Some(raw.parse::<SyncStatus>().unwrap_or_else(|_| {
+                    tracing::warn!(
+                        "DATABASE: Unrecognised sync_status {:?} for {}, treating as conflict",
+                        raw,
+                        id
+                    );
+                    SyncStatus::Conflict
+                })))
             }
             None => Ok(None),
         }
     }
 
-    /// Queue an update patch for a document that is already saved. Used by
-    /// resync to re-queue local edits against a freshly fetched server base.
-    pub async fn queue_update_patch(
+    /// Overwrite a document only if it still matches `expected`. Returns
+    /// `false` when a concurrent local write landed first, in which case the
+    /// caller must back off instead of overwriting it.
+    ///
+    /// Attribution columns are deliberately left untouched: this write carries
+    /// sync state, not authorship.
+    pub async fn save_document_if_unchanged(
+        &self,
+        doc: &Document,
+        new_status: SyncStatus,
+        expected: &DocumentPreImage,
+    ) -> SyncResult<bool> {
+        let params = DbHelpers::document_to_params(doc, Some(new_status))?;
+
+        let result = sqlx::query(
+            "UPDATE documents SET content = ?, sync_revision = ?, updated_at = ?, sync_status = ?, title = ? \
+             WHERE id = ? AND content = ? AND sync_revision = ? AND sync_status = ?",
+        )
+        .bind(params.2) // content
+        .bind(params.3) // sync_revision
+        .bind(params.5) // updated_at
+        .bind(params.7) // sync_status
+        .bind(params.8) // title
+        .bind(doc.id.to_string())
+        .bind(serde_json::to_string(&expected.content)?)
+        .bind(expected.sync_revision)
+        .bind(expected.sync_status.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                "DATABASE: Compare-and-swap for {} lost to a concurrent local write",
+                doc.id
+            );
+            return Ok(false);
+        }
+
+        if let Err(e) = self.update_fts_for_document(&doc.id).await {
+            tracing::warn!("FTS: Failed to update index for {}: {:?}", doc.id, e);
+        }
+
+        Ok(true)
+    }
+
+    /// Rebase a document carrying unsent local edits onto a fresh server base:
+    /// adopt the server revision (the local content stays visible) and replace
+    /// the queued update patch, in one transaction.
+    ///
+    /// Prior `update` rows for the document are deleted rather than added to.
+    /// `get_queued_patch` reads exactly one row, so a leftover row with an
+    /// outdated base hash would be retried — and rejected — forever.
+    ///
+    /// Returns `false` if the row no longer matches `expected`.
+    pub async fn rebase_pending_document_if_unchanged(
         &self,
         document_id: &Uuid,
+        new_sync_revision: i64,
         patch: &json_patch::Patch,
-        old_content_hash: &str,
-    ) -> SyncResult<()> {
+        base_content_hash: &str,
+        expected: &DocumentPreImage,
+    ) -> SyncResult<bool> {
+        let mut tx = self.pool.begin().await?;
+
+        let result = sqlx::query(
+            "UPDATE documents SET sync_revision = ?, updated_at = ?, sync_status = ? \
+             WHERE id = ? AND content = ? AND sync_revision = ? AND sync_status = ?",
+        )
+        .bind(new_sync_revision)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(SyncStatus::Pending.to_string())
+        .bind(document_id.to_string())
+        .bind(serde_json::to_string(&expected.content)?)
+        .bind(expected.sync_revision)
+        .bind(expected.sync_status.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            tx.rollback().await?;
+            tracing::warn!(
+                "DATABASE: Rebase of {} lost to a concurrent local write",
+                document_id
+            );
+            return Ok(false);
+        }
+
+        sqlx::query("DELETE FROM sync_queue WHERE document_id = ? AND operation_type = ?")
+            .bind(document_id.to_string())
+            .bind(ChangeEventType::Update.to_string())
+            .execute(&mut *tx)
+            .await?;
+
         sqlx::query(
             "INSERT INTO sync_queue (document_id, operation_type, patch, old_content_hash) VALUES (?, ?, ?, ?)",
         )
         .bind(document_id.to_string())
         .bind(ChangeEventType::Update.to_string())
         .bind(serde_json::to_string(patch)?)
-        .bind(old_content_hash)
-        .execute(&self.pool)
+        .bind(base_content_hash)
+        .execute(&mut *tx)
         .await?;
 
-        Ok(())
+        tx.commit().await?;
+
+        Ok(true)
     }
 
     pub async fn save_document(&self, doc: &Document) -> SyncResult<()> {
@@ -550,7 +659,7 @@ impl ClientDatabase {
         document_id: &Uuid,
     ) -> SyncResult<Option<(json_patch::Patch, Option<String>)>> {
         let row = sqlx::query(
-            "SELECT patch, old_content_hash FROM sync_queue WHERE document_id = ? AND operation_type = 'update' ORDER BY created_at DESC LIMIT 1"
+            "SELECT patch, old_content_hash FROM sync_queue WHERE document_id = ? AND operation_type = 'update' ORDER BY created_at DESC, id DESC LIMIT 1"
         )
         .bind(document_id.to_string())
         .fetch_optional(&self.pool)

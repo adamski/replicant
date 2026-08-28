@@ -523,12 +523,25 @@ impl ClientDatabase {
         Ok(pending_docs)
     }
 
+    /// Settle a document against the server.
+    ///
+    /// Every caller is an ack, an adopt, or a local soft-delete that matches the
+    /// server — contexts in which the document, one way or another, no longer
+    /// owes the server a create. So this consumes any `create` row: leaving one
+    /// would make the next local edit upload as a create the server rejects as a
+    /// duplicate.
     pub async fn mark_synced(&self, document_id: &Uuid) -> SyncResult<()> {
         tracing::info!("DATABASE: 🔄 Marking document {} as synced", document_id);
 
         let result = sqlx::query(Queries::MARK_DOCUMENT_SYNCED)
             .bind(SyncStatus::Synced.to_string())
             .bind(document_id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query("DELETE FROM sync_queue WHERE document_id = ? AND operation_type = ?")
+            .bind(document_id.to_string())
+            .bind(ChangeEventType::Create.to_string())
             .execute(&self.pool)
             .await?;
 
@@ -1283,6 +1296,25 @@ mod sync_queue_tests {
         assert!(
             !db.has_queued_create(&id).await.unwrap(),
             "a document written as Synced is one the server holds"
+        );
+    }
+
+    /// The `DocumentCreated` echo settles a document with a bare `mark_synced`,
+    /// so that too must consume the create row — otherwise a lost ack costs a
+    /// doomed duplicate create and a spurious error event.
+    #[tokio::test]
+    async fn marking_a_document_synced_consumes_the_create_row() {
+        let db = fresh_db().await;
+        let id = Uuid::new_v4();
+        db.save_new_document_and_queue_create(&doc_with(id, json!({"title": "draft"})))
+            .await
+            .unwrap();
+
+        db.mark_synced(&id).await.unwrap();
+
+        assert!(
+            !db.has_queued_create(&id).await.unwrap(),
+            "settling a document against the server is the create's ack"
         );
     }
 

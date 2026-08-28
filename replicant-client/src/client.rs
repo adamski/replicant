@@ -2041,6 +2041,19 @@ impl Client {
                 code: ErrorCode::DocumentNotFound,
                 ..
             } => {
+                // A document that still owes a create has never been offered to
+                // the server, so "not found" is the expected answer rather than
+                // an authoritative deletion. Soft-deleting here would destroy
+                // content that exists nowhere else.
+                if db.has_queued_create(&document_id).await.unwrap_or(false) {
+                    tracing::info!(
+                        "CLIENT {}: Server does not have {} because its create is still queued, keeping the local copy",
+                        client_id,
+                        document_id
+                    );
+                    return Ok(true);
+                }
+
                 tracing::info!(
                     "CLIENT {}: Server does not have {}, soft-deleting locally",
                     client_id,
@@ -2130,17 +2143,26 @@ impl Client {
             content: doc.content.clone(),
             sync_status: status.unwrap_or(SyncStatus::Conflict),
         };
-        // A settled `Conflict` already holds the server's content and has no
-        // queued patch, so there is nothing to protect: take the server's state
-        // and keep the flag. Only a genuine local edit resolves a conflict.
+        // A `Conflict` settled by a failed rebase holds the server's content and
+        // has nothing queued, so there is nothing to protect: take the server's
+        // state and keep the flag. Only a genuine local edit resolves a conflict.
+        //
+        // A `Conflict` settled by a REFUSED CREATE is the exception: it holds
+        // purely local content the server has never seen, and its queue still
+        // owes a create. That must be protected like any unsent edit, so an
+        // unconsumed create counts as a local edit in its own right — with or
+        // without a queued patch beside it.
         let has_local_edits = match expected.sync_status {
             SyncStatus::Pending => true,
-            SyncStatus::Conflict => db
-                .get_queued_patch(&document_id)
-                .await
-                .ok()
-                .flatten()
-                .is_some(),
+            SyncStatus::Conflict => {
+                db.has_queued_create(&document_id).await.unwrap_or(false)
+                    || db
+                        .get_queued_patch(&document_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some()
+            }
             _ => false,
         };
 
@@ -2247,10 +2269,16 @@ impl Client {
                 // Unsent local edits, or a gap in the revision stream: the
                 // patch's base is not what we hold, so never blind-apply it.
                 //
-                // A settled `Conflict` holds the SERVER's content — only the
-                // flag differs — so a contiguous patch applies to it exactly as
-                // safely as to a `Synced` document. The flag is preserved on the
-                // write below: only a genuine local edit resolves a conflict.
+                // A `Conflict` settled by a failed rebase holds the SERVER's
+                // content — only the flag differs — so a contiguous patch
+                // applies to it exactly as safely as to a `Synced` document. The
+                // flag is preserved on the write below: only a genuine local
+                // edit resolves a conflict.
+                //
+                // A `Conflict` settled by a refused create holds purely local
+                // content instead, so this would not be safe for it — but the
+                // server cannot broadcast a patch for a document it does not
+                // have, so no such patch can reach this branch.
                 let status = db.get_sync_status(&document_id).await?;
                 let appliable = matches!(
                     status,
@@ -4457,6 +4485,44 @@ mod broadcast_guard_tests {
         assert!(deleted_at(&db, &id).await.is_some());
     }
 
+    /// The exception to the rule above: a document that still owes a create has
+    /// never been offered to the server, so `not_found` is the expected answer,
+    /// not an authoritative deletion. Soft-deleting it would destroy the only
+    /// copy of content the user just created.
+    #[tokio::test]
+    async fn resync_not_found_keeps_a_document_whose_create_is_still_queued() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let created = json!({"title": "never uploaded"});
+        db.save_new_document_and_queue_create(&make_doc(id, created.clone(), 1))
+            .await
+            .unwrap();
+
+        Client::apply_resync_result(
+            &db,
+            Uuid::new_v4(),
+            &dispatcher(),
+            id,
+            ServerMessage::Error {
+                code: ErrorCode::DocumentNotFound,
+                message: "Document not found".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            deleted_at(&db, &id).await,
+            None,
+            "content the server has never seen must not be deleted for being absent"
+        );
+        assert_eq!(db.get_document(&id).await.unwrap().content, created);
+        assert!(
+            db.has_queued_create(&id).await.unwrap(),
+            "the create is still owed"
+        );
+    }
+
     #[tokio::test]
     async fn resync_server_error_leaves_local_state_untouched() {
         let db = test_db().await;
@@ -4870,6 +4936,79 @@ mod broadcast_guard_tests {
             vec![id],
             "the second refusal must not fetch again"
         );
+
+        // The first refusal spends the budget and resolves: the fetch proved the
+        // server does not hold the document, so it is parked. The second changes
+        // nothing beyond the generic failure event.
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Conflict),
+            "the resolved refusal stays parked, out of the pending set"
+        );
+        assert_eq!(
+            db.get_document(&id).await.unwrap().content,
+            json!({"title": "draft"}),
+            "the local content must survive a refusal it cannot recover from"
+        );
+        assert!(
+            db.has_queued_create(&id).await.unwrap(),
+            "the create is still genuinely owed, so its row must stay"
+        );
+        assert_eq!(deleted_at(&db, &id).await, None);
+    }
+
+    /// The budget is per session and spent on the ATTEMPT, not on resolving it.
+    /// A refusal that arrives while the client cannot reach the server therefore
+    /// leaves the document pending with its create still owed, and no second try
+    /// this session. That is the known limit: the next session gets a fresh
+    /// budget, which is how a transient refusal eventually succeeds.
+    #[tokio::test]
+    async fn a_refusal_that_cannot_reach_the_server_leaves_the_document_for_next_session() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let created = json!({"title": "draft"});
+        db.save_new_document_and_queue_create(&make_doc(id, created.clone(), 1))
+            .await
+            .unwrap();
+
+        // An empty canned source records the attempt and answers like an
+        // unreachable server.
+        let (source, canned) = canned_source(vec![]);
+        let events = dispatcher();
+        let (upload_retry, _retry_rx) = retry_probe();
+
+        for _ in 0..2 {
+            deliver_ack_from(
+                &db,
+                &events,
+                &upload_retry,
+                id,
+                create_rejected(id, "quota_exceeded"),
+                &source,
+            )
+            .await;
+        }
+
+        assert_eq!(
+            resync_attempts(&canned).await,
+            vec![id],
+            "the budget is spent on the attempt, so the second refusal does not try"
+        );
+        assert_eq!(
+            db.get_sync_status(&id).await.unwrap(),
+            Some(SyncStatus::Pending),
+            "an unresolved refusal stays pending so a later session retries it"
+        );
+        assert!(
+            db.has_queued_create(&id).await.unwrap(),
+            "the create is still owed"
+        );
+        assert_eq!(
+            db.get_document(&id).await.unwrap().content,
+            created,
+            "the local content must survive"
+        );
+        assert_eq!(deleted_at(&db, &id).await, None);
     }
 
     #[tokio::test]

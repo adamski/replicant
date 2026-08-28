@@ -23,6 +23,7 @@
 mod basic_sync_test;
 mod conflict_test;
 mod credential_enrollment_test;
+mod hash_interop_test;
 mod identity_adoption_test;
 mod live_sync_test;
 mod multi_client_test;

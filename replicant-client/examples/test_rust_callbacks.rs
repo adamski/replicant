@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         SyncEvent::DocumentUpdated { id, title, .. } => {
                             format!("✏️ Document updated: {} ({})", title, &id[..8])
                         }
-                        SyncEvent::DocumentDeleted { id } => {
+                        SyncEvent::DocumentDeleted { id, .. } => {
                             format!("🗑️ Document deleted: {}", &id[..8])
                         }
                         SyncEvent::SyncStarted => "🔄 Sync started".to_string(),

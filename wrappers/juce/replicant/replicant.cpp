@@ -45,7 +45,8 @@ void Replicant::timerCallback()
 void Replicant::documentCallback(EventType eventType, const char* docId,
                                  const char* title, const char* content,
                                  const char* /*userId*/, const char* /*authorName*/,
-                                 const char* /*visibility*/, void* context)
+                                 const char* /*visibility*/, EventOrigin origin,
+                                 void* context)
 {
     auto* self = static_cast<Replicant*>(context);
     const std::string documentId = docId ? docId : "";
@@ -56,17 +57,17 @@ void Replicant::documentCallback(EventType eventType, const char* docId,
     {
         case DocumentCreated:
             if (self->onDocumentCreated)
-                self->onDocumentCreated(documentId, documentTitle, documentContent);
+                self->onDocumentCreated(documentId, documentTitle, documentContent, origin);
             break;
 
         case DocumentUpdated:
             if (self->onDocumentUpdated)
-                self->onDocumentUpdated(documentId, documentTitle, documentContent);
+                self->onDocumentUpdated(documentId, documentTitle, documentContent, origin);
             break;
 
         case DocumentDeleted:
             if (self->onDocumentDeleted)
-                self->onDocumentDeleted(documentId);
+                self->onDocumentDeleted(documentId, origin);
             break;
 
         default:

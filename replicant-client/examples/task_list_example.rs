@@ -567,7 +567,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             );
                             app_state.needs_refresh = true;
                         }
-                        SyncEvent::DocumentDeleted { id } => {
+                        SyncEvent::DocumentDeleted { id, .. } => {
                             app_state.add_activity(
                                 format!("Task deleted: {}...", &id[..8.min(id.len())]),
                                 ActivityType::Deleted,

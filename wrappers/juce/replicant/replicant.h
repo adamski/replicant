@@ -161,20 +161,28 @@ public:
     void rebuildSearchIndex();
 
     //==============================================================================
-    /** Called when a document is created (locally or from sync).
-        Parameters: id, title (extracted from content), full content JSON */
+    /** Called when a document is created, by this client or from sync.
+        Parameters: id, title (extracted from content), full content JSON,
+        origin (Local if this client created it, Remote if it came from the
+        server). Check origin before treating it as a change made elsewhere. */
     std::function<void(const std::string& id,
                        const std::string& title,
-                       const std::string& content)> onDocumentCreated;
+                       const std::string& content,
+                       EventOrigin origin)> onDocumentCreated;
 
-    /** Called when a document is updated (locally or from sync).
-        Parameters: id, title (extracted from content), full content JSON */
+    /** Called when a document is updated, by this client or from sync.
+        Parameters: id, title (extracted from content), full content JSON,
+        origin (Local if this client wrote it, Remote if the change was applied
+        from the server). Check origin before treating it as a change made
+        elsewhere. */
     std::function<void(const std::string& id,
                        const std::string& title,
-                       const std::string& content)> onDocumentUpdated;
+                       const std::string& content,
+                       EventOrigin origin)> onDocumentUpdated;
 
-    /** Called when a document is deleted (locally or from sync). */
-    std::function<void(const std::string& id)> onDocumentDeleted;
+    /** Called when a document is deleted, by this client or from sync.
+        Check origin before treating it as a change made elsewhere. */
+    std::function<void(const std::string& id, EventOrigin origin)> onDocumentDeleted;
 
     /** Called when the connection state changes. */
     std::function<void(bool connected)> onConnectionChanged;
@@ -194,7 +202,8 @@ private:
     static void documentCallback(EventType eventType, const char* docId,
                                   const char* title, const char* content,
                                   const char* userId, const char* authorName,
-                                  const char* visibility, void* context);
+                                  const char* visibility, EventOrigin origin,
+                                  void* context);
     static void connectionCallback(EventType eventType, bool isConnected,
                                     uint32_t attemptNumber, void* context);
     static void errorCallback(EventType eventType, int32_t errorCode,

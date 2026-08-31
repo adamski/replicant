@@ -19,19 +19,52 @@ namespace replicant {
 #endif // __cplusplus
 
 /**
+ * Where a document event came from.
+ *
+ * Document events are emitted for this client's own writes as well as for
+ * changes applied from the server, and the rest of the payload cannot tell the
+ * two apart: `user_id` is the document owner, not the writer, and delivery is
+ * asynchronous. Consumers that only care about changes made elsewhere should
+ * ignore `Local` events.
+ */
+typedef enum ReplicantEventOrigin {
+  /**
+   * This client wrote the document itself.
+   */
+  Local = 0,
+  /**
+   * The change was applied from the server: a broadcast from another client
+   * or instance, or a sync pass.
+   */
+  Remote = 1,
+} ReplicantEventOrigin;
+
+/**
  * Event types that can be emitted by the sync client
  */
 typedef enum ReplicantEventType {
   /**
-   * A new document was created (local or from sync)
+   * A new document was created.
+   *
+   * Fires for THIS client's own `create_document` call as well as for a
+   * document that arrived from the server. Check the event's origin before
+   * treating it as a change made elsewhere.
    */
   DocumentCreated = 0,
   /**
-   * An existing document was updated (local or from sync)
+   * An existing document was updated.
+   *
+   * Fires for THIS client's own `update_document` call as well as for a
+   * patch applied from the server. Check the event's origin before treating
+   * it as a change made elsewhere.
    */
   DocumentUpdated = 1,
   /**
-   * A document was deleted (local or from sync)
+   * A document was deleted.
+   *
+   * Fires for THIS client's own `delete_document` call as well as for a
+   * deletion applied from the server. Check the event's origin before
+   * treating it as a change made elsewhere.
    */
   DocumentDeleted = 2,
   /**
@@ -170,6 +203,9 @@ typedef struct Replicant Replicant;
 /**
  * Document event callback for DocumentCreated, DocumentUpdated, DocumentDeleted
  *
+ * Fires for this client's OWN writes as well as for changes applied from the
+ * server. Check `origin` before treating an event as a change made elsewhere.
+ *
  * # Parameters
  * * `event_type` - The specific document event type
  * * `document_id` - UUID of the document (always non-null)
@@ -178,6 +214,8 @@ typedef struct Replicant Replicant;
  * * `user_id` - Owner UUID (null if unknown)
  * * `author_name` - Author display name (null if unknown)
  * * `visibility` - "private"/"public" (null if unknown)
+ * * `origin` - `Local` if this client wrote the document, `Remote` if the
+ *   change was applied from the server
  * * `context` - User-defined context pointer
  */
 typedef void (*DocumentEventCallback)(enum ReplicantEventType event_type,
@@ -187,6 +225,7 @@ typedef void (*DocumentEventCallback)(enum ReplicantEventType event_type,
                                       const char *user_id,
                                       const char *author_name,
                                       const char *visibility,
+                                      enum ReplicantEventOrigin origin,
                                       void *context);
 
 /**
@@ -732,6 +771,10 @@ enum ReplicantSyncResult replicant_rebuild_search_index(struct Replicant *engine
  * (no engine handle); runs on a dedicated thread with its own short-lived
  * runtime so this is safe to call even from inside an async runtime context.
  *
+ * BLOCKING: waits for the HTTP round-trip (connect ~10s / request ~30s
+ * timeouts). TODO(#40): add a completion-callback async variant
+ * (`replicant_enroll_request_async`) so consumers don't block a caller thread.
+ *
  * # Safety
  * `base_url` and `email` must be valid, non-null C strings.
  */
@@ -742,6 +785,10 @@ enum ReplicantSyncResult replicant_enroll_request(const char *base_url, const ch
  * the api_key, secret, and canonical user id (36-char UUID string) into the
  * out buffers; each `*_cap` is the writable size of its buffer in bytes and
  * the call fails (without overflowing) when a value does not fit.
+ *
+ * BLOCKING: waits for the HTTP round-trip (connect ~10s / request ~30s
+ * timeouts). TODO(#40): add a completion-callback async variant
+ * (`replicant_enroll_claim_async`) so consumers don't block a caller thread.
  *
  * # Safety
  * All string pointers must be valid, non-null C strings; each out pointer

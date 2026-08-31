@@ -10,6 +10,7 @@ namespace replicant
 {
 
 using EventType = ReplicantEventType;
+using EventOrigin = ReplicantEventOrigin;
 using SyncResult = ReplicantSyncResult;
 
 /**
@@ -358,8 +359,11 @@ public:
      * Register a callback for document events (Created, Updated, Deleted)
      *
      * @param callback Function to call for document events. Receives
-     *   (event_type, document_id, title, content, user_id, author_name, visibility, context).
-     *   user_id, author_name, and visibility are null when unknown/not yet synced.
+     *   (event_type, document_id, title, content, user_id, author_name, visibility,
+     *   origin, context). user_id, author_name, and visibility are null when
+     *   unknown/not yet synced. The callback fires for this client's OWN writes as
+     *   well as for changes from sync: origin is Local for the former and Remote for
+     *   the latter, and is the only reliable way to tell them apart.
      * @param context User-defined context pointer passed to callback
      * @param event_filter Optional filter: 0=Created, 1=Updated, 2=Deleted, -1=all
      * @throws SyncException if registration fails

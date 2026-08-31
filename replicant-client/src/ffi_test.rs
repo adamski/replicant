@@ -4,6 +4,7 @@
 //! These functions are only available in debug builds.
 
 use crate::error_code::ReplicantErrorCode;
+use crate::events::EventOrigin;
 use crate::ffi::{Replicant, SyncResult};
 use uuid::Uuid;
 
@@ -59,7 +60,9 @@ pub unsafe extern "C" fn replicant_emit_test_event(
         }
         2 => {
             let test_id = Uuid::new_v4();
-            engine.event_dispatcher.emit_document_deleted(&test_id);
+            engine
+                .event_dispatcher
+                .emit_document_deleted(&test_id, EventOrigin::Local);
         }
         3 => engine.event_dispatcher.emit_sync_started(),
         4 => engine.event_dispatcher.emit_sync_completed(5),

@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::error_code::ReplicantErrorCode;
 use crate::events::{
     ConflictEventCallback, ConnectionEventCallback, DocumentEventCallback, ErrorEventCallback,
-    EventDispatcher, EventType, IdentityEventCallback, SyncEventCallback,
+    EventDispatcher, EventOrigin, EventType, IdentityEventCallback, SyncEventCallback,
 };
 use crate::{Client as CoreClient, ClientDatabase};
 
@@ -256,6 +256,7 @@ pub unsafe extern "C" fn replicant_create_document(
                         doc.user_id.as_ref(),
                         doc.author_name.as_deref(),
                         doc.visibility.as_deref(),
+                        EventOrigin::Local,
                     );
                 doc.id
             }
@@ -305,6 +306,7 @@ pub unsafe extern "C" fn replicant_create_document(
                 doc.user_id.as_ref(),
                 doc.author_name.as_deref(),
                 doc.visibility.as_deref(),
+                EventOrigin::Local,
             );
 
         doc_id
@@ -392,6 +394,7 @@ pub unsafe extern "C" fn replicant_create_document_with_id(
                         doc.user_id.as_ref(),
                         doc.author_name.as_deref(),
                         doc.visibility.as_deref(),
+                        EventOrigin::Local,
                     );
             }
             Err(_) => return SyncResult::ErrorConnection,
@@ -438,6 +441,7 @@ pub unsafe extern "C" fn replicant_create_document_with_id(
                 doc.user_id.as_ref(),
                 doc.author_name.as_deref(),
                 doc.visibility.as_deref(),
+                EventOrigin::Local,
             );
     }
 
@@ -529,6 +533,7 @@ pub unsafe extern "C" fn replicant_update_document(
                         updated_doc.user_id.as_ref(),
                         updated_doc.author_name.as_deref(),
                         updated_doc.visibility.as_deref(),
+                        EventOrigin::Local,
                     );
                 SyncResult::Success
             }
@@ -588,7 +593,9 @@ pub unsafe extern "C" fn replicant_delete_document(
         {
             Ok(_) => {
                 // Emit event for offline document deletion
-                engine.event_dispatcher.emit_document_deleted(&doc_uuid);
+                engine
+                    .event_dispatcher
+                    .emit_document_deleted(&doc_uuid, EventOrigin::Local);
                 SyncResult::Success
             }
             Err(_) => SyncResult::ErrorDatabase,

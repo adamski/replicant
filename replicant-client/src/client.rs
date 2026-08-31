@@ -1,7 +1,7 @@
 use crate::{
     database::{ClientDatabase, DocumentPreImage},
     error_code::ReplicantErrorCode,
-    events::EventDispatcher,
+    events::{EventDispatcher, EventOrigin},
     websocket::WebSocketClient,
 };
 use replicant_core::{
@@ -687,6 +687,7 @@ impl Client {
                 doc.user_id.as_ref(),
                 doc.author_name.as_deref(),
                 doc.visibility.as_deref(),
+                EventOrigin::Local,
             );
 
         if let Err(e) = self.try_immediate_sync(&doc).await {
@@ -803,6 +804,7 @@ impl Client {
                 doc.user_id.as_ref(),
                 doc.author_name.as_deref(),
                 doc.visibility.as_deref(),
+                EventOrigin::Local,
             );
 
         // Attempt immediate sync if connected
@@ -858,7 +860,8 @@ impl Client {
         self.db.delete_document(&id).await?;
 
         // Emit event
-        self.event_dispatcher.emit_document_deleted(&id);
+        self.event_dispatcher
+            .emit_document_deleted(&id, EventOrigin::Local);
 
         // Try to send delete to server if connected
         let ws_client = self.ws_client.lock().await;
@@ -1719,6 +1722,7 @@ impl Client {
             local.user_id.as_ref(),
             local.author_name.as_deref(),
             local.visibility.as_deref(),
+            EventOrigin::Remote,
         );
 
         upload_retry
@@ -1780,6 +1784,7 @@ impl Client {
             doc.user_id.as_ref(),
             doc.author_name.as_deref(),
             doc.visibility.as_deref(),
+            EventOrigin::Remote,
         );
         Ok(())
     }
@@ -1853,6 +1858,7 @@ impl Client {
             doc.user_id.as_ref(),
             doc.author_name.as_deref(),
             doc.visibility.as_deref(),
+            EventOrigin::Remote,
         );
 
         Ok(())
@@ -2061,7 +2067,7 @@ impl Client {
                 );
                 db.delete_document(&document_id).await?;
                 db.mark_synced(&document_id).await?;
-                event_dispatcher.emit_document_deleted(&document_id);
+                event_dispatcher.emit_document_deleted(&document_id, EventOrigin::Remote);
                 return Ok(true);
             }
             other => {
@@ -2083,7 +2089,7 @@ impl Client {
             );
             db.delete_document(&document_id).await?;
             db.mark_synced(&document_id).await?;
-            event_dispatcher.emit_document_deleted(&document_id);
+            event_dispatcher.emit_document_deleted(&document_id, EventOrigin::Remote);
             return Ok(true);
         }
 
@@ -2131,6 +2137,7 @@ impl Client {
                 doc.user_id.as_ref(),
                 doc.author_name.as_deref(),
                 doc.visibility.as_deref(),
+                EventOrigin::Remote,
             );
             return Ok(true);
         };
@@ -2215,6 +2222,7 @@ impl Client {
             doc.user_id.as_ref(),
             doc.author_name.as_deref(),
             doc.visibility.as_deref(),
+            EventOrigin::Remote,
         );
 
         Ok(true)
@@ -2363,6 +2371,7 @@ impl Client {
                     doc.user_id.as_ref(),
                     doc.author_name.as_deref(),
                     doc.visibility.as_deref(),
+                    EventOrigin::Remote,
                 );
             }
             ServerMessage::DocumentCreated { document } => {
@@ -2392,6 +2401,7 @@ impl Client {
                                 document.user_id.as_ref(),
                                 document.author_name.as_deref(),
                                 document.visibility.as_deref(),
+                                EventOrigin::Remote,
                             );
                         }
                     }
@@ -2411,6 +2421,7 @@ impl Client {
                             document.user_id.as_ref(),
                             document.author_name.as_deref(),
                             document.visibility.as_deref(),
+                            EventOrigin::Remote,
                         );
                     }
                 }
@@ -2430,7 +2441,7 @@ impl Client {
                 db.mark_synced(&document_id).await?;
 
                 // Emit event for deleted document
-                event_dispatcher.emit_document_deleted(&document_id);
+                event_dispatcher.emit_document_deleted(&document_id, EventOrigin::Remote);
             }
             ServerMessage::ConflictDetected { document_id, .. } => {
                 tracing::warn!("Conflict detected for document {}", document_id);
@@ -2506,6 +2517,7 @@ impl Client {
                                 document.user_id.as_ref(),
                                 document.author_name.as_deref(),
                                 document.visibility.as_deref(),
+                                EventOrigin::Remote,
                             );
                         } else {
                             tracing::info!(
@@ -2533,6 +2545,7 @@ impl Client {
                             document.user_id.as_ref(),
                             document.author_name.as_deref(),
                             document.visibility.as_deref(),
+                            EventOrigin::Remote,
                         );
                     }
                 }
@@ -3446,7 +3459,7 @@ mod upload_classification_tests {
 #[cfg(test)]
 mod broadcast_guard_tests {
     use super::*;
-    use crate::events::SyncEvent;
+    use crate::events::{EventOrigin, SyncEvent};
     use replicant_core::models::ServerDocumentPatch;
     use replicant_core::patches::calculate_checksum;
     use replicant_core::protocol::ErrorCode;
@@ -5506,6 +5519,186 @@ mod broadcast_guard_tests {
         assert_eq!(
             db.get_sync_status(&id).await.unwrap(),
             Some(SyncStatus::Pending)
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Event origin (#44)
+    // ---------------------------------------------------------------------
+
+    /// A consumer that wants to react only to changes made elsewhere needs the
+    /// event itself to say where the write came from; the payload alone cannot
+    /// tell an echo of a local save from a genuine remote edit.
+    #[tokio::test]
+    async fn a_broadcast_applied_from_the_server_is_reported_as_remote() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        let before = json!({"title": "A"});
+        let after = json!({"title": "B"});
+        seed(&db, &make_doc(id, before.clone(), 1), SyncStatus::Synced).await;
+
+        let events = dispatcher();
+        let seen = event_probe(&events);
+
+        deliver(&db, &events, server_patch(id, &before, &after, 2)).await;
+
+        let emitted = drain_events(&events, &seen);
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                SyncEvent::DocumentUpdated {
+                    origin: EventOrigin::Remote,
+                    ..
+                }
+            )),
+            "a patch applied from the server must be reported as Remote: {:?}",
+            emitted
+        );
+    }
+
+    /// A document deleted by another client arrives the same way and must also
+    /// be reported as Remote.
+    #[tokio::test]
+    async fn a_delete_applied_from_the_server_is_reported_as_remote() {
+        let db = test_db().await;
+        let id = Uuid::new_v4();
+        seed(
+            &db,
+            &make_doc(id, json!({"title": "A"}), 1),
+            SyncStatus::Synced,
+        )
+        .await;
+
+        let events = dispatcher();
+        let seen = event_probe(&events);
+
+        Client::handle_server_message(
+            ServerMessage::DocumentDeleted { document_id: id },
+            &db,
+            Uuid::new_v4(),
+            &events,
+            &recording_source().0,
+        )
+        .await
+        .unwrap();
+
+        let emitted = drain_events(&events, &seen);
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                SyncEvent::DocumentDeleted {
+                    origin: EventOrigin::Remote,
+                    ..
+                }
+            )),
+            "a delete applied from the server must be reported as Remote: {:?}",
+            emitted
+        );
+    }
+}
+
+#[cfg(test)]
+mod local_write_origin_tests {
+    use super::*;
+    use crate::events::{EventOrigin, SyncEvent};
+    use serde_json::json;
+
+    /// A client with no reachable server: every event it emits therefore
+    /// originated from this process's own writes.
+    async fn offline_client(events: Arc<EventDispatcher>) -> Client {
+        Client::with_event_dispatcher(
+            ":memory:",
+            "ws://127.0.0.1:1",
+            "origin-test@example.com",
+            "key",
+            "secret",
+            None,
+            Some(events),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn event_probe(events: &Arc<EventDispatcher>) -> Arc<std::sync::Mutex<Vec<SyncEvent>>> {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        events
+            .register_rust_callback(move |event| sink.lock().unwrap().push(event))
+            .unwrap();
+        seen
+    }
+
+    fn drain_events(
+        events: &Arc<EventDispatcher>,
+        seen: &Arc<std::sync::Mutex<Vec<SyncEvent>>>,
+    ) -> Vec<SyncEvent> {
+        events.process_events().unwrap();
+        seen.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_local_write_is_reported_as_local() {
+        let events = Arc::new(EventDispatcher::new());
+        let seen = event_probe(&events);
+        let client = offline_client(events.clone()).await;
+
+        let doc = client
+            .create_document(json!({"title": "mine"}))
+            .await
+            .unwrap();
+        client
+            .update_document(doc.id, json!({"title": "mine, edited"}))
+            .await
+            .unwrap();
+
+        let emitted = drain_events(&events, &seen);
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                SyncEvent::DocumentCreated {
+                    origin: EventOrigin::Local,
+                    ..
+                }
+            )),
+            "this client's own create must be reported as Local: {:?}",
+            emitted
+        );
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                SyncEvent::DocumentUpdated {
+                    origin: EventOrigin::Local,
+                    ..
+                }
+            )),
+            "this client's own update must be reported as Local: {:?}",
+            emitted
+        );
+    }
+
+    #[tokio::test]
+    async fn a_local_delete_is_reported_as_local() {
+        let events = Arc::new(EventDispatcher::new());
+        let seen = event_probe(&events);
+        let client = offline_client(events.clone()).await;
+
+        let doc = client
+            .create_document(json!({"title": "mine"}))
+            .await
+            .unwrap();
+        client.delete_document(doc.id).await.unwrap();
+
+        let emitted = drain_events(&events, &seen);
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                SyncEvent::DocumentDeleted {
+                    origin: EventOrigin::Local,
+                    ..
+                }
+            )),
+            "this client's own delete must be reported as Local: {:?}",
+            emitted
         );
     }
 }

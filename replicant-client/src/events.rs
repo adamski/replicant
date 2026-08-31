@@ -42,11 +42,23 @@ use uuid::Uuid;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EventType {
-    /// A new document was created (local or from sync)
+    /// A new document was created.
+    ///
+    /// Fires for THIS client's own `create_document` call as well as for a
+    /// document that arrived from the server. Check the event's origin before
+    /// treating it as a change made elsewhere.
     DocumentCreated = 0,
-    /// An existing document was updated (local or from sync)
+    /// An existing document was updated.
+    ///
+    /// Fires for THIS client's own `update_document` call as well as for a
+    /// patch applied from the server. Check the event's origin before treating
+    /// it as a change made elsewhere.
     DocumentUpdated = 1,
-    /// A document was deleted (local or from sync)
+    /// A document was deleted.
+    ///
+    /// Fires for THIS client's own `delete_document` call as well as for a
+    /// deletion applied from the server. Check the event's origin before
+    /// treating it as a change made elsewhere.
     DocumentDeleted = 2,
     /// Synchronization process started
     SyncStarted = 3,
@@ -64,6 +76,23 @@ pub enum EventType {
     ConnectionSucceeded = 9,
     /// The server-authoritative user id was adopted, replacing the local one
     IdentityChanged = 10,
+}
+
+/// Where a document event came from.
+///
+/// Document events are emitted for this client's own writes as well as for
+/// changes applied from the server, and the rest of the payload cannot tell the
+/// two apart: `user_id` is the document owner, not the writer, and delivery is
+/// asynchronous. Consumers that only care about changes made elsewhere should
+/// ignore `Local` events.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventOrigin {
+    /// This client wrote the document itself.
+    Local = 0,
+    /// The change was applied from the server: a broadcast from another client
+    /// or instance, or a sync pass.
+    Remote = 1,
 }
 
 // =============================================================================
@@ -96,7 +125,7 @@ pub enum EventType {
 /// ```
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
-    /// A new document was created
+    /// A new document was created, locally or from sync (see `origin`)
     DocumentCreated {
         id: String,
         title: String,
@@ -104,8 +133,9 @@ pub enum SyncEvent {
         user_id: Option<String>,
         author_name: Option<String>,
         visibility: Option<String>,
+        origin: EventOrigin,
     },
-    /// An existing document was updated
+    /// An existing document was updated, locally or from sync (see `origin`)
     DocumentUpdated {
         id: String,
         title: String,
@@ -113,9 +143,10 @@ pub enum SyncEvent {
         user_id: Option<String>,
         author_name: Option<String>,
         visibility: Option<String>,
+        origin: EventOrigin,
     },
-    /// A document was deleted
-    DocumentDeleted { id: String },
+    /// A document was deleted, locally or from sync (see `origin`)
+    DocumentDeleted { id: String, origin: EventOrigin },
     /// Synchronization started
     SyncStarted,
     /// Synchronization completed
@@ -180,6 +211,7 @@ impl SyncEvent {
                 user_id: event.user_id.clone(),
                 author_name: event.author_name.clone(),
                 visibility: event.visibility.clone(),
+                origin: event.origin,
             },
             EventType::DocumentUpdated => SyncEvent::DocumentUpdated {
                 id: event.document_id.clone().unwrap_or_default(),
@@ -195,9 +227,11 @@ impl SyncEvent {
                 user_id: event.user_id.clone(),
                 author_name: event.author_name.clone(),
                 visibility: event.visibility.clone(),
+                origin: event.origin,
             },
             EventType::DocumentDeleted => SyncEvent::DocumentDeleted {
                 id: event.document_id.clone().unwrap_or_default(),
+                origin: event.origin,
             },
             EventType::SyncStarted => SyncEvent::SyncStarted,
             EventType::SyncCompleted => SyncEvent::SyncCompleted {
@@ -239,6 +273,9 @@ impl SyncEvent {
 
 /// Document event callback for DocumentCreated, DocumentUpdated, DocumentDeleted
 ///
+/// Fires for this client's OWN writes as well as for changes applied from the
+/// server. Check `origin` before treating an event as a change made elsewhere.
+///
 /// # Parameters
 /// * `event_type` - The specific document event type
 /// * `document_id` - UUID of the document (always non-null)
@@ -247,6 +284,8 @@ impl SyncEvent {
 /// * `user_id` - Owner UUID (null if unknown)
 /// * `author_name` - Author display name (null if unknown)
 /// * `visibility` - "private"/"public" (null if unknown)
+/// * `origin` - `Local` if this client wrote the document, `Remote` if the
+///   change was applied from the server
 /// * `context` - User-defined context pointer
 pub type DocumentEventCallback = extern "C" fn(
     event_type: EventType,
@@ -256,6 +295,7 @@ pub type DocumentEventCallback = extern "C" fn(
     user_id: *const c_char,
     author_name: *const c_char,
     visibility: *const c_char,
+    origin: EventOrigin,
     context: *mut c_void,
 );
 
@@ -401,6 +441,7 @@ pub struct QueuedEvent {
     user_id: Option<String>,
     author_name: Option<String>,
     visibility: Option<String>,
+    origin: EventOrigin,
 }
 
 /// Thread-safe event dispatcher for managing callbacks and event processing
@@ -412,7 +453,7 @@ pub struct QueuedEvent {
 /// # Example
 ///
 /// ```rust,no_run
-/// use replicant_client::events::{EventDispatcher, EventType};
+/// use replicant_client::events::{EventDispatcher, EventOrigin, EventType};
 /// use std::ffi::c_void;
 ///
 /// // Define callback function
@@ -424,6 +465,7 @@ pub struct QueuedEvent {
 ///     user_id: *const std::ffi::c_char,
 ///     author_name: *const std::ffi::c_char,
 ///     visibility: *const std::ffi::c_char,
+///     origin: EventOrigin,
 ///     _context: *mut c_void
 /// ) {
 ///     println!("Document event: {:?}", event_type);
@@ -703,12 +745,23 @@ impl EventDispatcher {
         Ok(())
     }
 
+    /// Emit a document-created event for a write this client made itself.
     pub fn emit_document_created(&self, document_id: &Uuid, content: &serde_json::Value) {
-        self.emit_document_created_with_attribution(document_id, content, None, None, None);
+        self.emit_document_created_with_attribution(
+            document_id,
+            content,
+            None,
+            None,
+            None,
+            EventOrigin::Local,
+        );
     }
 
     /// Emit a document-created event, carrying attribution (owner user_id, author_name,
     /// visibility) alongside the document content.
+    ///
+    /// `origin` says whether this client wrote the document or the change was
+    /// applied from the server; consumers use it to ignore their own echoes.
     pub fn emit_document_created_with_attribution(
         &self,
         document_id: &Uuid,
@@ -716,6 +769,7 @@ impl EventDispatcher {
         user_id: Option<&Uuid>,
         author_name: Option<&str>,
         visibility: Option<&str>,
+        origin: EventOrigin,
     ) {
         // Extract title from content if present
         let title = content
@@ -733,15 +787,27 @@ impl EventDispatcher {
             user_id.map(|id| id.to_string()),
             author_name.map(|s| s.to_string()),
             visibility.map(|s| s.to_string()),
+            origin,
         );
     }
 
+    /// Emit a document-updated event for a write this client made itself.
     pub fn emit_document_updated(&self, document_id: &Uuid, content: &serde_json::Value) {
-        self.emit_document_updated_with_attribution(document_id, content, None, None, None);
+        self.emit_document_updated_with_attribution(
+            document_id,
+            content,
+            None,
+            None,
+            None,
+            EventOrigin::Local,
+        );
     }
 
     /// Emit a document-updated event, carrying attribution (owner user_id, author_name,
     /// visibility) alongside the document content.
+    ///
+    /// `origin` says whether this client wrote the document or the change was
+    /// applied from the server; consumers use it to ignore their own echoes.
     pub fn emit_document_updated_with_attribution(
         &self,
         document_id: &Uuid,
@@ -749,6 +815,7 @@ impl EventDispatcher {
         user_id: Option<&Uuid>,
         author_name: Option<&str>,
         visibility: Option<&str>,
+        origin: EventOrigin,
     ) {
         // Extract title from content if present
         let title = content
@@ -766,10 +833,13 @@ impl EventDispatcher {
             user_id.map(|id| id.to_string()),
             author_name.map(|s| s.to_string()),
             visibility.map(|s| s.to_string()),
+            origin,
         );
     }
 
-    pub fn emit_document_deleted(&self, document_id: &Uuid) {
+    /// Emit a document-deleted event. `origin` says whether this client deleted
+    /// the document or the deletion was applied from the server.
+    pub fn emit_document_deleted(&self, document_id: &Uuid, origin: EventOrigin) {
         self.queue_event(
             EventType::DocumentDeleted,
             Some(document_id),
@@ -781,6 +851,7 @@ impl EventDispatcher {
             None,
             None,
             None,
+            origin,
         );
     }
 
@@ -796,6 +867,7 @@ impl EventDispatcher {
             None,
             None,
             None,
+            EventOrigin::Local,
         );
     }
 
@@ -811,6 +883,7 @@ impl EventDispatcher {
             None,
             None,
             None,
+            EventOrigin::Local,
         );
     }
 
@@ -830,6 +903,7 @@ impl EventDispatcher {
             user_id: None,
             author_name: None,
             visibility: None,
+            origin: EventOrigin::Local,
         };
 
         if self.event_sender.send(queued_event).is_err() {
@@ -849,6 +923,7 @@ impl EventDispatcher {
             None,
             None,
             None,
+            EventOrigin::Local,
         );
     }
 
@@ -864,6 +939,7 @@ impl EventDispatcher {
             None,
             None,
             None,
+            EventOrigin::Local,
         );
     }
 
@@ -879,6 +955,7 @@ impl EventDispatcher {
             None,
             None,
             None,
+            EventOrigin::Local,
         );
     }
 
@@ -894,6 +971,7 @@ impl EventDispatcher {
             None,
             None,
             None,
+            EventOrigin::Local,
         );
     }
 
@@ -910,6 +988,7 @@ impl EventDispatcher {
             Some(new_user_id.to_string()),
             None,
             None,
+            EventOrigin::Local,
         );
     }
 
@@ -927,6 +1006,7 @@ impl EventDispatcher {
         user_id: Option<String>,
         author_name: Option<String>,
         visibility: Option<String>,
+        origin: EventOrigin,
     ) {
         let queued_event = QueuedEvent {
             event_type,
@@ -940,6 +1020,7 @@ impl EventDispatcher {
             user_id,
             author_name,
             visibility,
+            origin,
         };
 
         if self.event_sender.send(queued_event).is_err() {
@@ -1140,6 +1221,7 @@ impl EventDispatcher {
                             user_id_ptr,
                             author_name_ptr,
                             visibility_ptr,
+                            queued_event.origin,
                             entry.context,
                         );
                     }
@@ -1265,6 +1347,7 @@ mod tests {
             _user_id: *const c_char,
             _author_name: *const c_char,
             _visibility: *const c_char,
+            _origin: EventOrigin,
             context: *mut c_void,
         ) {
             let count = unsafe { &*(context as *const AtomicUsize) };
@@ -1308,6 +1391,7 @@ mod tests {
             _user_id: *const c_char,
             _author_name: *const c_char,
             _visibility: *const c_char,
+            _origin: EventOrigin,
             context: *mut c_void,
         ) {
             let count = unsafe { &*(context as *const AtomicUsize) };
@@ -1347,7 +1431,7 @@ mod tests {
         assert_eq!(updated_count.load(Ordering::SeqCst), 1);
 
         // Emit deleted event (neither should trigger - they're filtered)
-        dispatcher.emit_document_deleted(&doc_id);
+        dispatcher.emit_document_deleted(&doc_id, EventOrigin::Local);
         dispatcher.process_events().unwrap();
         assert_eq!(created_count.load(Ordering::SeqCst), 1);
         assert_eq!(updated_count.load(Ordering::SeqCst), 1);
@@ -1404,6 +1488,7 @@ mod tests {
             _user_id: *const c_char,
             _author_name: *const c_char,
             _visibility: *const c_char,
+            _origin: EventOrigin,
             context: *mut c_void,
         ) {
             let count = unsafe { &*(context as *const AtomicUsize) };
@@ -1435,7 +1520,7 @@ mod tests {
         let doc_id = Uuid::new_v4();
         dispatcher.emit_document_created(&doc_id, &serde_json::json!({"title": "Test1"}));
         dispatcher.emit_document_updated(&doc_id, &serde_json::json!({"title": "Test2"}));
-        dispatcher.emit_document_deleted(&doc_id);
+        dispatcher.emit_document_deleted(&doc_id, EventOrigin::Local);
         dispatcher.emit_sync_started();
         dispatcher.emit_sync_completed(5);
 

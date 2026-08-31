@@ -1,6 +1,23 @@
 # Changelog
 
-## 0.5.0
+## Unreleased
+
+### Breaking
+
+- Document events now carry their origin. `DocumentEventCallback` in
+  `replicant.h` takes a new `ReplicantEventOrigin origin` argument before
+  `context`, so every C/C++ callback must be updated; the JUCE wrapper's
+  `onDocumentCreated`/`onDocumentUpdated`/`onDocumentDeleted` gained the same
+  trailing parameter. In Rust, `SyncEvent::Document{Created,Updated,Deleted}`
+  gained an `origin: EventOrigin` field, and
+  `emit_document_{created,updated}_with_attribution` / `emit_document_deleted`
+  take it explicitly.
+- `origin` is `Local` when this client wrote the document itself and `Remote`
+  when the change was applied from the server (a broadcast from another client
+  or instance, or a sync pass). Events for a client's own writes are still
+  emitted — separate clients over one database depend on them — so a consumer
+  that only cares about changes made elsewhere must check `origin` rather than
+  comparing content. (#44)
 
 Sync-base verification (DEV-1037). All workspace crates move to 0.5.0 together.
 

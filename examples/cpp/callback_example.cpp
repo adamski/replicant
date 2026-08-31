@@ -96,7 +96,9 @@ std::string get_event_type_name(EventType type)
 // Type-specific callbacks - each receives only relevant parameters!
 // =============================================================================
 
-// Document callback - receives doc_id, title, content, user_id, author_name, visibility
+// Document callback - receives doc_id, title, content, user_id, author_name,
+// visibility and origin. Fires for this process's own writes too: origin says
+// which, so a consumer can ignore its own echoes.
 void document_event_callback(
     EventType event_type,
     const char* document_id,
@@ -105,6 +107,7 @@ void document_event_callback(
     const char* user_id,
     const char* author_name,
     const char* visibility,
+    EventOrigin origin,
     void* context)
 {
     std::string event_name = get_event_type_name(event_type);
@@ -128,6 +131,7 @@ void document_event_callback(
     {
         std::cout << " - Visibility: " << visibility;
     }
+    std::cout << " - Origin: " << (origin == Local ? "local" : "remote");
     std::cout << "\n";
 }
 

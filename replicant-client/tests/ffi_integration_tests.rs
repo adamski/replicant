@@ -8,7 +8,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use replicant_client::events::EventType;
+use replicant_client::events::{EventOrigin, EventType};
 use replicant_client::ffi::{
     replicant_count_documents, replicant_count_pending_sync, replicant_create,
     replicant_create_document, replicant_destroy, replicant_get_all_documents,
@@ -33,6 +33,7 @@ struct DocumentCapture {
     last_user_id: Mutex<Option<String>>,
     last_author_name: Mutex<Option<String>>,
     last_visibility: Mutex<Option<String>>,
+    last_origin: Mutex<Option<EventOrigin>>,
 }
 
 impl DocumentCapture {
@@ -49,6 +50,7 @@ impl DocumentCapture {
         *self.last_user_id.lock().unwrap() = None;
         *self.last_author_name.lock().unwrap() = None;
         *self.last_visibility.lock().unwrap() = None;
+        *self.last_origin.lock().unwrap() = None;
     }
 }
 
@@ -102,9 +104,11 @@ extern "C" fn document_capture_callback(
     user_id: *const c_char,
     author_name: *const c_char,
     visibility: *const c_char,
+    origin: EventOrigin,
     context: *mut c_void,
 ) {
     let capture = unsafe { &*(context as *const DocumentCapture) };
+    *capture.last_origin.lock().unwrap() = Some(origin);
 
     capture.call_count.fetch_add(1, Ordering::SeqCst);
     *capture.last_event_type.lock().unwrap() = Some(event_type);
@@ -281,6 +285,13 @@ fn test_ffi_callback_with_document_creation() {
         // replicant_create_document, so they merely need to arrive without crashing.
         let captured_user_id = capture.last_user_id.lock().unwrap();
         assert!(captured_user_id.is_some());
+
+        // The host created this document itself, so the event must say so;
+        // otherwise a consumer cannot tell it apart from a remote change.
+        assert_eq!(
+            *capture.last_origin.lock().unwrap(),
+            Some(EventOrigin::Local)
+        );
 
         // Verify replicant_get_user_id returns the same engine-frozen user UUID
         let mut out_user_id: *mut c_char = ptr::null_mut();

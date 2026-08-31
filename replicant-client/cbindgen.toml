@@ -16,6 +16,7 @@ include = [
     "SyncResult",
     "Document",
     "EventType",
+    "EventOrigin",
     "ReplicantErrorCode",
     "DocumentEventCallback",
     "SyncEventCallback",
@@ -27,6 +28,7 @@ include = [
 # Prefix types to avoid polluting global namespace in C++
 [export.rename]
 "EventType" = "ReplicantEventType"
+"EventOrigin" = "ReplicantEventOrigin"
 "SyncResult" = "ReplicantSyncResult"
 
 [enum]

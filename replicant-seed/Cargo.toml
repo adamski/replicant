@@ -1,6 +1,6 @@
 [package]
 name = "replicant-seed"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Seed a Replicant server with a directory of JSON documents"
 

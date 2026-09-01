@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-09-01
+
+Document events carry an origin flag (#44). All workspace crates move to 0.6.0 together.
 
 ### Breaking
 
@@ -18,6 +20,8 @@
   emitted — separate clients over one database depend on them — so a consumer
   that only cares about changes made elsewhere must check `origin` rather than
   comparing content. (#44)
+
+## 0.5.0 - 2026-08-28
 
 Sync-base verification (DEV-1037). All workspace crates move to 0.5.0 together.
 

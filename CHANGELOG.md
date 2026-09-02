@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 - 2026-09-02
 
 - Release macOS libs now pin `MACOSX_DEPLOYMENT_TARGET` per architecture
   (10.15 for x86_64, 11.0 for arm64) so the universal `libreplicant_client.a`

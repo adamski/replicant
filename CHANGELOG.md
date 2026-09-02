@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Release macOS libs now pin `MACOSX_DEPLOYMENT_TARGET` per architecture
+  (10.15 for x86_64, 11.0 for arm64) so the universal `libreplicant_client.a`
+  no longer triggers "was built for newer macOS version" link warnings in
+  hosts targeting older deployment targets (DEV-1079).
+
 ## 0.6.0 - 2026-09-01
 
 Document events carry an origin flag (#44). All workspace crates move to 0.6.0 together.

@@ -48,9 +48,9 @@ jobs:
     - name: Build SDK (macOS - all variants)
       if: runner.os == 'macOS'
       run: |
-        # Build for both architectures
-        cargo build --package replicant-client --release --target aarch64-apple-darwin
-        cargo build --package replicant-client --release --target x86_64-apple-darwin
+        # Build for both architectures, pinning the deployment target each honours
+        MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --package replicant-client --release --target aarch64-apple-darwin
+        MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --package replicant-client --release --target x86_64-apple-darwin
 
         # Copy header from one of the builds (identical for both)
         mkdir -p replicant-client/target/include
